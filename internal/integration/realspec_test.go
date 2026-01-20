@@ -373,7 +373,9 @@ func testStripeAPI(t *testing.T) {
 	// Create mock Stripe API server
 	mockServer := env.createMockServer(map[string]http.HandlerFunc{
 		"GET /v1/customers/cus_123": func(w http.ResponseWriter, r *http.Request) {
-			// Note: Not checking auth for consistency with list operation in tests
+			// Note: Auth check is omitted here to simplify testing. In a real scenario,
+			// credentials would be properly configured via the credential manager.
+			// This matches the pattern used in the list operation for consistency.
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"id":       "cus_123",
