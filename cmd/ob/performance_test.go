@@ -3,7 +3,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -108,9 +107,9 @@ func TestMCPServerStartup(t *testing.T) {
 		in := bytes.NewBuffer(nil)
 		out := bytes.NewBuffer(nil)
 		server := mcp.NewServer(handler, in, out)
-		
-		// The server is created and ready
-		_ = server
+		if server == nil {
+			t.Fatal("Failed to create MCP server")
+		}
 		
 		elapsed := time.Since(start)
 		total += elapsed
@@ -223,7 +222,9 @@ func TestFullMCPServerPerformance(t *testing.T) {
 		in := bytes.NewBuffer(nil)
 		out := bytes.NewBuffer(nil)
 		server := mcp.NewServer(handler, in, out)
-		_ = server
+		if server == nil {
+			t.Fatal("Failed to create MCP server")
+		}
 		startupElapsed := time.Since(startupStart)
 		
 		totalStartup += startupElapsed
@@ -266,10 +267,4 @@ func TestFullMCPServerPerformance(t *testing.T) {
 	if avgListTools > 50*time.Millisecond {
 		t.Errorf("Average list_tools response time %v exceeds requirement of 50ms", avgListTools)
 	}
-}
-
-// Helper to run server in goroutine for integration test
-func runMCPServerForTest(ctx context.Context, handler *mcp.Handler, in *bytes.Buffer, out *bytes.Buffer) error {
-	server := mcp.NewServer(handler, in, out)
-	return server.Serve(ctx)
 }
