@@ -11,7 +11,7 @@
 ### 代码风格
 
 - 遵循 `golangci-lint` 默认规则，运行 `make lint-fix` 检查
-- 使用 `goimports` 格式化导入（`make fmt`）
+- 使用 `goimports` 格式化导入（`make fmt-fix`）
 - 错误处理: 使用 `fmt.Errorf("context: %w", err)` 包装错误，保留错误链
 - 导出函数必须有 GoDoc 注释
 
@@ -34,7 +34,7 @@
 **每次提交代码前必须执行：**
 
 ```bash
-make fmt        # 格式化代码（含 interface{} → any 转换）
+make fmt-fix    # 格式化代码（含 interface{} → any 转换）
 make lint-fix   # 自动修复 lint 问题
 make test       # 运行全部测试（含 race 检测）
 ```
@@ -42,7 +42,7 @@ make test       # 运行全部测试（含 race 检测）
 **一键检查脚本：**
 
 ```bash
-make fmt && make lint-fix && make test
+make fmt-fix && make lint-fix && make test
 ```
 
 **PR 审查清单：**
