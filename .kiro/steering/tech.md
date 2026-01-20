@@ -3,7 +3,7 @@
 ## Language & Runtime
 
 - **Go 1.25.5**: Primary language
-- **CGO_ENABLED=0**: Static binaries with no C dependencies
+- __CGO_ENABLED=0__: Static binaries with no C dependencies
 
 ## Core Dependencies
 
@@ -24,8 +24,8 @@ make test-coverage  # Generate coverage report
 make run            # Build and run development binary
 
 # Code Quality
-make lint           # Run golangci-lint
-make fmt            # Format code with go fmt and goimports
+make lint-fix           # Run golangci-lint-v2 and auto-fix issues
+make fmt-fix            # Format code with go fmt and goimports
 
 # Property-Based Testing
 make test-property  # Run property tests with 1000 iterations
@@ -77,6 +77,7 @@ go install ./cmd/ob
 ## Configuration Storage
 
 Platform-specific configuration directories:
+
 - **macOS**: `~/Library/Application Support/openbridge/`
 - **Linux**: `~/.config/openbridge/`
 - **Windows**: `%APPDATA%\openbridge\`

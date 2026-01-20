@@ -22,14 +22,33 @@ test-coverage:
 	go test -v -race -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 
-# Run linter
+# Run linter (golangci-lint v2)
 lint:
-	golangci-lint run ./...
+	@which golangci-lint > /dev/null || (echo "golangci-lint not found. Install with: make install-lint" && exit 1)
+	golangci-lint run --timeout=5m ./...
 
-# Format code
-fmt:
+# Run linter with auto-fix
+lint-fix:
+	@which golangci-lint > /dev/null || (echo "golangci-lint not found. Install with: make install-lint" && exit 1)
+	golangci-lint run --timeout=5m --fix ./...
+
+# Install golangci-lint v2
+install-lint:
+	@echo "Installing golangci-lint v2..."
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+	@echo "✓ golangci-lint installed"
+
+# Advanced formatting and modernization
+fmt-fix:
+	@echo "Advanced code modernization..."
+	@echo "1. Converting interface{} to any..."
+	gofmt -w -r 'interface{} -> any' .
+	@echo "2. Simplifying slice expressions..."
+	gofmt -w -r 'α[β:len(α)] -> α[β:]' .
+	@echo "3. Running standard formatting..."
 	go fmt ./...
 	goimports -w .
+	@echo "✓ Advanced formatting complete"
 
 # Clean build artifacts
 clean:

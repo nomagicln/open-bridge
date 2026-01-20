@@ -17,9 +17,9 @@ func TestErrorHandling_HTTPErrors(t *testing.T) {
 	formatter := NewErrorFormatter()
 
 	tests := []struct {
-		name           string
-		statusCode     int
-		body           []byte
+		name            string
+		statusCode      int
+		body            []byte
 		expectedPhrases []string
 	}{
 		{
@@ -176,39 +176,39 @@ func TestErrorHandling_AppNotFound(t *testing.T) {
 	formatter := NewErrorFormatter()
 
 	tests := []struct {
-		name            string
-		appName         string
-		installedApps   []string
+		name             string
+		appName          string
+		installedApps    []string
 		expectSuggestion bool
-		expectedApps    []string
+		expectedApps     []string
 	}{
 		{
-			name:            "Typo in app name",
-			appName:         "myap",
-			installedApps:   []string{"myapi", "petstore", "github"},
+			name:             "Typo in app name",
+			appName:          "myap",
+			installedApps:    []string{"myapi", "petstore", "github"},
 			expectSuggestion: true,
-			expectedApps:    []string{"myapi"},
+			expectedApps:     []string{"myapi"},
 		},
 		{
-			name:            "Prefix match",
-			appName:         "pet",
-			installedApps:   []string{"myapi", "petstore", "github"},
+			name:             "Prefix match",
+			appName:          "pet",
+			installedApps:    []string{"myapi", "petstore", "github"},
 			expectSuggestion: true,
-			expectedApps:    []string{"petstore"},
+			expectedApps:     []string{"petstore"},
 		},
 		{
-			name:            "No similar apps",
-			appName:         "completely-different",
-			installedApps:   []string{"myapi", "petstore", "github"},
+			name:             "No similar apps",
+			appName:          "completely-different",
+			installedApps:    []string{"myapi", "petstore", "github"},
 			expectSuggestion: false,
-			expectedApps:    nil,
+			expectedApps:     nil,
 		},
 		{
-			name:            "No installed apps",
-			appName:         "myapp",
-			installedApps:   []string{},
+			name:             "No installed apps",
+			appName:          "myapp",
+			installedApps:    []string{},
 			expectSuggestion: false,
-			expectedApps:    nil,
+			expectedApps:     nil,
 		},
 	}
 
