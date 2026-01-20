@@ -252,8 +252,9 @@ func (p *Provider) CompleteFlagValues(appName, verb, resource, flagName string) 
 		return nil
 	}
 
-	// Remove -- prefix if present
+	// Remove -- or - prefix if present
 	flagName = strings.TrimPrefix(flagName, "--")
+	flagName = strings.TrimPrefix(flagName, "-")
 
 	// Special handling for common flags
 	switch flagName {

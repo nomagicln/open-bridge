@@ -14,7 +14,7 @@ import (
 )
 
 // setupTestEnv creates a test environment with config manager, spec parser, and mapper
-func setupTestEnv(t *testing.T) (*config.Manager, *spec.Parser, *semantic.Mapper, func()) {
+func setupTestEnv(t *testing.T) (*config.Manager, *spec.Parser, *semantic.Mapper) {
 	t.Helper()
 
 	configDir := t.TempDir()
@@ -26,11 +26,7 @@ func setupTestEnv(t *testing.T) (*config.Manager, *spec.Parser, *semantic.Mapper
 	specParser := spec.NewParser()
 	mapper := semantic.NewMapper()
 
-	cleanup := func() {
-		// Cleanup handled by t.TempDir()
-	}
-
-	return configMgr, specParser, mapper, cleanup
+	return configMgr, specParser, mapper
 }
 
 // writeTestSpec writes the test spec to a temp file
@@ -45,8 +41,7 @@ func writeTestSpec(t *testing.T) string {
 
 func TestCompleteAppNames(t *testing.T) {
 	// Setup
-	configMgr, specParser, mapper, cleanup := setupTestEnv(t)
-	defer cleanup()
+	configMgr, specParser, mapper := setupTestEnv(t)
 
 	provider := NewProvider(configMgr, specParser, mapper)
 
@@ -85,8 +80,7 @@ func TestCompleteAppNames(t *testing.T) {
 
 func TestCompleteVerbs(t *testing.T) {
 	// Setup
-	configMgr, specParser, mapper, cleanup := setupTestEnv(t)
-	defer cleanup()
+	configMgr, specParser, mapper := setupTestEnv(t)
 
 	provider := NewProvider(configMgr, specParser, mapper)
 
@@ -118,8 +112,7 @@ func TestCompleteVerbs(t *testing.T) {
 
 func TestCompleteResources(t *testing.T) {
 	// Setup
-	configMgr, specParser, mapper, cleanup := setupTestEnv(t)
-	defer cleanup()
+	configMgr, specParser, mapper := setupTestEnv(t)
 
 	provider := NewProvider(configMgr, specParser, mapper)
 
@@ -151,8 +144,7 @@ func TestCompleteResources(t *testing.T) {
 
 func TestCompleteResourcesForVerb(t *testing.T) {
 	// Setup
-	configMgr, specParser, mapper, cleanup := setupTestEnv(t)
-	defer cleanup()
+	configMgr, specParser, mapper := setupTestEnv(t)
 
 	provider := NewProvider(configMgr, specParser, mapper)
 
@@ -183,8 +175,7 @@ func TestCompleteResourcesForVerb(t *testing.T) {
 
 func TestCompleteFlags(t *testing.T) {
 	// Setup
-	configMgr, specParser, mapper, cleanup := setupTestEnv(t)
-	defer cleanup()
+	configMgr, specParser, mapper := setupTestEnv(t)
 
 	provider := NewProvider(configMgr, specParser, mapper)
 
@@ -221,8 +212,7 @@ func TestCompleteFlags(t *testing.T) {
 
 func TestCompleteFlagValues(t *testing.T) {
 	// Setup
-	configMgr, specParser, mapper, cleanup := setupTestEnv(t)
-	defer cleanup()
+	configMgr, specParser, mapper := setupTestEnv(t)
 
 	provider := NewProvider(configMgr, specParser, mapper)
 

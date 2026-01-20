@@ -539,16 +539,16 @@ Fish:
 		Args:                  cobra.ExactValidArgs(1),
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			switch args[0] {
+			shell := args[0]
+			switch shell {
 			case "bash":
 				return cmd.Root().GenBashCompletionV2(os.Stdout, true)
 			case "zsh":
 				return cmd.Root().GenZshCompletion(os.Stdout)
 			case "fish":
 				return cmd.Root().GenFishCompletion(os.Stdout, true)
-			default:
-				return fmt.Errorf("unsupported shell: %s", args[0])
 			}
+			return nil
 		},
 	}
 
