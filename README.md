@@ -15,6 +15,7 @@
 
 - **Zero Code Generation**: All behavior is dynamically driven by OpenAPI specifications
 - **Semantic CLI**: kubectl-style verb-resource commands (`myapp create user --name "John"`)
+- **Shell Auto-Completion**: Tab completion for commands, resources, flags, and enum values
 - **MCP Server**: Native AI agent integration via Model Context Protocol
 - **Multi-Platform**: Works on Linux, macOS, and Windows
 - **Secure Credentials**: Uses system keyring (Keychain, Credential Manager, Secret Service)
@@ -113,6 +114,8 @@ myapi --profile prod list users
 | `ob install <name> --spec <path>` | Install an API as a CLI application |
 | `ob uninstall <name>` | Remove an installed application |
 | `ob list` | List all installed applications |
+| `ob run <name> [args...]` | Run commands for an installed application |
+| `ob completion [bash\|zsh\|fish]` | Generate shell completion script |
 | `ob version` | Show version information |
 | `ob help` | Show help |
 
@@ -139,6 +142,72 @@ myapi list users --json
 
 # YAML output
 myapi list users --yaml
+```
+
+## Shell Auto-Completion
+
+OpenBridge supports shell auto-completion for bash, zsh, and fish shells. Completion provides suggestions for:
+
+- App names
+- Verbs (list, get, create, update, delete, etc.)
+- Resources (users, servers, etc.)
+- Flag names (based on operation parameters)
+- Flag values (for enum parameters like status, output format, profiles)
+
+### Installing Completion
+
+**Bash:**
+
+```bash
+# Load in current session
+source <(ob completion bash)
+
+# Install permanently (Linux)
+ob completion bash | sudo tee /etc/bash_completion.d/ob
+
+# Install permanently (macOS with Homebrew)
+ob completion bash > /usr/local/etc/bash_completion.d/ob
+```
+
+**Zsh:**
+
+```bash
+# Load in current session
+source <(ob completion zsh)
+
+# Install permanently
+ob completion zsh > "${fpath[1]}/_ob"
+```
+
+**Fish:**
+
+```bash
+# Load in current session
+ob completion fish | source
+
+# Install permanently
+ob completion fish > ~/.config/fish/completions/ob.fish
+```
+
+### Using Completion
+
+Once installed, press Tab to get completion suggestions:
+
+```bash
+# Complete app names
+ob run <TAB>
+
+# Complete verbs for an app
+ob run myapi <TAB>
+
+# Complete resources
+ob run myapi list <TAB>
+
+# Complete flags
+ob run myapi get user --<TAB>
+
+# Complete flag values (for enums)
+ob run myapi list users --output <TAB>
 ```
 
 ## OpenAPI Extensions
@@ -187,6 +256,7 @@ go test -race ./...
 │   ├── request/         # HTTP request building
 │   ├── cli/             # CLI command handling
 │   ├── mcp/             # MCP protocol
+│   ├── completion/      # Shell completion support
 │   └── router/          # Command routing
 ├── internal/
 │   └── testutil/        # Testing utilities

@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/nomagicln/open-bridge/pkg/cli"
+	"github.com/nomagicln/open-bridge/pkg/completion"
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/credential"
 	"github.com/nomagicln/open-bridge/pkg/mcp"
@@ -31,14 +32,15 @@ var (
 
 // Global dependencies
 var (
-	configMgr  *config.Manager
-	specParser *spec.Parser
-	credMgr    *credential.Manager
-	mapper     *semantic.Mapper
-	reqBuilder *request.Builder
-	cliHandler *cli.Handler
-	mcpHandler *mcp.Handler
-	appRouter  *router.Router
+	configMgr        *config.Manager
+	specParser       *spec.Parser
+	credMgr          *credential.Manager
+	mapper           *semantic.Mapper
+	reqBuilder       *request.Builder
+	cliHandler       *cli.Handler
+	mcpHandler       *mcp.Handler
+	appRouter        *router.Router
+	completionHelper *completion.Provider
 )
 
 func init() {
@@ -76,6 +78,9 @@ func init() {
 
 	// Router
 	appRouter = router.NewRouter(cliHandler, mcpHandler, configMgr, specParser)
+
+	// Completion provider
+	completionHelper = completion.NewProvider(configMgr, specParser, mapper)
 }
 
 func main() {
@@ -122,7 +127,7 @@ One Spec, Dual Interface.`,
 		},
 	}
 
-	// Disable the default completion command
+	// Disable the default completion command (we'll use our custom one)
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
 	// Add global flags
@@ -136,6 +141,7 @@ One Spec, Dual Interface.`,
 		newUninstallCmd(),
 		newListCmd(),
 		newRunCmd(),
+		newCompletionCmd(),
 	)
 
 	return rootCmd.Execute()
@@ -235,7 +241,8 @@ This removes the application configuration and any created shims.
 
 Example:
   ob uninstall myapi`,
-		Args: cobra.ExactArgs(1),
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeAppNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			appName := args[0]
 
@@ -370,6 +377,7 @@ Example:
   ob run petstore create pet --name "Fluffy" --status available
   ob run petstore --mcp  # Start MCP server`,
 		Args:               cobra.MinimumNArgs(1),
+		ValidArgsFunction:  completeRunArgs,
 		DisableFlagParsing: true, // Pass all flags to the app handler
 		RunE: func(cmd *cobra.Command, args []string) error {
 			appName := args[0]
@@ -451,4 +459,98 @@ func startMCPServer(appConfig *config.AppConfig, args []string) error {
 	fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s)...\n", appConfig.Name, profileName)
 
 	return server.Serve(context.Background())
+}
+
+// completeAppNames provides completion for installed app names
+func completeAppNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	apps := completionHelper.CompleteAppNames(toComplete)
+	return apps, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeRunArgs provides completion for the run command
+func completeRunArgs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) == 0 {
+		// Complete app name
+		return completeAppNames(cmd, args, toComplete)
+	}
+
+	appName := args[0]
+	if !configMgr.AppExists(appName) {
+		return nil, cobra.ShellCompDirectiveError
+	}
+
+	if len(args) == 1 {
+		// Complete verb
+		verbs := completionHelper.CompleteVerbs(appName, toComplete)
+		return verbs, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	if len(args) == 2 {
+		// Complete resource (filter by verb if possible)
+		verb := args[1]
+		resources := completionHelper.CompleteResourcesForVerb(appName, verb, toComplete)
+		return resources, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	// For args after verb and resource, complete flags
+	if len(args) >= 3 && strings.HasPrefix(toComplete, "-") {
+		verb := args[1]
+		resource := args[2]
+		flags := completionHelper.CompleteFlags(appName, verb, resource, toComplete)
+		return flags, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	return nil, cobra.ShellCompDirectiveNoFileComp
+}
+
+// newCompletionCmd creates the completion subcommand
+func newCompletionCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "completion [bash|zsh|fish]",
+		Short: "Generate shell completion script",
+		Long: `Generate shell completion script for ob.
+
+The completion script can be sourced to enable auto-completion in your shell.
+
+Bash:
+  # Load in current session
+  source <(ob completion bash)
+  
+  # Install permanently (Linux)
+  ob completion bash > /etc/bash_completion.d/ob
+  
+  # Install permanently (macOS)
+  ob completion bash > /usr/local/etc/bash_completion.d/ob
+
+Zsh:
+  # Load in current session
+  source <(ob completion zsh)
+  
+  # Install permanently
+  ob completion zsh > "${fpath[1]}/_ob"
+
+Fish:
+  # Load in current session
+  ob completion fish | source
+  
+  # Install permanently
+  ob completion fish > ~/.config/fish/completions/ob.fish`,
+		ValidArgs:             []string{"bash", "zsh", "fish"},
+		Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+		DisableFlagsInUseLine: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			shell := args[0]
+			switch shell {
+			case "bash":
+				return cmd.Root().GenBashCompletionV2(os.Stdout, true)
+			case "zsh":
+				return cmd.Root().GenZshCompletion(os.Stdout)
+			case "fish":
+				return cmd.Root().GenFishCompletion(os.Stdout, true)
+			}
+			return nil
+		},
+	}
+
+	return cmd
 }
