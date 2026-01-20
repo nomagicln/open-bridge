@@ -1,0 +1,148 @@
+# GoReleaser configuration for OpenBridge
+# Documentation: https://goreleaser.com
+
+version: 2
+
+before:
+  hooks:
+    # Run tests before release
+    - go test -race ./...
+    # Run linter
+    - make lint
+
+builds:
+  - id: ob
+    binary: ob
+    main: ./cmd/ob
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Ignore combinations
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: ob-archive
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    formats:
+      - tar.gz
+      - zip
+    files:
+      - LICENSE
+      - README.md
+      - QUICKSTART.md
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - typo
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: 'New Features'
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: 'Bug Fixes'
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: 'Performance Improvements'
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: 'Refactors'
+      regexp: '^.*?refactor(\([[:word:]]+\))??!?:.+$'
+      order: 3
+    - title: 'Dependencies'
+      regexp: '^.*?build(\(deps\))?!?:.+$'
+      order: 4
+    - title: 'Other Changes'
+      order: 999
+
+release:
+  github:
+    owner: nomagicln
+    name: open-bridge
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## OpenBridge {{.Tag}} 🌉
+
+    Welcome to this new release of OpenBridge!
+
+    ### Installation
+
+    #### macOS/Linux
+    ```bash
+    # Download and extract the appropriate archive
+    curl -LO https://github.com/nomagicln/open-bridge/releases/download/{{.Tag}}/ob_{{.Tag}}_{{.Os}}_{{.Arch}}.tar.gz
+    tar xzf ob_{{.Tag}}_{{.Os}}_{{.Arch}}.tar.gz
+    sudo mv ob /usr/local/bin/
+    ```
+
+    #### Windows
+    Download the `.zip` file, extract it, and add `ob.exe` to your PATH.
+
+    ### Verify Installation
+    ```bash
+    ob --version
+    ```
+
+  footer: |
+    **Full Changelog**: https://github.com/nomagicln/open-bridge/compare/{{.PreviousTag}}...{{.Tag}}
+
+    ---
+    
+    For issues and feedback: https://github.com/nomagicln/open-bridge/issues
+
+# Homebrew tap (optional - uncomment when ready)
+# brews:
+#   - name: ob
+#     repository:
+#       owner: nomagicln
+#       name: homebrew-tap
+#     homepage: https://github.com/nomagicln/open-bridge
+#     description: Universal API runtime engine bridging OpenAPI to CLI/MCP
+#     license: Apache-2.0
+#     install: |
+#       bin.install "ob"
+#     test: |
+#       system "#{bin}/ob --version"
+
+# Snapcraft (optional - for Linux snap packages)
+# snapcrafts:
+#   - name: ob
+#     summary: Universal API runtime engine
+#     description: |
+#       OpenBridge is a universal API runtime engine that bridges OpenAPI 
+#       specifications to semantic CLI commands and MCP server for AI agents.
+#     grade: stable
+#     confinement: strict
+#     license: Apache-2.0
