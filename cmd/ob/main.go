@@ -324,8 +324,8 @@ Example:
 			} else {
 				// Table view
 				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-				fmt.Fprintln(w, "NAME\tDESCRIPTION\tPROFILES\tSHIM")
-				fmt.Fprintln(w, "----\t-----------\t--------\t----")
+				_, _ = fmt.Fprintln(w, "NAME\tDESCRIPTION\tPROFILES\tSHIM")
+				_, _ = fmt.Fprintln(w, "----\t-----------\t--------\t----")
 
 				for _, appName := range apps {
 					info, err := configMgr.GetInstalledAppInfo(appName)
@@ -344,9 +344,9 @@ Example:
 						shimStatus = "Yes"
 					}
 
-					fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", info.Name, desc, info.ProfileCount, shimStatus)
+					_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", info.Name, desc, info.ProfileCount, shimStatus)
 				}
-				w.Flush()
+				_ = w.Flush()
 			}
 
 			return nil

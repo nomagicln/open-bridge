@@ -5,6 +5,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestCredentialType(t *testing.T) {
@@ -486,7 +488,8 @@ func TestListCredentialsIntegration(t *testing.T) {
 	// Store multiple credentials
 	err = m.StoreCredential(appName, "profile1", NewBearerCredential("token1"))
 	require.NoError(t, err)
-	m.StoreCredential(appName, "profile2", NewBearerCredential("token2"))
+	err = m.StoreCredential(appName, "profile2", NewBearerCredential("token2"))
+	require.NoError(t, err)
 
 	// List credentials
 	profiles, err = m.ListCredentials(appName)
@@ -499,8 +502,10 @@ func TestListCredentialsIntegration(t *testing.T) {
 	}
 
 	// Clean up
-	m.DeleteCredential(appName, "profile1")
-	m.DeleteCredential(appName, "profile2")
+	err = m.DeleteCredential(appName, "profile1")
+	require.NoError(t, err)
+	err = m.DeleteCredential(appName, "profile2")
+	require.NoError(t, err)
 }
 
 // Helper to detect CI environment

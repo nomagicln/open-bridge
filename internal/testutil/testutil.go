@@ -30,7 +30,7 @@ func NewMockServer(t *testing.T) *MockServer {
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
 	}))
 
 	return m
@@ -46,7 +46,7 @@ func (m *MockServer) OnJSON(method, path string, statusCode int, response any) {
 	m.handlers[method+" "+path] = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(statusCode)
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}
 }
 

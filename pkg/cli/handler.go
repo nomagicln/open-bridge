@@ -155,7 +155,7 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 		// Format network error with helpful troubleshooting
 		return fmt.Errorf("%s", h.errorFormatter.FormatError(err))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Read response
 	body, err := io.ReadAll(resp.Body)
