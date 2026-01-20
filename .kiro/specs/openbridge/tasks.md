@@ -375,7 +375,7 @@ This implementation plan breaks down the OpenBridge project into discrete, incre
     - Create request/response generators
     - _Requirements: All_
   
-  - [ ] 16.3 Run all property tests
+  - [x] 16.3 Run all property tests
     - Execute all property tests with 100 iterations
     - Fix any failures
     - Document property test results

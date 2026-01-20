@@ -25,6 +25,13 @@ func ExtensiveTestParameters() *gopter.TestParameters {
 	return params
 }
 
+// StandardTestParameters returns test parameters with 100 iterations as specified in Task 16.3.
+func StandardTestParameters() *gopter.TestParameters {
+	params := gopter.DefaultTestParameters()
+	params.MinSuccessfulTests = 100
+	return params
+}
+
 // AlphaString generates random alphabetic strings.
 func AlphaString() gopter.Gen {
 	return gen.AlphaString()
