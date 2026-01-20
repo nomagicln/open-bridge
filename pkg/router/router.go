@@ -63,18 +63,31 @@ func (r *Router) Execute(args []string) error {
 	}
 
 	// Default to CLI mode
-	return r.cliHandler.ExecuteCommand(appName, appConfig, args[1:])
+	commandArgs := args[1:]
+	binaryName := filepath.Base(args[0])
+	binaryName = strings.TrimSuffix(binaryName, filepath.Ext(binaryName))
+	if binaryName == "ob" {
+		if len(args) > 2 {
+			commandArgs = args[2:]
+		} else {
+			commandArgs = []string{}
+		}
+	}
+	return r.cliHandler.ExecuteCommand(appName, appConfig, commandArgs)
 }
 
 // detectAppName determines the app name from args or binary name.
 func (r *Router) detectAppName(args []string) string {
 	// Get binary name
-	binaryPath := os.Args[0]
+	binaryPath := args[0]
 	binaryName := filepath.Base(binaryPath)
 	binaryName = strings.TrimSuffix(binaryName, filepath.Ext(binaryName))
 
 	// If binary is 'ob', first arg is app name or ob command
 	if binaryName == "ob" {
+		if len(args) > 1 {
+			return args[1]
+		}
 		return "ob"
 	}
 
