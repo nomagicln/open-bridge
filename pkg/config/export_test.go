@@ -15,8 +15,12 @@ func TestExportProfileWithOptions(t *testing.T) {
 	m, pm := setupTestApp(t)
 
 	// Set up a profile with various settings
-	pm.SetProfileHeader("default", "X-Custom-Header", "custom-value")
-	pm.SetProfileQueryParam("default", "version", "v2")
+	if err := pm.SetProfileHeader("default", "X-Custom-Header", "custom-value"); err != nil {
+		t.Fatalf("SetProfileHeader failed: %v", err)
+	}
+	if err := pm.SetProfileQueryParam("default", "version", "v2"); err != nil {
+		t.Fatalf("SetProfileQueryParam failed: %v", err)
+	}
 
 	data, err := m.ExportProfileWithOptions("testapp", "default", DefaultExportOptions())
 	if err != nil {
@@ -80,13 +84,23 @@ func TestExportProfileExcludesCredentials(t *testing.T) {
 	m, pm := setupTestApp(t)
 
 	// Add credential-like headers
-	pm.SetProfileHeader("default", "Authorization", "Bearer secret-token")
-	pm.SetProfileHeader("default", "X-API-Key", "secret-api-key")
-	pm.SetProfileHeader("default", "X-Custom-Header", "safe-value")
+	if err := pm.SetProfileHeader("default", "Authorization", "Bearer secret-token"); err != nil {
+		t.Fatalf("SetProfileHeader failed: %v", err)
+	}
+	if err := pm.SetProfileHeader("default", "X-API-Key", "secret-api-key"); err != nil {
+		t.Fatalf("SetProfileHeader failed: %v", err)
+	}
+	if err := pm.SetProfileHeader("default", "X-Custom-Header", "safe-value"); err != nil {
+		t.Fatalf("SetProfileHeader failed: %v", err)
+	}
 
 	// Add credential-like query params
-	pm.SetProfileQueryParam("default", "api_key", "secret")
-	pm.SetProfileQueryParam("default", "version", "v2")
+	if err := pm.SetProfileQueryParam("default", "api_key", "secret"); err != nil {
+		t.Fatalf("SetProfileQueryParam failed: %v", err)
+	}
+	if err := pm.SetProfileQueryParam("default", "version", "v2"); err != nil {
+		t.Fatalf("SetProfileQueryParam failed: %v", err)
+	}
 
 	data, err := m.ExportProfileWithOptions("testapp", "default", DefaultExportOptions())
 	if err != nil {
@@ -94,7 +108,9 @@ func TestExportProfileExcludesCredentials(t *testing.T) {
 	}
 
 	var exported ProfileExportV2
-	yaml.Unmarshal(data, &exported)
+	if err := yaml.Unmarshal(data, &exported); err != nil {
+		t.Fatalf("yaml.Unmarshal failed: %v", err)
+	}
 
 	// Credential headers should be excluded
 	if _, exists := exported.Profile.Headers["Authorization"]; exists {
@@ -125,7 +141,9 @@ func TestExportProfileWithoutOptionalConfigs(t *testing.T) {
 	m, pm := setupTestApp(t)
 
 	// Add safety config
-	pm.ConfigureSafety("default", SafetyConfig{ReadOnlyMode: true})
+	if err := pm.ConfigureSafety("default", SafetyConfig{ReadOnlyMode: true}); err != nil {
+		t.Fatalf("ConfigureSafety failed: %v", err)
+	}
 
 	opts := ExportOptions{
 		Format:        ExportFormatYAML,
@@ -140,7 +158,9 @@ func TestExportProfileWithoutOptionalConfigs(t *testing.T) {
 	}
 
 	var exported ProfileExportV2
-	yaml.Unmarshal(data, &exported)
+	if err := yaml.Unmarshal(data, &exported); err != nil {
+		t.Fatalf("yaml.Unmarshal failed: %v", err)
+	}
 
 	if exported.Profile.SafetyConfig != nil {
 		t.Error("safety config should be excluded when IncludeSafety is false")
@@ -317,7 +337,9 @@ profile:
   base_url: https://staging1.example.com
 `
 
-	m.ImportProfileWithOptions("testapp", []byte(importData), ImportOptions{})
+	if err := m.ImportProfileWithOptions("testapp", []byte(importData), ImportOptions{}); err != nil {
+		t.Fatalf("ImportProfileWithOptions failed: %v", err)
+	}
 
 	// Second import without overwrite should fail
 	importData2 := `
@@ -422,7 +444,9 @@ func TestExportProfileToFile(t *testing.T) {
 	// Read and verify content
 	data, _ := os.ReadFile(filePath)
 	var exported ProfileExportV2
-	yaml.Unmarshal(data, &exported)
+	if err := yaml.Unmarshal(data, &exported); err != nil {
+		t.Fatalf("yaml.Unmarshal failed: %v", err)
+	}
 
 	if exported.ProfileName != "default" {
 		t.Error("expected exported profile name to be 'default'")
@@ -442,7 +466,9 @@ profile_name: fromfile
 profile:
   base_url: https://fromfile.example.com
 `
-	os.WriteFile(filePath, []byte(importData), 0644)
+	if err := os.WriteFile(filePath, []byte(importData), 0644); err != nil {
+		t.Fatalf("os.WriteFile failed: %v", err)
+	}
 
 	err := m.ImportProfileFromFile("testapp", filePath, ImportOptions{})
 	if err != nil {
@@ -459,8 +485,12 @@ func TestExportAllProfiles(t *testing.T) {
 	m, pm := setupTestApp(t)
 
 	// Create additional profiles
-	pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
-	pm.CreateProfile("prod", ProfileOptions{BaseURL: "https://prod.example.com"})
+	if err := pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"}); err != nil {
+		t.Fatalf("CreateProfile failed: %v", err)
+	}
+	if err := pm.CreateProfile("prod", ProfileOptions{BaseURL: "https://prod.example.com"}); err != nil {
+		t.Fatalf("CreateProfile failed: %v", err)
+	}
 
 	exports, err := m.ExportAllProfiles("testapp", DefaultExportOptions())
 	if err != nil {
@@ -487,7 +517,9 @@ func TestExportAllProfiles(t *testing.T) {
 func TestExportAllProfilesAsSingle(t *testing.T) {
 	m, pm := setupTestApp(t)
 
-	pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
+	if err := pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"}); err != nil {
+		t.Fatalf("CreateProfile failed: %v", err)
+	}
 
 	data, err := m.ExportAllProfilesAsSingle("testapp", DefaultExportOptions())
 	if err != nil {
@@ -495,7 +527,9 @@ func TestExportAllProfilesAsSingle(t *testing.T) {
 	}
 
 	var bulk BulkExport
-	yaml.Unmarshal(data, &bulk)
+	if err := yaml.Unmarshal(data, &bulk); err != nil {
+		t.Fatalf("yaml.Unmarshal failed: %v", err)
+	}
 
 	if bulk.Version != "2.0" {
 		t.Errorf("expected version '2.0', got '%s'", bulk.Version)
@@ -589,14 +623,18 @@ func TestExportWithTimeout(t *testing.T) {
 	m, pm := setupTestApp(t)
 
 	// Update profile with timeout
-	pm.UpdateProfile("default", ProfileOptions{
+	if err := pm.UpdateProfile("default", ProfileOptions{
 		Timeout: 60 * time.Second,
-	})
+	}); err != nil {
+		t.Fatalf("UpdateProfile failed: %v", err)
+	}
 
 	data, _ := m.ExportProfileWithOptions("testapp", "default", DefaultExportOptions())
 
 	var exported ProfileExportV2
-	yaml.Unmarshal(data, &exported)
+	if err := yaml.Unmarshal(data, &exported); err != nil {
+		t.Fatalf("yaml.Unmarshal failed: %v", err)
+	}
 
 	if exported.Profile.Timeout != "1m0s" {
 		t.Errorf("expected timeout '1m0s', got '%s'", exported.Profile.Timeout)
@@ -614,7 +652,9 @@ profile:
   timeout: "2m30s"
 `
 
-	m.ImportProfileWithOptions("testapp", []byte(importData), ImportOptions{})
+	if err := m.ImportProfileWithOptions("testapp", []byte(importData), ImportOptions{}); err != nil {
+		t.Fatalf("ImportProfileWithOptions failed: %v", err)
+	}
 
 	config, _ := m.GetAppConfig("testapp")
 	profile := config.Profiles["withtimeout"]

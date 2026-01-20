@@ -155,7 +155,7 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 		// Format network error with helpful troubleshooting
 		return fmt.Errorf("%s", h.errorFormatter.FormatError(err))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Read response
 	body, err := io.ReadAll(resp.Body)
@@ -369,7 +369,7 @@ func (h *Handler) formatAsTable(data any) string {
 // showInvalidSyntaxError displays usage help for invalid command syntax.
 func (h *Handler) showInvalidSyntaxError(appName string) error {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Error: Invalid command syntax.\n\n"))
+	sb.WriteString("Error: Invalid command syntax.\n\n")
 	sb.WriteString(fmt.Sprintf("Usage: %s <verb> <resource> [flags]\n\n", appName))
 	sb.WriteString("Examples:\n")
 	sb.WriteString(fmt.Sprintf("  %s create user --name \"John\" --email \"john@example.com\"\n", appName))

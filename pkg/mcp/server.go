@@ -122,5 +122,5 @@ func (s *Server) writeError(code, message string) {
 		"id": nil,
 	}
 	data, _ := json.Marshal(errResp)
-	fmt.Fprintf(s.out, "%s\n", data)
+	_, _ = fmt.Fprintf(s.out, "%s\n", data)
 }

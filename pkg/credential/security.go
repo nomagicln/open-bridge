@@ -50,7 +50,7 @@ func (p *SecurePrompter) PromptCredential(authType string) (*Credential, error) 
 
 // PromptBearerToken prompts for a bearer token.
 func (p *SecurePrompter) PromptBearerToken() (*Credential, error) {
-	fmt.Fprint(p.writer, "Enter bearer token: ")
+	_, _ = fmt.Fprint(p.writer, "Enter bearer token: ")
 	token, err := p.readSecureInput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read token: %w", err)
@@ -65,7 +65,7 @@ func (p *SecurePrompter) PromptBearerToken() (*Credential, error) {
 
 // PromptAPIKey prompts for an API key.
 func (p *SecurePrompter) PromptAPIKey() (*Credential, error) {
-	fmt.Fprint(p.writer, "Enter API key: ")
+	_, _ = fmt.Fprint(p.writer, "Enter API key: ")
 	apiKey, err := p.readSecureInput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read API key: %w", err)
@@ -80,7 +80,7 @@ func (p *SecurePrompter) PromptAPIKey() (*Credential, error) {
 
 // PromptBasicAuth prompts for username and password.
 func (p *SecurePrompter) PromptBasicAuth() (*Credential, error) {
-	fmt.Fprint(p.writer, "Username: ")
+	_, _ = fmt.Fprint(p.writer, "Username: ")
 	username, err := p.readInput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read username: %w", err)
@@ -90,7 +90,7 @@ func (p *SecurePrompter) PromptBasicAuth() (*Credential, error) {
 		return nil, fmt.Errorf("username cannot be empty")
 	}
 
-	fmt.Fprint(p.writer, "Password: ")
+	_, _ = fmt.Fprint(p.writer, "Password: ")
 	password, err := p.readSecureInput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read password: %w", err)
@@ -105,13 +105,13 @@ func (p *SecurePrompter) PromptBasicAuth() (*Credential, error) {
 
 // PromptToken prompts for a single token/secret securely.
 func (p *SecurePrompter) PromptToken(prompt string) (string, error) {
-	fmt.Fprint(p.writer, prompt)
+	_, _ = fmt.Fprint(p.writer, prompt)
 	return p.readSecureInput()
 }
 
 // PromptString prompts for a non-secret string.
 func (p *SecurePrompter) PromptString(prompt string) (string, error) {
-	fmt.Fprint(p.writer, prompt)
+	_, _ = fmt.Fprint(p.writer, prompt)
 	return p.readInput()
 }
 
@@ -122,7 +122,7 @@ func (p *SecurePrompter) PromptConfirm(prompt string, defaultYes bool) (bool, er
 		suffix = " [Y/n]: "
 	}
 
-	fmt.Fprint(p.writer, prompt+suffix)
+	_, _ = fmt.Fprint(p.writer, prompt+suffix)
 
 	input, err := p.readInput()
 	if err != nil {
@@ -143,7 +143,7 @@ func (p *SecurePrompter) readSecureInput() (string, error) {
 	if f, ok := p.reader.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		// Read password without echoing
 		password, err := term.ReadPassword(int(f.Fd()))
-		fmt.Fprintln(p.writer) // Print newline after password input
+		_, _ = fmt.Fprintln(p.writer) // Print newline after password input
 		if err != nil {
 			return "", err
 		}
@@ -352,10 +352,10 @@ func looksLikeCredential(value string) bool {
 	isBase64Like := true
 	isHexLike := true
 	for _, c := range value {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '+' && c != '/' && c != '=' {
 			isBase64Like = false
 		}
-		if !((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || (c >= '0' && c <= '9')) {
+		if (c < 'a' || c > 'f') && (c < 'A' || c > 'F') && (c < '0' || c > '9') {
 			isHexLike = false
 		}
 	}
@@ -449,7 +449,7 @@ func DisableEcho(fd int) (restore func(), err error) {
 	}
 
 	return func() {
-		term.Restore(fd, oldState)
+		_ = term.Restore(fd, oldState)
 	}, nil
 }
 
@@ -478,7 +478,7 @@ func MaskInput(reader io.Reader, writer io.Writer) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	fmt.Fprintln(writer) // Print newline
+	_, _ = fmt.Fprintln(writer) // Print newline
 	return string(password), nil
 }
 
@@ -531,12 +531,12 @@ func (e *EnvironmentCredentialSource) GetCredential(authType string) (*Credentia
 // ClearEnvironmentCredentials unsets credential environment variables.
 func (e *EnvironmentCredentialSource) ClearEnvironmentCredentials() {
 	if e.tokenEnvVar != "" {
-		os.Unsetenv(e.tokenEnvVar)
+		_ = os.Unsetenv(e.tokenEnvVar)
 	}
 	if e.usernameEnvVar != "" {
-		os.Unsetenv(e.usernameEnvVar)
+		_ = os.Unsetenv(e.usernameEnvVar)
 	}
 	if e.passwordEnvVar != "" {
-		os.Unsetenv(e.passwordEnvVar)
+		_ = os.Unsetenv(e.passwordEnvVar)
 	}
 }

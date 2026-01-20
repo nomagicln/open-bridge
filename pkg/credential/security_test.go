@@ -192,7 +192,6 @@ func TestIsKeyringUnavailable(t *testing.T) {
 		t.Run(tt.errStr, func(t *testing.T) {
 			var err error
 			if tt.errStr != "" {
-				err = &KeyringError{Operation: "test", Cause: nil}
 				// Create a simple error for testing
 				err = stringError(tt.errStr)
 			}

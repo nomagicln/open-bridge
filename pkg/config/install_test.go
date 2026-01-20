@@ -146,7 +146,9 @@ servers:
   - url: https://api.example.com
 paths: {}
 `
-	os.WriteFile(specPath, []byte(specContent), 0644)
+	if err := os.WriteFile(specPath, []byte(specContent), 0644); err != nil {
+		t.Fatalf("os.WriteFile failed: %v", err)
+	}
 
 	// Install first time
 	_, err = m.InstallApp("testapi", InstallOptions{SpecSource: specPath})
@@ -218,7 +220,9 @@ servers:
   - url: https://api.example.com
 paths: {}
 `
-	os.WriteFile(specPath, []byte(specContent), 0644)
+	if err := os.WriteFile(specPath, []byte(specContent), 0644); err != nil {
+		t.Fatalf("os.WriteFile failed: %v", err)
+	}
 
 	// Test with explicitly provided options (non-interactive)
 	// This simulates what would happen after interactive prompts
@@ -268,7 +272,9 @@ servers:
   - url: https://api.example.com
 paths: {}
 `
-	os.WriteFile(specPath, []byte(specContent), 0644)
+	if err := os.WriteFile(specPath, []byte(specContent), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	// Test prompting for spec only (provide other options)
 	input := specPath + "\n" // just the spec path
@@ -322,7 +328,9 @@ servers:
   - url: https://api.example.com
 paths: {}
 `
-	os.WriteFile(specPath, []byte(specContent), 0644)
+	if err := os.WriteFile(specPath, []byte(specContent), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	_, err = m.InstallApp("testapi", InstallOptions{SpecSource: specPath})
 	if err != nil {
@@ -431,7 +439,9 @@ paths:
         "200":
           description: OK
 `
-	os.WriteFile(specPath, []byte(specContent), 0644)
+	if err := os.WriteFile(specPath, []byte(specContent), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	_, err = m.InstallApp("infotest", InstallOptions{
 		SpecSource:  specPath,
@@ -485,7 +495,9 @@ servers:
   - url: https://api.example.com
 paths: {}
 `
-	os.WriteFile(specPath, []byte(specContent), 0644)
+	if err := os.WriteFile(specPath, []byte(specContent), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	_, err = m.InstallApp("updatetest", InstallOptions{
 		SpecSource:  specPath,

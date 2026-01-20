@@ -207,10 +207,7 @@ func NormalizeName(name string) string {
 func normalizeForCLI(name string) string {
 	// Convert camelCase/PascalCase to lowercase with no separators
 	var result strings.Builder
-	for i, r := range name {
-		if unicode.IsUpper(r) && i > 0 {
-			// Insert nothing for camelCase, just lowercase
-		}
+	for _, r := range name {
 		result.WriteRune(unicode.ToLower(r))
 	}
 	return result.String()

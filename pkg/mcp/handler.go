@@ -261,7 +261,7 @@ func (h *Handler) handleCallTool(req *Request) *Response {
 			},
 		}
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	// Read response body
 	bodyBytes, err := io.ReadAll(httpResp.Body)

@@ -164,7 +164,7 @@ func cleanProfileForExport(profile Profile, opts ExportOptions) ExportedProfile 
 
 	// Timeout
 	if profile.Timeout.Duration > 0 {
-		exported.Timeout = profile.Timeout.Duration.String()
+		exported.Timeout = profile.Timeout.String()
 	}
 
 	// Optional configs

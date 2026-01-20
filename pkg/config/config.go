@@ -90,7 +90,7 @@ type Duration struct {
 
 // MarshalYAML implements yaml.Marshaler.
 func (d Duration) MarshalYAML() (interface{}, error) {
-	return d.Duration.String(), nil
+	return d.String(), nil
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler.
@@ -373,7 +373,7 @@ func (m *Manager) SaveAppConfig(config *AppConfig) error {
 	}
 
 	if err := os.Rename(tmpPath, configPath); err != nil {
-		os.Remove(tmpPath) // Clean up temp file
+		_ = os.Remove(tmpPath) // Clean up temp file
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
