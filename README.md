@@ -1,5 +1,9 @@
 # OpenBridge
 
+<p align="center">
+  <img src="docs/images/logo.jpeg" alt="OpenBridge Logo" width="600">
+</p>
+
 [![CI](https://github.com/nomagicln/open-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/nomagicln/open-bridge/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/nomagicln/open-bridge)](https://goreportcard.com/report/github.com/nomagicln/open-bridge)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)

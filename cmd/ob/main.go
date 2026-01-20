@@ -277,8 +277,8 @@ Example:
 						}
 					}
 				case "basic":
-					user, _ := opts.AuthParams["username"]
-					pass, _ := opts.AuthParams["password"]
+					user := opts.AuthParams["username"]
+					pass := opts.AuthParams["password"]
 					if user != "" || pass != "" {
 						cred = credential.NewBasicCredential(user, pass)
 					}
