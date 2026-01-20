@@ -12,6 +12,11 @@ import (
 	"github.com/nomagicln/open-bridge/pkg/mcp"
 )
 
+const (
+	// mcpListToolsRequest is a standard JSON-RPC request for listing MCP tools
+	mcpListToolsRequest = `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+)
+
 // BenchmarkColdStart measures the cold start performance of the CLI
 func BenchmarkColdStart(b *testing.B) {
 	// Build the binary first
@@ -136,7 +141,7 @@ func BenchmarkMCPListTools(b *testing.B) {
 	handler := mcp.NewHandler(nil, nil, nil)
 	
 	// Create a list_tools request
-	request := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	request := []byte(mcpListToolsRequest)
 	
 	b.ResetTimer()
 	
@@ -167,7 +172,7 @@ func TestMCPListToolsPerformance(t *testing.T) {
 	handler := mcp.NewHandler(nil, nil, nil)
 	
 	// Create a list_tools request
-	request := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	request := []byte(mcpListToolsRequest)
 	
 	const iterations = 100
 	var total time.Duration
@@ -233,7 +238,7 @@ func TestFullMCPServerPerformance(t *testing.T) {
 		}
 		
 		// Measure list_tools
-		request := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+		request := []byte(mcpListToolsRequest)
 		listToolsStart := time.Now()
 		resp, err := handler.HandleRequest(request)
 		listToolsElapsed := time.Since(listToolsStart)
