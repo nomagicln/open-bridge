@@ -40,14 +40,8 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
-      - name: Clean test artifacts
-        run: |
-          if [ -f coverage.out ]; then rm coverage.out; fi
-          if [ -d .out ]; then rm -rf .out; fi
-        shell: bash
-
       - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out ./...
+        run: go test -v -race -coverprofile="coverage.out" ./...
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
