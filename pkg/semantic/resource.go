@@ -69,7 +69,7 @@ func (e *ResourceExtractor) Extract(path string, operation *openapi3.Operation) 
 				return result
 			}
 			// Handle JSON encoded extension (the library sometimes returns map)
-			if m, ok := ext.(map[string]interface{}); ok {
+			if m, ok := ext.(map[string]any); ok {
 				if name, ok := m["name"].(string); ok {
 					result.Resource = name
 				}

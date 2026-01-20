@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -292,18 +293,7 @@ func (b *Builder) constructObject(params map[string]any, schema *openapi3.Schema
 
 		// Check if we have a value for this property
 		if val, ok := params[propName]; ok {
-			// Handle nested objects
-			if propSchema.Type != nil && propSchema.Type.Is("object") {
-				if nestedMap, ok := val.(map[string]any); ok {
-					result[propName] = b.constructObject(nestedMap, propSchema)
-				} else {
-					result[propName] = val
-				}
-			} else if propSchema.Type != nil && propSchema.Type.Is("array") {
-				result[propName] = b.constructArrayValue(val, propSchema)
-			} else {
-				result[propName] = b.convertToSchemaType(val, propSchema)
-			}
+			result[propName] = b.convertToSchemaType(val, propSchema)
 		}
 	}
 
@@ -320,23 +310,7 @@ func (b *Builder) constructObject(params map[string]any, schema *openapi3.Schema
 // constructArray constructs an array from parameters according to schema.
 // This is called when the top-level schema is an array type.
 func (b *Builder) constructArray(params any, schema *openapi3.Schema) []any {
-	// If params is already an array-like, use it
-	switch v := params.(type) {
-	case []any:
-		return v
-	case []string:
-		result := make([]any, len(v))
-		for i, s := range v {
-			result[i] = s
-		}
-		return result
-	case map[string]any:
-		// If it's a map, wrap it in an array
-		return []any{v}
-	default:
-		// Otherwise, wrap in array
-		return []any{params}
-	}
+	return b.constructArrayValue(params, schema)
 }
 
 // constructArrayValue handles array values from flags.
@@ -345,58 +319,119 @@ func (b *Builder) constructArray(params any, schema *openapi3.Schema) []any {
 // - Comma-separated: --tags "admin,developer"
 // - Array values: ["admin", "developer"]
 func (b *Builder) constructArrayValue(val any, schema *openapi3.Schema) []any {
+	var rawItems []any
 	switch v := val.(type) {
 	case []any:
-		// Already an array
-		return v
+		rawItems = v
 	case []string:
-		// Convert string array to any array
-		result := make([]any, len(v))
+		rawItems = make([]any, len(v))
 		for i, s := range v {
-			result[i] = s
+			rawItems[i] = s
 		}
-		return result
 	case string:
 		// Check for comma-separated values
 		if strings.Contains(v, ",") {
 			parts := strings.Split(v, ",")
-			result := make([]any, len(parts))
+			rawItems = make([]any, len(parts))
 			for i, part := range parts {
-				result[i] = strings.TrimSpace(part)
+				rawItems[i] = strings.TrimSpace(part)
 			}
-			return result
+		} else {
+			// Single value
+			rawItems = []any{v}
 		}
-		// Single value
-		return []any{v}
 	default:
 		// Wrap in array
-		return []any{v}
+		rawItems = []any{val}
 	}
+
+	// If we have a schema for items, convert each item
+	if schema != nil && schema.Items != nil && schema.Items.Value != nil {
+		itemSchema := schema.Items.Value
+		result := make([]any, len(rawItems))
+		for i, item := range rawItems {
+			result[i] = b.convertToSchemaType(item, itemSchema)
+		}
+		return result
+	}
+
+	return rawItems
 }
 
 // convertToSchemaType converts a value to match the schema type.
 func (b *Builder) convertToSchemaType(val any, schema *openapi3.Schema) any {
-	// For now, return as-is
-	// Future enhancement: type coercion based on schema.Type
+	if schema == nil || schema.Type == nil {
+		return val
+	}
+
+	// We primarily handle string conversion here because CLI args are strings
+	strVal, isString := val.(string)
+	if !isString {
+		// If it's not a string, we might still need handling for arrays that came in as string slices
+		if schema.Type.Is("array") {
+			// If it's not already an array, try to convert
+			// But for now, array inputs are handled by constructArrayValue or slices
+			return val
+		}
+		// Return as is for other types, assuming they are already correct
+		return val
+	}
+
+	if schema.Type.Is("integer") {
+		if v, err := strconv.Atoi(strVal); err == nil {
+			return v
+		}
+		// If conversions fail, return original value and let validation catch it
+	} else if schema.Type.Is("number") {
+		if v, err := strconv.ParseFloat(strVal, 64); err == nil {
+			return v
+		}
+	} else if schema.Type.Is("boolean") {
+		if v, err := strconv.ParseBool(strVal); err == nil {
+			return v
+		}
+	} else if schema.Type.Is("object") {
+		// Try to parse JSON string to map
+		var m map[string]any
+		if err := json.Unmarshal([]byte(strVal), &m); err == nil {
+			return m
+		}
+	} else if schema.Type.Is("array") {
+		// This case might not be hit if flags are already parsed as slices,
+		// but if a single string was passed to an array type (e.g. env var or single flag)
+		// we treat it as a single-item array or comma-separated
+		return b.constructArrayValue(strVal, schema)
+	}
+
 	return val
 }
 
 // ValidateParams validates parameters against the operation schema.
 func (b *Builder) ValidateParams(params map[string]any, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) error {
 	// Check required parameters
+	// Check required parameters
 	for _, paramRef := range opParams {
 		param := paramRef.Value
-		if param.Required {
-			if _, ok := params[param.Name]; !ok {
+
+		// Get parameter value
+		val, exists := params[param.Name]
+		if !exists {
+			if param.Required {
 				return fmt.Errorf("required parameter '%s' is missing", param.Name)
 			}
+			continue
 		}
 
-		// Validate parameter type if value is provided
-		if val, ok := params[param.Name]; ok {
-			if err := b.validateParameterType(param.Name, val, param.Schema); err != nil {
-				return err
-			}
+		// Convert value if needed
+		if param.Schema != nil && param.Schema.Value != nil {
+			convertedVal := b.convertToSchemaType(val, param.Schema.Value)
+			params[param.Name] = convertedVal // Update with converted value
+			val = convertedVal
+		}
+
+		// Validate parameter type
+		if err := b.validateParameterType(param.Name, val, param.Schema); err != nil {
+			return err
 		}
 	}
 

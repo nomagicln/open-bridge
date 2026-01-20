@@ -11,6 +11,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/nomagicln/open-bridge/pkg/cli"
 	"github.com/nomagicln/open-bridge/pkg/completion"
 	"github.com/nomagicln/open-bridge/pkg/config"
@@ -20,6 +21,7 @@ import (
 	"github.com/nomagicln/open-bridge/pkg/router"
 	"github.com/nomagicln/open-bridge/pkg/semantic"
 	"github.com/nomagicln/open-bridge/pkg/spec"
+	installTui "github.com/nomagicln/open-bridge/pkg/tui/install"
 	"github.com/spf13/cobra"
 )
 
@@ -107,7 +109,7 @@ func Execute() error {
 		Short: "OpenBridge - Universal API Runtime Engine",
 		Long: `OpenBridge is a universal API runtime engine that bridges OpenAPI specifications
 to two distinct interfaces:
-  - A semantic CLI for human users (kubectl-style)
+  - A semantic CLI for human users
   - An MCP server for AI agents
 
 One Spec, Dual Interface.`,
@@ -174,11 +176,6 @@ Example:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			appName := args[0]
 
-			// If no spec and not interactive, require spec
-			if specSource == "" && !interactive {
-				return fmt.Errorf("--spec flag is required (or use -i for interactive mode)")
-			}
-
 			opts := config.InstallOptions{
 				SpecSource:  specSource,
 				BaseURL:     baseURL,
@@ -191,9 +188,110 @@ Example:
 				Writer:      os.Stdout,
 			}
 
+			// If interactive mode, run TUI wizard
+			if interactive {
+				// Initialize model with any CLI args provided
+				// Pass AppExists check
+				appExists := configMgr.AppExists(appName)
+
+				// Load existing config to use as defaults if app exists
+				if appExists {
+					existingConfig, err := configMgr.GetAppConfig(appName)
+					if err == nil {
+						// Merge existing config into options if options are empty
+						if opts.SpecSource == "" && len(opts.SpecSources) == 0 {
+							opts.SpecSource = existingConfig.SpecSource
+							opts.SpecSources = existingConfig.SpecSources
+						}
+						if opts.Description == "" {
+							opts.Description = existingConfig.Description
+						}
+						if profile, ok := existingConfig.Profiles[existingConfig.DefaultProfile]; ok {
+							if opts.BaseURL == "" {
+								opts.BaseURL = profile.BaseURL
+							}
+							if opts.AuthType == "" {
+								opts.AuthType = profile.Auth.Type
+							}
+						}
+					}
+				}
+
+				m := installTui.NewModel(appName, opts, appExists)
+				p := tea.NewProgram(m)
+
+				// Run TUI
+				finalModel, err := p.Run()
+				if err != nil {
+					return fmt.Errorf("wizard failed: %w", err)
+				}
+
+				// Check result
+				model := finalModel.(installTui.Model)
+				if model.Result() == nil {
+					// User aborted
+					return fmt.Errorf("installation aborted")
+				}
+
+				// Use configured options
+				opts = *model.Result()
+
+				// Disable interactive flag for core logic since we gathered everything
+				opts.Interactive = false
+			} else {
+				// Non-interactive check: spec is required
+				if specSource == "" {
+					return fmt.Errorf("--spec flag is required (or use -i for interactive mode)")
+				}
+			}
+
 			result, err := configMgr.InstallApp(appName, opts)
 			if err != nil {
 				return fmt.Errorf("installation failed: %w", err)
+			}
+
+			// Store credentials if provided
+			if len(opts.AuthParams) > 0 {
+				var cred *credential.Credential
+				switch opts.AuthType {
+				case "bearer":
+					if token, ok := opts.AuthParams["token"]; ok && token != "" {
+						cred = credential.NewBearerCredential(token)
+					}
+				case "api_key":
+					if token, ok := opts.AuthParams["token"]; ok && token != "" {
+						cred = credential.NewAPIKeyCredential(token)
+					}
+					// Update KeyName in config if provided
+					if keyName, ok := opts.AuthParams["key_name"]; ok && keyName != "" {
+						appConfig, err := configMgr.GetAppConfig(appName)
+						if err == nil {
+							// Update default profile
+							if profile, ok := appConfig.Profiles["default"]; ok {
+								profile.Auth.KeyName = keyName
+								appConfig.Profiles["default"] = profile
+								if err := configMgr.SaveAppConfig(appConfig); err != nil {
+									fmt.Printf("Warning: failed to save API key name: %v\n", err)
+								}
+							}
+						}
+					}
+				case "basic":
+					user, _ := opts.AuthParams["username"]
+					pass, _ := opts.AuthParams["password"]
+					if user != "" || pass != "" {
+						cred = credential.NewBasicCredential(user, pass)
+					}
+				}
+
+				if cred != nil && credMgr != nil {
+					// Default profile is always "default" for new install
+					if err := credMgr.StoreCredential(result.AppName, "default", cred); err != nil {
+						fmt.Printf("Warning: failed to store credentials: %v\n", err)
+					} else {
+						fmt.Printf("  Credentials stored securely in %s\n", credMgr.Backend())
+					}
+				}
 			}
 
 			// Print success message
@@ -433,9 +531,13 @@ func startMCPServer(appConfig *config.AppConfig, args []string) error {
 		return fmt.Errorf("failed to load spec: %w", err)
 	}
 
-	// Determine profile
+	// Parse flags
 	profileName := ""
+	transport := "stdio"
+	port := "8080"
+
 	for i, arg := range args {
+		// Profile
 		if arg == "--profile" || arg == "-p" {
 			if i+1 < len(args) {
 				profileName = args[i+1]
@@ -444,7 +546,28 @@ func startMCPServer(appConfig *config.AppConfig, args []string) error {
 		if strings.HasPrefix(arg, "--profile=") {
 			profileName = strings.TrimPrefix(arg, "--profile=")
 		}
+
+		// Transport
+		if arg == "--transport" {
+			if i+1 < len(args) {
+				transport = args[i+1]
+			}
+		}
+		if strings.HasPrefix(arg, "--transport=") {
+			transport = strings.TrimPrefix(arg, "--transport=")
+		}
+
+		// Port
+		if arg == "--port" {
+			if i+1 < len(args) {
+				port = args[i+1]
+			}
+		}
+		if strings.HasPrefix(arg, "--port=") {
+			port = strings.TrimPrefix(arg, "--port=")
+		}
 	}
+
 	if profileName == "" {
 		profileName = appConfig.DefaultProfile
 	}
@@ -453,13 +576,23 @@ func startMCPServer(appConfig *config.AppConfig, args []string) error {
 	mcpHandler.SetSpec(specDoc)
 	mcpHandler.SetAppConfig(appConfig, profileName)
 
-	// Start server
-	server := mcp.NewServer(mcpHandler, os.Stdin, os.Stdout)
+	// Retrieve profile for safety config
+	profile, ok := appConfig.GetProfile(profileName)
+	if !ok {
+		return fmt.Errorf("profile '%s' not found", profileName)
+	}
 
-	// Use stderr for logs since stdout is used for JSON-RPC
-	fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s)...\n", appConfig.Name, profileName)
+	// Create server using factory
+	factory := mcp.NewServerFactory(appConfig.Name, version)
+	server := factory.CreateServer()
 
-	return server.Serve(context.Background())
+	// Register tools
+	mcpHandler.Register(server, &profile.SafetyConfig)
+
+	// Run server
+	fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s) via %s...\n", appConfig.Name, profileName, transport)
+
+	return factory.RunServer(context.Background(), server, transport, port)
 }
 
 // completeAppNames provides completion for installed app names
@@ -481,23 +614,23 @@ func completeRunArgs(cmd *cobra.Command, args []string, toComplete string) ([]st
 	}
 
 	if len(args) == 1 {
-		// Complete verb
-		verbs := completionHelper.CompleteVerbs(appName, toComplete)
-		return verbs, cobra.ShellCompDirectiveNoFileComp
-	}
-
-	if len(args) == 2 {
-		// Complete resource (filter by verb if possible)
-		verb := args[1]
-		resources := completionHelper.CompleteResourcesForVerb(appName, verb, toComplete)
+		// Complete resource
+		resources := completionHelper.CompleteResources(appName, toComplete)
 		return resources, cobra.ShellCompDirectiveNoFileComp
 	}
 
-	// For args after verb and resource, complete flags
+	if len(args) == 2 {
+		// Complete verb (filter by resource if possible)
+		resource := args[1]
+		verbs := completionHelper.CompleteVerbsForResource(appName, resource, toComplete)
+		return verbs, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	// For args after resource and verb, complete flags
 	if len(args) >= 3 && strings.HasPrefix(toComplete, "-") {
-		verb := args[1]
-		resource := args[2]
-		flags := completionHelper.CompleteFlags(appName, verb, resource, toComplete)
+		resource := args[1]
+		verb := args[2]
+		flags := completionHelper.CompleteFlags(appName, resource, verb, toComplete)
 		return flags, cobra.ShellCompDirectiveNoFileComp
 	}
 

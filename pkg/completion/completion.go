@@ -121,8 +121,35 @@ func (p *Provider) CompleteResourcesForVerb(appName, verb, prefix string) []stri
 	return resources
 }
 
-// CompleteFlags returns available flag names for a specific verb+resource combination.
-func (p *Provider) CompleteFlags(appName, verb, resource, prefix string) []string {
+// CompleteVerbsForResource returns available verbs for a given resource.
+func (p *Provider) CompleteVerbsForResource(appName, resource, prefix string) []string {
+	specDoc, err := p.loadSpec(appName)
+	if err != nil {
+		return nil
+	}
+
+	tree := p.mapper.BuildCommandTree(specDoc)
+
+	// Find resource
+	res, ok := tree.RootResources[resource]
+	if !ok {
+		return nil
+	}
+
+	// Collect verbs for this resource
+	verbs := make([]string, 0, len(res.Operations))
+	for verb := range res.Operations {
+		if prefix == "" || strings.HasPrefix(verb, prefix) {
+			verbs = append(verbs, verb)
+		}
+	}
+	sort.Strings(verbs)
+
+	return verbs
+}
+
+// CompleteFlags returns available flag names for a specific resource+verb combination.
+func (p *Provider) CompleteFlags(appName, resource, verb, prefix string) []string {
 	specDoc, err := p.loadSpec(appName)
 	if err != nil {
 		return nil
@@ -209,7 +236,7 @@ func (p *Provider) CompleteFlags(appName, verb, resource, prefix string) []strin
 }
 
 // CompleteFlagValues returns possible values for a flag.
-func (p *Provider) CompleteFlagValues(appName, verb, resource, flagName string) []string {
+func (p *Provider) CompleteFlagValues(appName, resource, verb, flagName string) []string {
 	specDoc, err := p.loadSpec(appName)
 	if err != nil {
 		return nil

@@ -291,7 +291,7 @@ paths: {}
 	}
 
 	// We need to test promptForMissingInfo directly
-	opts, err = m.promptForMissingInfo("testapi", opts)
+	opts, err = m.promptForMissingInfo(opts)
 	if err != nil {
 		t.Fatalf("promptForMissingInfo failed: %v", err)
 	}

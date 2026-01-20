@@ -44,11 +44,11 @@ func (r *Router) Execute(args []string) error {
 	}
 
 	// Detect app name from invocation
-	appName := r.detectAppName(args)
+	appName := r.detectAppName()
 
 	// Handle ob-level commands
 	if appName == "ob" {
-		return r.handleOBCommand(args)
+		return r.handleOBCommand()
 	}
 
 	// Load app configuration
@@ -67,7 +67,7 @@ func (r *Router) Execute(args []string) error {
 }
 
 // detectAppName determines the app name from args or binary name.
-func (r *Router) detectAppName(args []string) string {
+func (r *Router) detectAppName() string {
 	// Get binary name
 	binaryPath := os.Args[0]
 	binaryName := filepath.Base(binaryPath)
@@ -108,7 +108,7 @@ func (r *Router) detectProfile(args []string) string {
 }
 
 // handleOBCommand handles ob-level commands (install, uninstall, list, etc.)
-func (r *Router) handleOBCommand(args []string) error {
+func (r *Router) handleOBCommand() error {
 	// This is handled by cobra in main.go
 	// This method is a fallback for direct router usage
 	return fmt.Errorf("ob commands should be handled by CLI framework")
@@ -124,6 +124,31 @@ func (r *Router) startMCPServer(appConfig *config.AppConfig, args []string) erro
 
 	// Determine profile
 	profileName := r.detectProfile(args)
+	transport := "stdio"
+	port := "8080"
+
+	for i, arg := range args {
+		// Transport
+		if arg == "--transport" {
+			if i+1 < len(args) {
+				transport = args[i+1]
+			}
+		}
+		if strings.HasPrefix(arg, "--transport=") {
+			transport = strings.TrimPrefix(arg, "--transport=")
+		}
+
+		// Port
+		if arg == "--port" {
+			if i+1 < len(args) {
+				port = args[i+1]
+			}
+		}
+		if strings.HasPrefix(arg, "--port=") {
+			port = strings.TrimPrefix(arg, "--port=")
+		}
+	}
+
 	if profileName == "" {
 		profileName = appConfig.DefaultProfile
 	}
@@ -132,11 +157,23 @@ func (r *Router) startMCPServer(appConfig *config.AppConfig, args []string) erro
 	r.mcpHandler.SetSpec(specDoc)
 	r.mcpHandler.SetAppConfig(appConfig, profileName)
 
-	// Start server
-	server := mcp.NewServer(r.mcpHandler, os.Stdin, os.Stdout)
+	// Retrieve profile for safety config
+	profile, ok := appConfig.GetProfile(profileName)
+	if !ok {
+		return fmt.Errorf("profile '%s' not found", profileName)
+	}
 
-	// Use stderr for logs since stdout is used for JSON-RPC
-	fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s)...\n", appConfig.Name, profileName)
+	// Create server using factory
+	// Note: We don't have version info here easily, hardcoding "1.0" or using global if accessible.
+	// Router doesn't seem to have version field. Using "1.0" for now.
+	factory := mcp.NewServerFactory(appConfig.Name, "1.0")
+	server := factory.CreateServer()
 
-	return server.Serve(context.Background())
+	// Register tools
+	r.mcpHandler.Register(server, &profile.SafetyConfig)
+
+	// Run server
+	fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s) via %s...\n", appConfig.Name, profileName, transport)
+
+	return factory.RunServer(context.Background(), server, transport, port)
 }

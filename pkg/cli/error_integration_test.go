@@ -304,7 +304,7 @@ func TestErrorHandling_UsageHelp(t *testing.T) {
 				Schema: &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type: &openapi3.Types{"string"},
-						Enum: []interface{}{"admin", "user", "guest"},
+						Enum: []any{"admin", "user", "guest"},
 					},
 				},
 			},

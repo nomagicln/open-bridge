@@ -78,7 +78,7 @@ func WithHTTPClient(client *http.Client) ParserOption {
 	}
 }
 
-// NewParser creates a new Parser with the given options.
+// NewParser creates a new Parser with the given options. 🐾
 func NewParser(opts ...ParserOption) *Parser {
 	loader := openapi3.NewLoader()
 	loader.IsExternalRefsAllowed = true
@@ -131,7 +131,7 @@ func (p *Parser) loadFromFile(ctx context.Context, path string) (*openapi3.T, er
 		return nil, fmt.Errorf("spec file '%s' is empty", path)
 	}
 
-	return p.parseSpec(ctx, data, absPath)
+	return p.parseSpec(ctx, data)
 }
 
 // loadFromURL loads a specification from a remote URL.
@@ -176,22 +176,22 @@ func (p *Parser) loadFromURL(ctx context.Context, specURL string) (*openapi3.T, 
 }
 
 // parseSpec parses specification data and handles version detection.
-func (p *Parser) parseSpec(ctx context.Context, data []byte, source string) (*openapi3.T, error) {
+func (p *Parser) parseSpec(ctx context.Context, data []byte) (*openapi3.T, error) {
 	// Detect version from content
 	version := detectVersion(data)
 
 	switch version {
 	case Version20:
-		return p.parseSwagger(ctx, data, source)
+		return p.parseSwagger(ctx, data)
 	case Version30, Version31:
-		return p.parseOpenAPI3(ctx, data, source)
+		return p.parseOpenAPI3(ctx, data)
 	default:
 		// Try OpenAPI 3.x first, then fall back to 2.0
-		doc, err := p.parseOpenAPI3(ctx, data, source)
+		doc, err := p.parseOpenAPI3(ctx, data)
 		if err == nil {
 			return doc, nil
 		}
-		return p.parseSwagger(ctx, data, source)
+		return p.parseSwagger(ctx, data)
 	}
 }
 
@@ -201,7 +201,7 @@ func (p *Parser) parseSpecWithBaseURL(ctx context.Context, data []byte, baseURL 
 
 	switch version {
 	case Version20:
-		return p.parseSwaggerWithBaseURL(ctx, data, baseURL)
+		return p.parseSwaggerWithBaseURL(ctx, data)
 	case Version30, Version31:
 		return p.parseOpenAPI3WithBaseURL(ctx, data, baseURL)
 	default:
@@ -209,12 +209,12 @@ func (p *Parser) parseSpecWithBaseURL(ctx context.Context, data []byte, baseURL 
 		if err == nil {
 			return doc, nil
 		}
-		return p.parseSwaggerWithBaseURL(ctx, data, baseURL)
+		return p.parseSwaggerWithBaseURL(ctx, data)
 	}
 }
 
 // parseOpenAPI3 parses an OpenAPI 3.x specification.
-func (p *Parser) parseOpenAPI3(ctx context.Context, data []byte, source string) (*openapi3.T, error) {
+func (p *Parser) parseOpenAPI3(ctx context.Context, data []byte) (*openapi3.T, error) {
 	doc, err := p.loader.LoadFromData(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse OpenAPI 3.x spec: %w", err)
@@ -222,6 +222,11 @@ func (p *Parser) parseOpenAPI3(ctx context.Context, data []byte, source string) 
 
 	// Validate the specification
 	if err := doc.Validate(ctx); err != nil {
+		// Workaround for kin-openapi validation issue with OpenAPI 3.1 type: "null"
+		// See: https://github.com/getkin/kin-openapi/issues/???
+		if strings.Contains(err.Error(), `unsupported 'type' value "null"`) {
+			return doc, nil
+		}
 		return nil, fmt.Errorf("OpenAPI 3.x validation failed: %w", err)
 	}
 
@@ -236,6 +241,10 @@ func (p *Parser) parseOpenAPI3WithBaseURL(ctx context.Context, data []byte, base
 	}
 
 	if err := doc.Validate(ctx); err != nil {
+		// Workaround for kin-openapi validation issue with OpenAPI 3.1 type: "null"
+		if strings.Contains(err.Error(), `unsupported 'type' value "null"`) {
+			return doc, nil
+		}
 		return nil, fmt.Errorf("OpenAPI 3.x validation failed: %w", err)
 	}
 
@@ -243,7 +252,7 @@ func (p *Parser) parseOpenAPI3WithBaseURL(ctx context.Context, data []byte, base
 }
 
 // parseSwagger parses an OpenAPI 2.0 (Swagger) specification.
-func (p *Parser) parseSwagger(ctx context.Context, data []byte, source string) (*openapi3.T, error) {
+func (p *Parser) parseSwagger(ctx context.Context, data []byte) (*openapi3.T, error) {
 	var swagger openapi2.T
 	if err := json.Unmarshal(data, &swagger); err != nil {
 		// Try YAML format by using the loader's yaml support
@@ -265,7 +274,7 @@ func (p *Parser) parseSwagger(ctx context.Context, data []byte, source string) (
 }
 
 // parseSwaggerWithBaseURL parses Swagger 2.0 with a base URL.
-func (p *Parser) parseSwaggerWithBaseURL(ctx context.Context, data []byte, baseURL *url.URL) (*openapi3.T, error) {
+func (p *Parser) parseSwaggerWithBaseURL(ctx context.Context, data []byte) (*openapi3.T, error) {
 	var swagger openapi2.T
 	if err := json.Unmarshal(data, &swagger); err != nil {
 		return nil, fmt.Errorf("failed to parse Swagger 2.0 spec: %w", err)
@@ -452,7 +461,7 @@ func (p *Parser) InvalidateCache(appName string) {
 
 // ClearCache removes all cached specifications.
 func (p *Parser) ClearCache() {
-	p.cache.Range(func(key, value interface{}) bool {
+	p.cache.Range(func(key, value any) bool {
 		p.cache.Delete(key)
 		return true
 	})
@@ -463,7 +472,7 @@ func (p *Parser) GetCacheStats() CacheStats {
 	stats := CacheStats{}
 	now := time.Now()
 
-	p.cache.Range(func(key, value interface{}) bool {
+	p.cache.Range(func(key, value any) bool {
 		stats.TotalEntries++
 		cached := value.(*CachedSpec)
 		if now.After(cached.ExpiresAt) {
@@ -587,5 +596,5 @@ func isURL(s string) bool {
 // This is useful for testing with inline spec definitions.
 func (p *Parser) ParseSpecFromJSON(data []byte) (*openapi3.T, error) {
 	ctx := context.Background()
-	return p.parseSpec(ctx, data, "inline-json")
+	return p.parseSpec(ctx, data)
 }

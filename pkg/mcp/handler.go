@@ -2,54 +2,17 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/request"
 	"github.com/nomagicln/open-bridge/pkg/semantic"
-)
-
-// Tool represents an MCP tool definition.
-type Tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
-}
-
-// Request represents a JSON-RPC request.
-type Request struct {
-	JSONRPC string         `json:"jsonrpc"`
-	ID      any            `json:"id"`
-	Method  string         `json:"method"`
-	Params  map[string]any `json:"params,omitempty"`
-}
-
-// Response represents a JSON-RPC response.
-type Response struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  any    `json:"result,omitempty"`
-	Error   *Error `json:"error,omitempty"`
-}
-
-// Error represents a JSON-RPC error.
-type Error struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Data    any    `json:"data,omitempty"`
-}
-
-// Standard JSON-RPC error codes
-const (
-	ErrCodeParseError     = -32700
-	ErrCodeInvalidRequest = -32600
-	ErrCodeMethodNotFound = -32601
-	ErrCodeInvalidParams  = -32602
-	ErrCodeInternalError  = -32603
 )
 
 // Handler implements the MCP protocol for AI agent integration.
@@ -85,106 +48,59 @@ func (h *Handler) SetAppConfig(config *config.AppConfig, profileName string) {
 	h.profileName = profileName
 }
 
-// HandleRequest processes a JSON-RPC request and returns a response.
-func (h *Handler) HandleRequest(data []byte) (*Response, error) {
-	var req Request
-	if err := json.Unmarshal(data, &req); err != nil {
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      nil,
-			Error: &Error{
-				Code:    ErrCodeParseError,
-				Message: "Parse error",
-			},
-		}, nil
-	}
-
-	if req.JSONRPC != "2.0" {
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &Error{
-				Code:    ErrCodeInvalidRequest,
-				Message: "Invalid Request: jsonrpc must be '2.0'",
-			},
-		}, nil
-	}
-
-	switch req.Method {
-	case "tools/list":
-		return h.handleListTools(&req), nil
-	case "tools/call":
-		return h.handleCallTool(&req), nil
-	default:
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &Error{
-				Code:    ErrCodeMethodNotFound,
-				Message: fmt.Sprintf("Method not found: %s", req.Method),
-			},
-		}, nil
+// Register registers the tools with the MCP server.
+func (h *Handler) Register(s *mcp.Server, safetyConfig *config.SafetyConfig) {
+	tools := h.GetTools(safetyConfig)
+	for _, t := range tools {
+		tool := t // capture loop variable
+		s.AddTool(&tool, h.HandleCallTool)
 	}
 }
 
-// handleListTools handles the tools/list method.
-func (h *Handler) handleListTools(req *Request) *Response {
-	// This would be populated from the loaded OpenAPI spec
-	// Placeholder implementation
-	return &Response{
-		JSONRPC: "2.0",
-		ID:      req.ID,
-		Result: map[string]any{
-			"tools": []Tool{},
-		},
+// GetTools returns the list of available tools.
+func (h *Handler) GetTools(safetyConfig *config.SafetyConfig) []mcp.Tool {
+	if h.spec == nil {
+		return []mcp.Tool{}
 	}
+	tools := h.BuildMCPTools(h.spec, safetyConfig)
+	return tools
 }
 
-// handleCallTool handles the tools/call method.
-func (h *Handler) handleCallTool(req *Request) *Response {
-	// Extract tool name
-	toolName, ok := req.Params["name"].(string)
-	if !ok || toolName == "" {
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &Error{
-				Code:    ErrCodeInvalidParams,
-				Message: "Invalid params: 'name' is required",
-			},
+// HandleCallTool handles tool execution requests.
+func (h *Handler) HandleCallTool(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	toolName := request.Params.Name
+
+	// Unmarshal arguments from json.RawMessage
+	var arguments map[string]any
+	if len(request.Params.Arguments) > 0 {
+		if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					&mcp.TextContent{
+						Text: fmt.Sprintf("Error unmarshaling arguments: %v", err),
+					},
+				},
+				IsError: true,
+			}, nil
 		}
-	}
-
-	// Extract arguments
-	arguments, ok := req.Params["arguments"].(map[string]any)
-	if !ok {
-		arguments = make(map[string]any)
 	}
 
 	// Map tool name to operation
-	operation, method, path, err := h.mapToolToOperation(toolName)
+	operation, method, path, err := h.MapToolToOperation(toolName)
 	if err != nil {
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &Error{
-				Code:    ErrCodeInvalidParams,
-				Message: fmt.Sprintf("Tool not found: %s", toolName),
-				Data:    err.Error(),
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{
+					Text: fmt.Sprintf("Error mapping tool: %v", err),
+				},
 			},
-		}
+			IsError: true,
+		}, nil
 	}
 
 	// Get profile configuration
 	if h.appConfig == nil {
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &Error{
-				Code:    ErrCodeInternalError,
-				Message: "App configuration not set",
-			},
-		}
+		return nil, fmt.Errorf("app configuration not set")
 	}
 
 	profileName := h.profileName
@@ -194,14 +110,7 @@ func (h *Handler) handleCallTool(req *Request) *Response {
 
 	profile, ok := h.appConfig.GetProfile(profileName)
 	if !ok {
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &Error{
-				Code:    ErrCodeInternalError,
-				Message: fmt.Sprintf("Profile '%s' not found", profileName),
-			},
-		}
+		return nil, fmt.Errorf("profile '%s' not found", profileName)
 	}
 
 	// Build HTTP request
@@ -209,7 +118,7 @@ func (h *Handler) handleCallTool(req *Request) *Response {
 	if operation.RequestBody != nil {
 		requestBody = operation.RequestBody.Value
 	}
-	
+
 	httpReq, err := h.requestBuilder.BuildRequest(
 		method,
 		path,
@@ -219,28 +128,19 @@ func (h *Handler) handleCallTool(req *Request) *Response {
 		requestBody,
 	)
 	if err != nil {
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &Error{
-				Code:    ErrCodeInvalidParams,
-				Message: "Failed to build request",
-				Data:    err.Error(),
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{
+					Text: fmt.Sprintf("Failed to build request: %v", err),
+				},
 			},
-		}
+			IsError: true,
+		}, nil
 	}
 
 	// Inject authentication
 	if err := h.requestBuilder.InjectAuth(httpReq, h.appConfig.Name, profileName, &profile.Auth); err != nil {
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &Error{
-				Code:    ErrCodeInternalError,
-				Message: "Failed to inject authentication",
-				Data:    err.Error(),
-			},
-		}
+		return nil, fmt.Errorf("failed to inject authentication: %w", err)
 	}
 
 	// Add custom headers from profile
@@ -251,61 +151,36 @@ func (h *Handler) handleCallTool(req *Request) *Response {
 	// Execute API call
 	httpResp, err := h.httpClient.Do(httpReq)
 	if err != nil {
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &Error{
-				Code:    ErrCodeInternalError,
-				Message: "Failed to execute API call",
-				Data:    err.Error(),
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{
+					Text: fmt.Sprintf("Failed to execute API call: %v", err),
+				},
 			},
-		}
+			IsError: true,
+		}, nil
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
 	// Read response body
 	bodyBytes, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &Error{
-				Code:    ErrCodeInternalError,
-				Message: "Failed to read response body",
-				Data:    err.Error(),
-			},
-		}
-	}
-
-	// Check for HTTP errors
-	if httpResp.StatusCode >= 400 {
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &Error{
-				Code:    ErrCodeInternalError,
-				Message: fmt.Sprintf("API request failed with status %d", httpResp.StatusCode),
-				Data: map[string]any{
-					"status_code": httpResp.StatusCode,
-					"status":      httpResp.Status,
-					"body":        string(bodyBytes),
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{
+					Text: fmt.Sprintf("Failed to read response body: %v", err),
 				},
 			},
-		}
+			IsError: true,
+		}, nil
 	}
 
 	// Format response in MCP result format
-	result := h.formatMCPResult(httpResp.StatusCode, bodyBytes)
-
-	return &Response{
-		JSONRPC: "2.0",
-		ID:      req.ID,
-		Result:  result,
-	}
+	return h.FormatMCPResult(httpResp.StatusCode, bodyBytes), nil
 }
 
 // mapToolToOperation maps a tool name to its corresponding OpenAPI operation.
-func (h *Handler) mapToolToOperation(toolName string) (*openapi3.Operation, string, string, error) {
+func (h *Handler) MapToolToOperation(toolName string) (*openapi3.Operation, string, string, error) {
 	if h.spec == nil {
 		return nil, "", "", fmt.Errorf("OpenAPI spec not loaded")
 	}
@@ -342,19 +217,21 @@ func (h *Handler) mapToolToOperation(toolName string) (*openapi3.Operation, stri
 }
 
 // formatMCPResult formats an API response into MCP result format.
-func (h *Handler) formatMCPResult(statusCode int, bodyBytes []byte) map[string]any {
+func (h *Handler) FormatMCPResult(statusCode int, bodyBytes []byte) *mcp.CallToolResult {
+	// Check for error status codes
+	isError := statusCode >= 400
+
 	// Try to parse as JSON
 	var bodyJSON any
 	if err := json.Unmarshal(bodyBytes, &bodyJSON); err != nil {
 		// Not JSON, return as text
-		return map[string]any{
-			"content": []map[string]any{
-				{
-					"type": "text",
-					"text": string(bodyBytes),
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{
+					Text: string(bodyBytes),
 				},
 			},
-			"isError": false,
+			IsError: isError,
 		}
 	}
 
@@ -364,20 +241,19 @@ func (h *Handler) formatMCPResult(statusCode int, bodyBytes []byte) map[string]a
 		prettyJSON = bodyBytes
 	}
 
-	return map[string]any{
-		"content": []map[string]any{
-			{
-				"type": "text",
-				"text": string(prettyJSON),
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{
+				Text: string(prettyJSON),
 			},
 		},
-		"isError": false,
+		IsError: isError,
 	}
 }
 
-// BuildMCPTools converts OpenAPI operations to MCP tool definitions.
-func (h *Handler) BuildMCPTools(spec *openapi3.T, safetyConfig *config.SafetyConfig) []Tool {
-	var tools []Tool
+// buildMCPTools converts OpenAPI operations to MCP tool definitions.
+func (h *Handler) BuildMCPTools(spec *openapi3.T, safetyConfig *config.SafetyConfig) []mcp.Tool {
+	var tools []mcp.Tool
 
 	for path, pathItem := range spec.Paths.Map() {
 		operations := map[string]*openapi3.Operation{
@@ -399,7 +275,9 @@ func (h *Handler) BuildMCPTools(spec *openapi3.T, safetyConfig *config.SafetyCon
 			}
 
 			tool := h.convertOperationToTool(method, path, op)
-			tools = append(tools, tool)
+			if h.isToolAllowed(tool.Name, safetyConfig) {
+				tools = append(tools, tool)
+			}
 		}
 	}
 
@@ -407,7 +285,7 @@ func (h *Handler) BuildMCPTools(spec *openapi3.T, safetyConfig *config.SafetyCon
 }
 
 // convertOperationToTool converts an OpenAPI operation to an MCP tool.
-func (h *Handler) convertOperationToTool(method, path string, op *openapi3.Operation) Tool {
+func (h *Handler) convertOperationToTool(method, path string, op *openapi3.Operation) mcp.Tool {
 	// Use operationId as tool name, fallback to method+path
 	name := op.OperationID
 	if name == "" {
@@ -450,46 +328,39 @@ func (h *Handler) convertOperationToTool(method, path string, op *openapi3.Opera
 
 	inputSchema["required"] = required
 
-	return Tool{
+	return mcp.Tool{
 		Name:        name,
 		Description: op.Summary,
 		InputSchema: inputSchema,
 	}
 }
 
-// ApplySafetyControls filters tools based on safety configuration.
-func (h *Handler) ApplySafetyControls(tools []Tool, safetyConfig *config.SafetyConfig) []Tool {
+// isToolAllowed checks if a tool is allowed based on safety configuration.
+func (h *Handler) isToolAllowed(toolName string, safetyConfig *config.SafetyConfig) bool {
 	if safetyConfig == nil {
-		return tools
+		return true
 	}
 
-	var filtered []Tool
-
-	allowedSet := make(map[string]bool)
-	for _, op := range safetyConfig.AllowedOperations {
-		allowedSet[op] = true
-	}
-
-	deniedSet := make(map[string]bool)
+	// Check denied list first
 	for _, op := range safetyConfig.DeniedOperations {
-		deniedSet[op] = true
+		if op == toolName {
+			return false
+		}
 	}
 
-	for _, tool := range tools {
-		// Check denied list first
-		if deniedSet[tool.Name] {
-			continue
-		}
-
-		// If allowed list is specified, only include those
-		if len(allowedSet) > 0 {
-			if !allowedSet[tool.Name] {
-				continue
+	// If allowed list is specified, only include those
+	if len(safetyConfig.AllowedOperations) > 0 {
+		allowed := false
+		for _, op := range safetyConfig.AllowedOperations {
+			if op == toolName {
+				allowed = true
+				break
 			}
 		}
-
-		filtered = append(filtered, tool)
+		if !allowed {
+			return false
+		}
 	}
 
-	return filtered
+	return true
 }

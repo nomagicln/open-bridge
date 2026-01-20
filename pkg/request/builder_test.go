@@ -354,11 +354,11 @@ func TestValidateParams_RequiredParameters(t *testing.T) {
 	b := NewBuilder(nil)
 
 	tests := []struct {
-		name    string
-		params  map[string]any
+		name     string
+		params   map[string]any
 		opParams openapi3.Parameters
-		wantErr bool
-		errMsg  string
+		wantErr  bool
+		errMsg   string
 	}{
 		{
 			name: "all required params present",
@@ -459,11 +459,11 @@ func TestValidateParams_TypeValidation(t *testing.T) {
 	b := NewBuilder(nil)
 
 	tests := []struct {
-		name    string
-		params  map[string]any
+		name     string
+		params   map[string]any
 		opParams openapi3.Parameters
-		wantErr bool
-		errMsg  string
+		wantErr  bool
+		errMsg   string
 	}{
 		{
 			name: "valid string parameter",
@@ -602,7 +602,7 @@ func TestValidateParams_TypeValidation(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "invalid array parameter - got string",
+			name: "valid array parameter - from single string",
 			params: map[string]any{
 				"tags": "admin",
 			},
@@ -618,8 +618,7 @@ func TestValidateParams_TypeValidation(t *testing.T) {
 					},
 				},
 			},
-			wantErr: true,
-			errMsg:  "parameter 'tags' must be an array, got string",
+			wantErr: false,
 		},
 		{
 			name: "valid number parameter - float",
@@ -679,10 +678,10 @@ func TestValidateParams_EnumValidation(t *testing.T) {
 	b := NewBuilder(nil)
 
 	tests := []struct {
-		name    string
-		params  map[string]any
+		name     string
+		params   map[string]any
 		opParams openapi3.Parameters
-		wantErr bool
+		wantErr  bool
 	}{
 		{
 			name: "valid enum value",

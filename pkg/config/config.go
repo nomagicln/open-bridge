@@ -89,7 +89,7 @@ type Duration struct {
 }
 
 // MarshalYAML implements yaml.Marshaler.
-func (d Duration) MarshalYAML() (interface{}, error) {
+func (d Duration) MarshalYAML() (any, error) {
 	return d.String(), nil
 }
 
@@ -544,7 +544,7 @@ func (m *Manager) ImportProfile(appName string, data []byte) error {
 
 // importProfileLegacy handles legacy import format.
 func (m *Manager) importProfileLegacy(appName string, data []byte) error {
-	var importData map[string]interface{}
+	var importData map[string]any
 	if err := yaml.Unmarshal(data, &importData); err != nil {
 		return fmt.Errorf("failed to parse import data: %w", err)
 	}
@@ -571,7 +571,7 @@ func (m *Manager) importProfileLegacy(appName string, data []byte) error {
 		profile.Auth.Type = authType
 	}
 
-	if headers, ok := importData["headers"].(map[string]interface{}); ok {
+	if headers, ok := importData["headers"].(map[string]any); ok {
 		profile.Headers = make(map[string]string)
 		for k, v := range headers {
 			if s, ok := v.(string); ok {

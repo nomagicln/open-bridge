@@ -40,7 +40,7 @@ func TestResourceExtractorWithOverride(t *testing.T) {
 	extractor := NewResourceExtractor()
 
 	op := &openapi3.Operation{
-		Extensions: map[string]interface{}{
+		Extensions: map[string]any{
 			"x-cli-resource": "custom-resource",
 		},
 	}

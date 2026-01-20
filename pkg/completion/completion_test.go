@@ -189,7 +189,7 @@ func TestCompleteFlags(t *testing.T) {
 
 	// Test completion
 	t.Run("List flags for operation", func(t *testing.T) {
-		flags := provider.CompleteFlags("testapp", "get", "users", "")
+		flags := provider.CompleteFlags("testapp", "users", "get", "")
 		assert.NotEmpty(t, flags)
 		// Should contain common flags and operation-specific flags
 		assert.Contains(t, flags, "--json")
@@ -201,7 +201,7 @@ func TestCompleteFlags(t *testing.T) {
 	})
 
 	t.Run("Filter flags by prefix", func(t *testing.T) {
-		flags := provider.CompleteFlags("testapp", "get", "users", "--j")
+		flags := provider.CompleteFlags("testapp", "users", "get", "--j")
 		assert.NotEmpty(t, flags)
 		// Should only contain flags starting with --j
 		for _, flag := range flags {
@@ -240,21 +240,21 @@ func TestCompleteFlagValues(t *testing.T) {
 
 	// Test completion
 	t.Run("Complete output flag values", func(t *testing.T) {
-		values := provider.CompleteFlagValues("testapp", "create", "pet", "output")
+		values := provider.CompleteFlagValues("testapp", "pet", "create", "output")
 		assert.Contains(t, values, "table")
 		assert.Contains(t, values, "json")
 		assert.Contains(t, values, "yaml")
 	})
 
 	t.Run("Complete profile flag values", func(t *testing.T) {
-		values := provider.CompleteFlagValues("testapp", "create", "pet", "profile")
+		values := provider.CompleteFlagValues("testapp", "pet", "create", "profile")
 		assert.NotEmpty(t, values)
 		assert.Contains(t, values, "default")
 		assert.Contains(t, values, "staging")
 	})
 
 	t.Run("Complete enum flag values", func(t *testing.T) {
-		values := provider.CompleteFlagValues("testapp", "create", "pet", "status")
+		values := provider.CompleteFlagValues("testapp", "pet", "create", "status")
 		assert.NotEmpty(t, values)
 		// The petstore spec has a status enum with these values
 		assert.Contains(t, values, "available")
@@ -263,7 +263,7 @@ func TestCompleteFlagValues(t *testing.T) {
 	})
 
 	t.Run("No values for non-enum flag", func(t *testing.T) {
-		values := provider.CompleteFlagValues("testapp", "create", "pet", "name")
+		values := provider.CompleteFlagValues("testapp", "pet", "create", "name")
 		assert.Nil(t, values)
 	})
 }

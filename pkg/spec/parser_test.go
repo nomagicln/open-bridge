@@ -323,18 +323,18 @@ func TestLoadSpecEmptyFile(t *testing.T) {
 
 func TestLoadSpecFromURL(t *testing.T) {
 	// Create a test server
-	spec := map[string]interface{}{
+	spec := map[string]any{
 		"openapi": "3.0.0",
-		"info": map[string]interface{}{
+		"info": map[string]any{
 			"title":   "Remote API",
 			"version": "1.0.0",
 		},
-		"paths": map[string]interface{}{
-			"/test": map[string]interface{}{
-				"get": map[string]interface{}{
+		"paths": map[string]any{
+			"/test": map[string]any{
+				"get": map[string]any{
 					"operationId": "test",
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{
+					"responses": map[string]any{
+						"200": map[string]any{
 							"description": "OK",
 						},
 					},

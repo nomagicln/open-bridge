@@ -38,7 +38,7 @@ func TestVerbMapperExtensionOverride(t *testing.T) {
 	mapper := NewVerbMapper()
 
 	op := &openapi3.Operation{
-		Extensions: map[string]interface{}{
+		Extensions: map[string]any{
 			"x-cli-verb": "custom-verb",
 		},
 	}
@@ -291,7 +291,7 @@ func TestVerbMappingSource(t *testing.T) {
 
 	t.Run("extension source", func(t *testing.T) {
 		op := &openapi3.Operation{
-			Extensions: map[string]interface{}{"x-cli-verb": "custom"},
+			Extensions: map[string]any{"x-cli-verb": "custom"},
 		}
 		result := mapper.MapVerb("GET", "/users", op)
 		if result.Source != VerbSourceExtension {

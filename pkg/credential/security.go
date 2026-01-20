@@ -276,12 +276,12 @@ func IsCredentialNotFound(err error) bool {
 }
 
 // RedactCredential creates a safe-to-log version of a credential.
-func RedactCredential(cred *Credential) map[string]interface{} {
+func RedactCredential(cred *Credential) map[string]any {
 	if cred == nil {
 		return nil
 	}
 
-	redacted := map[string]interface{}{
+	redacted := map[string]any{
 		"type": string(cred.Type),
 	}
 

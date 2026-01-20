@@ -69,15 +69,15 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 		return h.showResourceHelp(appName, args[0], appConfig)
 	}
 
-	// Now we have at least 2 args, parse as verb resource
-	verb := args[0]
-	resource := args[1]
+	// Now we have at least 2 args, parse as resource verb
+	resource := args[0]
+	verb := args[1]
 	flagArgs := args[2:]
 
 	// Check for help flag for specific command
 	for _, arg := range flagArgs {
 		if arg == "--help" || arg == "-h" {
-			return h.showCommandHelp(appName, verb, resource, appConfig)
+			return h.showCommandHelp(appName, resource, verb, appConfig)
 		}
 	}
 
@@ -87,7 +87,7 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 		var err error
 		specDoc, err = h.specParser.LoadSpec(appConfig.SpecSource)
 		if err != nil {
-			// Format spec load error with helpful troubleshooting
+			// Format spec loading error with helpful troubleshooting
 			return fmt.Errorf("%s", h.errorFormatter.FormatError(fmt.Errorf("failed to load spec: %w", err)))
 		}
 		h.specParser.CacheSpec(appName, specDoc)
@@ -144,7 +144,7 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 	// Validate parameters before building request
 	if err := h.reqBuilder.ValidateParams(params, opSpec.Parameters, requestBody); err != nil {
 		// Show detailed parameter error with help
-		return h.showParameterValidationError(err, appName, verb, resource, opSpec, opSpec.Parameters)
+		return h.showParameterValidationError(err, appName, resource, verb, opSpec.Parameters)
 	}
 
 	// Build request
@@ -420,11 +420,11 @@ func (h *Handler) formatAsTable(data any) string {
 func (h *Handler) showInvalidSyntaxError(appName string) error {
 	var sb strings.Builder
 	sb.WriteString("Error: Invalid command syntax.\n\n")
-	sb.WriteString(fmt.Sprintf("Usage: %s <verb> <resource> [flags]\n\n", appName))
+	sb.WriteString(fmt.Sprintf("Usage: %s <resource> <verb> [flags]\n\n", appName))
 	sb.WriteString("Examples:\n")
-	sb.WriteString(fmt.Sprintf("  %s create user --name \"John\" --email \"john@example.com\"\n", appName))
-	sb.WriteString(fmt.Sprintf("  %s list users\n", appName))
-	sb.WriteString(fmt.Sprintf("  %s get user --id 123\n\n", appName))
+	sb.WriteString(fmt.Sprintf("  %s user create --name \"John\" --email \"john@example.com\"\n", appName))
+	sb.WriteString(fmt.Sprintf("  %s users list\n", appName))
+	sb.WriteString(fmt.Sprintf("  %s user get --id 123\n\n", appName))
 	sb.WriteString("For more information, use:\n")
 	sb.WriteString(fmt.Sprintf("  %s --help\n", appName))
 	return fmt.Errorf("%s", sb.String())
@@ -484,7 +484,7 @@ func (h *Handler) showResourceHelpFromResource(appName, resourceName string, res
 		sb.WriteString("  (no operations available)\n")
 	} else {
 		for verbName, op := range res.Operations {
-			sb.WriteString(fmt.Sprintf("  %s %s", verbName, resourceName))
+			sb.WriteString(fmt.Sprintf("  %s %s", resourceName, verbName))
 			if op.Summary != "" {
 				sb.WriteString(fmt.Sprintf(" - %s", op.Summary))
 			}
@@ -501,7 +501,7 @@ func (h *Handler) showResourceHelpFromResource(appName, resourceName string, res
 	}
 
 	sb.WriteString("\nFor detailed command help:\n")
-	sb.WriteString(fmt.Sprintf("  %s <verb> %s --help\n", appName, resourceName))
+	sb.WriteString(fmt.Sprintf("  %s %s <verb> --help\n", appName, resourceName))
 
 	fmt.Print(sb.String())
 	return nil
@@ -524,7 +524,7 @@ func (h *Handler) loadSpec(appName string, appConfig *config.AppConfig) (*openap
 // showAppHelp displays help for the entire app.
 func (h *Handler) showAppHelp(appName string, appConfig *config.AppConfig) error {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Usage: %s <verb> <resource> [flags]\n\n", appName))
+	sb.WriteString(fmt.Sprintf("Usage: %s <resource> <verb> [flags]\n\n", appName))
 
 	if appConfig.Description != "" {
 		sb.WriteString(fmt.Sprintf("Description: %s\n\n", appConfig.Description))
@@ -565,16 +565,16 @@ func (h *Handler) showAppHelp(appName string, appConfig *config.AppConfig) error
 	sb.WriteString("  --profile, -p    Profile to use\n\n")
 
 	sb.WriteString("Examples:\n")
-	sb.WriteString(fmt.Sprintf("  %s create user --name \"John\"\n", appName))
-	sb.WriteString(fmt.Sprintf("  %s list users --json\n", appName))
-	sb.WriteString(fmt.Sprintf("  %s get user --id 123\n", appName))
+	sb.WriteString(fmt.Sprintf("  %s user create --name \"John\"\n", appName))
+	sb.WriteString(fmt.Sprintf("  %s users list --json\n", appName))
+	sb.WriteString(fmt.Sprintf("  %s user get --id 123\n", appName))
 
 	fmt.Print(sb.String())
 	return nil
 }
 
 // showCommandHelp displays help for a specific command.
-func (h *Handler) showCommandHelp(appName, verb, resource string, appConfig *config.AppConfig) error {
+func (h *Handler) showCommandHelp(appName, resource, verb string, appConfig *config.AppConfig) error {
 	// Load spec
 	specDoc, ok := h.specParser.GetCachedSpec(appName)
 	if !ok {
@@ -629,7 +629,7 @@ func (h *Handler) showCommandHelp(appName, verb, resource string, appConfig *con
 	}
 
 	// Format and display help
-	help := h.errorFormatter.FormatUsageHelpWithBody(appName, verb, resource, opSpec, opSpec.Parameters, requestBody)
+	help := h.errorFormatter.FormatUsageHelpWithBody(appName, resource, verb, opSpec, opSpec.Parameters, requestBody)
 	fmt.Print(help)
 	return nil
 }
@@ -675,8 +675,7 @@ func (h *Handler) showUnknownVerbError(verb, resource string, res *semantic.Reso
 // showParameterValidationError displays detailed parameter validation error with help.
 func (h *Handler) showParameterValidationError(
 	validationErr error,
-	appName, verb, resource string,
-	opSpec *openapi3.Operation,
+	appName, resource, verb string,
 	opParams openapi3.Parameters,
 ) error {
 	var sb strings.Builder
@@ -713,7 +712,7 @@ func (h *Handler) showParameterValidationError(
 	}
 
 	sb.WriteString("For complete parameter details, use:\n")
-	sb.WriteString(fmt.Sprintf("  %s %s %s --help\n", appName, verb, resource))
+	sb.WriteString(fmt.Sprintf("  %s %s %s --help\n", appName, resource, verb))
 
 	return fmt.Errorf("%s", sb.String())
 }

@@ -63,7 +63,7 @@ func MapOf(keyGen, valueGen gopter.Gen) gopter.Gen {
 }
 
 // OneConstOf generates one of the constant values.
-func OneConstOf(values ...interface{}) gopter.Gen {
+func OneConstOf(values ...any) gopter.Gen {
 	return gen.OneConstOf(values...)
 }
 

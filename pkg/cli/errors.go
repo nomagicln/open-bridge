@@ -153,7 +153,7 @@ func (f *ErrorFormatter) formatUnknownVerbError(errMsg string) string {
 	sb.WriteString("  - get: Get a specific resource\n")
 	sb.WriteString("  - update: Update a resource\n")
 	sb.WriteString("  - delete: Delete a resource\n\n")
-	sb.WriteString("To see available verbs for a resource, use:\n")
+	sb.WriteString("\nTo see available verbs for a resource, use:\n")
 	sb.WriteString("  <app> <resource> --help")
 
 	return sb.String()
@@ -164,9 +164,9 @@ func (f *ErrorFormatter) formatMissingParameterError(errMsg string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Error: %s\n\n", errMsg))
 	sb.WriteString("Usage:\n")
-	sb.WriteString("  <app> <verb> <resource> --<param-name> <value>\n\n")
+	sb.WriteString("  <app> <resource> <verb> --<param-name> <value>\n\n")
 	sb.WriteString("To see all required parameters for this operation, use:\n")
-	sb.WriteString("  <app> <verb> <resource> --help")
+	sb.WriteString("  <app> <resource> <verb> --help")
 
 	return sb.String()
 }
@@ -180,7 +180,7 @@ func (f *ErrorFormatter) formatParameterValidationError(errMsg string) string {
 	sb.WriteString("  - Parameter values match the expected type\n")
 	sb.WriteString("  - Required parameters are provided\n\n")
 	sb.WriteString("To see parameter details, use:\n")
-	sb.WriteString("  <app> <verb> <resource> --help")
+	sb.WriteString("  <app> <resource> <verb> --help")
 
 	return sb.String()
 }
@@ -252,16 +252,16 @@ func (f *ErrorFormatter) FormatHTTPError(resp *http.Response, body []byte) strin
 }
 
 // FormatUsageHelp formats usage help for a command.
-func (f *ErrorFormatter) FormatUsageHelp(appName, verb, resource string, operation *openapi3.Operation, opParams openapi3.Parameters) string {
-	return f.FormatUsageHelpWithBody(appName, verb, resource, operation, opParams, nil)
+func (f *ErrorFormatter) FormatUsageHelp(appName, resource, verb string, operation *openapi3.Operation, opParams openapi3.Parameters) string {
+	return f.FormatUsageHelpWithBody(appName, resource, verb, operation, opParams, nil)
 }
 
 // FormatUsageHelpWithBody formats usage help for a command including request body parameters.
-func (f *ErrorFormatter) FormatUsageHelpWithBody(appName, verb, resource string, operation *openapi3.Operation, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) string {
+func (f *ErrorFormatter) FormatUsageHelpWithBody(appName, resource, verb string, operation *openapi3.Operation, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) string {
 	var sb strings.Builder
 
 	// Command syntax
-	sb.WriteString(fmt.Sprintf("Usage: %s %s %s [flags]\n\n", appName, verb, resource))
+	sb.WriteString(fmt.Sprintf("Usage: %s %s %s [flags]\n\n", appName, resource, verb))
 
 	// Description
 	if operation.Summary != "" {
@@ -366,7 +366,7 @@ func (f *ErrorFormatter) FormatUsageHelpWithBody(appName, verb, resource string,
 
 	// Example
 	sb.WriteString("Example:\n")
-	sb.WriteString(f.formatExampleWithBody(appName, verb, resource, opParams, bodyProperties, requiredBodyProps))
+	sb.WriteString(f.formatExampleWithBody(appName, resource, verb, opParams, bodyProperties, requiredBodyProps))
 
 	return sb.String()
 }
@@ -414,9 +414,9 @@ func (f *ErrorFormatter) formatBodyProperty(name string, schemaRef *openapi3.Sch
 }
 
 // formatExampleWithBody formats an example command including body parameters.
-func (f *ErrorFormatter) formatExampleWithBody(appName, verb, resource string, opParams openapi3.Parameters, bodyProps map[string]*openapi3.SchemaRef, requiredBodyProps []string) string {
+func (f *ErrorFormatter) formatExampleWithBody(appName, resource, verb string, opParams openapi3.Parameters, bodyProps map[string]*openapi3.SchemaRef, requiredBodyProps []string) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("  %s %s %s", appName, verb, resource))
+	sb.WriteString(fmt.Sprintf("  %s %s %s", appName, resource, verb))
 
 	// Add example values for required URL parameters
 	for _, paramRef := range opParams {
@@ -508,24 +508,6 @@ func (f *ErrorFormatter) formatParameter(param *openapi3.Parameter) string {
 			values = append(values, fmt.Sprintf("%v", v))
 		}
 		sb.WriteString(strings.Join(values, ", "))
-	}
-
-	sb.WriteString("\n")
-	return sb.String()
-}
-
-// formatExample formats an example command.
-func (f *ErrorFormatter) formatExample(appName, verb, resource string, opParams openapi3.Parameters) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("  %s %s %s", appName, verb, resource))
-
-	// Add example values for required parameters
-	for _, paramRef := range opParams {
-		param := paramRef.Value
-		if param.Required {
-			exampleValue := f.getExampleValue(param)
-			sb.WriteString(fmt.Sprintf(" --%s %s", param.Name, exampleValue))
-		}
 	}
 
 	sb.WriteString("\n")

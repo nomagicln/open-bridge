@@ -408,7 +408,7 @@ func parseImportData(data []byte) (*ProfileExportV2, error) {
 	}
 
 	// Try legacy format
-	var legacy map[string]interface{}
+	var legacy map[string]any
 	if err := yaml.Unmarshal(data, &legacy); err != nil {
 		return nil, fmt.Errorf("unrecognized import format")
 	}
@@ -440,7 +440,7 @@ func convertV1ToV2(v1 *ProfileExport) *ProfileExportV2 {
 }
 
 // convertLegacyToV2 converts legacy format to V2.
-func convertLegacyToV2(legacy map[string]interface{}) (*ProfileExportV2, error) {
+func convertLegacyToV2(legacy map[string]any) (*ProfileExportV2, error) {
 	v2 := &ProfileExportV2{
 		Version: "1.0",
 	}
@@ -465,7 +465,7 @@ func convertLegacyToV2(legacy map[string]interface{}) (*ProfileExportV2, error) 
 		v2.Profile.Auth.Type = authType
 	}
 
-	if headers, ok := legacy["headers"].(map[string]interface{}); ok {
+	if headers, ok := legacy["headers"].(map[string]any); ok {
 		v2.Profile.Headers = make(map[string]string)
 		for k, v := range headers {
 			if s, ok := v.(string); ok {

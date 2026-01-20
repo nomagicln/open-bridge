@@ -50,6 +50,14 @@ type InstallOptions struct {
 
 	// Force overwrites existing app configuration.
 	Force bool
+
+	// Headers to include in the default profile.
+	Headers map[string]string
+
+	// AuthParams contains authentication credentials (token, username, password).
+	// These are returned by the interactive wizard but NOT saved to the config file.
+	// The caller is responsible for saving them to the keyring.
+	AuthParams map[string]string
 }
 
 // InstallResult contains the result of an app installation.
@@ -68,8 +76,32 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 	}
 
 	// Check if app already exists
-	if m.AppExists(appName) && !opts.Force {
-		return nil, fmt.Errorf("app '%s' already exists (use --force to overwrite)", appName)
+	appExists := m.AppExists(appName)
+	if appExists {
+		if !opts.Force {
+			return nil, fmt.Errorf("app '%s' already exists (use --force to overwrite)", appName)
+		}
+
+		// Load existing config to use as defaults
+		existingConfig, err := m.GetAppConfig(appName)
+		if err == nil {
+			// Merge existing config into options if options are empty
+			if opts.SpecSource == "" && len(opts.SpecSources) == 0 {
+				opts.SpecSource = existingConfig.SpecSource
+				opts.SpecSources = existingConfig.SpecSources
+			}
+			if opts.Description == "" {
+				opts.Description = existingConfig.Description
+			}
+			if profile, ok := existingConfig.Profiles[existingConfig.DefaultProfile]; ok {
+				if opts.BaseURL == "" {
+					opts.BaseURL = profile.BaseURL
+				}
+				if opts.AuthType == "" {
+					opts.AuthType = profile.Auth.Type
+				}
+			}
+		}
 	}
 
 	// Set defaults for interactive I/O
@@ -83,7 +115,7 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 	// Interactive mode: prompt for missing information
 	if opts.Interactive {
 		var err error
-		opts, err = m.promptForMissingInfo(appName, opts)
+		opts, err = m.promptForMissingInfo(opts)
 		if err != nil {
 			return nil, err
 		}
@@ -148,6 +180,7 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 				Auth: AuthConfig{
 					Type: opts.AuthType,
 				},
+				Headers:   opts.Headers,
 				Timeout:   Duration{Duration: 30 * time.Second},
 				IsDefault: true,
 			},
@@ -192,7 +225,7 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 }
 
 // promptForMissingInfo prompts the user for missing installation information.
-func (m *Manager) promptForMissingInfo(appName string, opts InstallOptions) (InstallOptions, error) {
+func (m *Manager) promptForMissingInfo(opts InstallOptions) (InstallOptions, error) {
 	reader := opts.Reader
 	writer := opts.Writer
 

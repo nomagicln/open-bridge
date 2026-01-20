@@ -2,11 +2,12 @@
 
 [![CI](https://github.com/nomagicln/open-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/nomagicln/open-bridge/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/nomagicln/open-bridge)](https://goreportcard.com/report/github.com/nomagicln/open-bridge)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Cat Alliance](https://img.shields.io/badge/Cat%20Alliance-Member-orange?logo=kitty-terminal&logoColor=white)](https://github.com/nomagicln/open-bridge/blob/main/NOTICE)
 
 **OpenBridge** is a universal API runtime engine that bridges the gap between OpenAPI specifications and two distinct interfaces:
 
-1. **For Humans**: A semantic CLI with kubectl-style commands
+1. **For Humans**: A semantic CLI with resource-oriented commands
 2. **For AI Agents**: An MCP (Model Context Protocol) server
 
 > "One Spec, Dual Interface."
@@ -14,7 +15,7 @@
 ## Features
 
 - **Zero Code Generation**: All behavior is dynamically driven by OpenAPI specifications
-- **Semantic CLI**: kubectl-style verb-resource commands (`myapp create user --name "John"`)
+- **Semantic CLI**: Resource-oriented commands (`myapp user create --name "John"`)
 - **Shell Auto-Completion**: Tab completion for commands, resources, flags, and enum values
 - **MCP Server**: Native AI agent integration via Model Context Protocol
 - **Multi-Platform**: Works on Linux, macOS, and Windows
@@ -36,30 +37,21 @@ Download the latest release from the [Releases page](https://github.com/nomagicl
 ## Quick Start
 
 ### 1. Install an API
-
 ```bash
-# Install from local file
 ob install myapi --spec ./openapi.yaml
-
-# Install from URL
-ob install petstore --spec https://petstore.swagger.io/v2/swagger.json
 ```
 
-### 2. Use the CLI
+### 2. Run Commands
 
 ```bash
 # List resources
-myapi list users
-
-# Get a specific resource
-myapi get user --id 123
+myapi users list
 
 # Create a resource
-myapi create user --name "John" --email "john@example.com"
-
-# Delete a resource
-myapi delete user --id 123
+myapi user create --name "John"
 ```
+
+> **Note**: For a detailed step-by-step guide, see [QUICKSTART.md](./QUICKSTART.md).
 
 ### 3. Use with AI (MCP Mode)
 
@@ -102,7 +94,7 @@ profiles:
 Switch profiles with:
 
 ```bash
-myapi --profile prod list users
+myapi users list --profile prod
 ```
 
 ## Command Reference
@@ -125,23 +117,23 @@ Once installed, each app provides semantic commands:
 
 | Pattern | Example |
 |---------|---------|
-| `<app> list <resource>` | `myapi list users` |
-| `<app> get <resource> --id <id>` | `myapi get user --id 123` |
-| `<app> create <resource> [flags]` | `myapi create user --name "John"` |
-| `<app> update <resource> [flags]` | `myapi update user --id 123 --name "Jane"` |
-| `<app> delete <resource> --id <id>` | `myapi delete user --id 123` |
+| `<app> <resource> list` | `myapi users list` |
+| `<app> <resource> get --id <id>` | `myapi user get --id 123` |
+| `<app> <resource> create [flags]` | `myapi user create --name "John"` |
+| `<app> <resource> update [flags]` | `myapi user update --id 123 --name "Jane"` |
+| `<app> <resource> delete --id <id>` | `myapi user delete --id 123` |
 
 ### Output Formats
 
 ```bash
 # Table output (default)
-myapi list users
+myapi users list
 
 # JSON output
-myapi list users --json
+myapi users list --json
 
 # YAML output
-myapi list users --yaml
+myapi users list --yaml
 ```
 
 ## Shell Auto-Completion
@@ -197,17 +189,17 @@ Once installed, press Tab to get completion suggestions:
 # Complete app names
 ob run <TAB>
 
-# Complete verbs for an app
+# Complete resources for an app
 ob run myapi <TAB>
 
-# Complete resources
-ob run myapi list <TAB>
+# Complete verbs
+ob run myapi users <TAB>
 
 # Complete flags
-ob run myapi get user --<TAB>
+ob run myapi user get --<TAB>
 
 # Complete flag values (for enums)
-ob run myapi list users --output <TAB>
+ob run myapi users list --output <TAB>
 ```
 
 ## OpenAPI Extensions
@@ -226,7 +218,7 @@ paths:
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.25 or later
 - Make (optional)
 
 ### Building
@@ -270,4 +262,8 @@ Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md)
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details.
+
+---
+
+*OpenBridge is a proud member of the Cat Alliance. 🐱 🐾*

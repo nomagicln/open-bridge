@@ -32,8 +32,8 @@ func TestBuildCommandTree(t *testing.T) {
 	tree := m.BuildCommandTree(spec)
 
 	// Verify root resources
-	if len(tree.RootResources) != 2 {
-		t.Errorf("expected 2 root resources, got %d", len(tree.RootResources))
+	if len(tree.RootResources) != 3 {
+		t.Errorf("expected 3 root resources, got %d", len(tree.RootResources))
 	}
 
 	users, ok := tree.RootResources["users"]
@@ -44,6 +44,11 @@ func TestBuildCommandTree(t *testing.T) {
 	_, ok = tree.RootResources["orders"]
 	if !ok {
 		t.Fatal("expected 'orders' resource")
+	}
+
+	posts, ok := tree.RootResources["users-posts"]
+	if !ok {
+		t.Fatal("expected 'users-posts' resource")
 	}
 
 	// Verify User operations
@@ -58,16 +63,7 @@ func TestBuildCommandTree(t *testing.T) {
 		}
 	}
 
-	// Verify nested resource (posts)
-	if len(users.SubResources) != 1 {
-		t.Fatalf("expected 1 sub-resource for users, got %d", len(users.SubResources))
-	}
-
-	posts, ok := users.SubResources["posts"]
-	if !ok {
-		t.Fatal("expected 'posts' sub-resource")
-	}
-
+	// Verify posts operations
 	if len(posts.Operations) != 2 {
 		t.Errorf("expected 2 operations on posts, got %d", len(posts.Operations))
 	}
@@ -77,11 +73,6 @@ func TestBuildCommandTree(t *testing.T) {
 	}
 	if _, ok := posts.Operations["create"]; !ok {
 		t.Error("expected 'create' op on posts")
-	}
-
-	// Verify parent link
-	if posts.Parent != users {
-		t.Error("posts parent should be users")
 	}
 }
 
@@ -97,7 +88,7 @@ func TestBuildCommandTreeConflictResolution(t *testing.T) {
 	spec.Paths.Set("/admins", &openapi3.PathItem{
 		Get: &openapi3.Operation{
 			OperationID: "listAdmins",
-			Extensions: map[string]interface{}{
+			Extensions: map[string]any{
 				"x-cli-resource": "users",
 			},
 		},

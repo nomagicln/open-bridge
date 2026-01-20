@@ -15,7 +15,10 @@ import (
 	"github.com/nomagicln/open-bridge/pkg/cli"
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/credential"
-	"github.com/nomagicln/open-bridge/pkg/mcp"
+
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	localmcp "github.com/nomagicln/open-bridge/pkg/mcp"
+
 	"github.com/nomagicln/open-bridge/pkg/request"
 	"github.com/nomagicln/open-bridge/pkg/semantic"
 	"github.com/nomagicln/open-bridge/pkg/spec"
@@ -31,7 +34,7 @@ type testEnv struct {
 	mapper     *semantic.Mapper
 	reqBuilder *request.Builder
 	cliHandler *cli.Handler
-	mcpHandler *mcp.Handler
+	mcpHandler *localmcp.Handler
 	mockServer *httptest.Server
 }
 
@@ -57,7 +60,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	mapper := semantic.NewMapper()
 	reqBuilder := request.NewBuilder(credMgr)
 	cliHandler := cli.NewHandler(specParser, mapper, reqBuilder, configMgr)
-	mcpHandler := mcp.NewHandler(mapper, reqBuilder, nil)
+	mcpHandler := localmcp.NewHandler(mapper, reqBuilder, nil)
 
 	return &testEnv{
 		t:          t,
@@ -180,7 +183,7 @@ func TestFullCLIWorkflow(t *testing.T) {
 	t.Run("ExecuteListCommand", func(t *testing.T) {
 		// Note: We can't easily capture stdout in this test setup
 		// In a real scenario, we'd redirect stdout
-		err := env.cliHandler.ExecuteCommand("testapi", appConfig, []string{"list", "users", "--json"})
+		err := env.cliHandler.ExecuteCommand("testapi", appConfig, []string{"users", "list", "--json"})
 		if err != nil {
 			t.Errorf("ExecuteCommand (list) failed: %v", err)
 		}
@@ -188,7 +191,7 @@ func TestFullCLIWorkflow(t *testing.T) {
 
 	// Step 4: Execute get command
 	t.Run("ExecuteGetCommand", func(t *testing.T) {
-		err := env.cliHandler.ExecuteCommand("testapi", appConfig, []string{"get", "users", "--id", "1", "--json"})
+		err := env.cliHandler.ExecuteCommand("testapi", appConfig, []string{"users", "get", "--id", "1", "--json"})
 		if err != nil {
 			t.Errorf("ExecuteCommand (get) failed: %v", err)
 		}
@@ -269,49 +272,35 @@ func TestMCPServerWorkflow(t *testing.T) {
 		}
 	})
 
-	// Test 2: Handle tools/list request
-	t.Run("HandleToolsList", func(t *testing.T) {
-		req := mcp.Request{
-			JSONRPC: "2.0",
-			ID:      1,
-			Method:  "tools/list",
-		}
-		reqData, _ := json.Marshal(req)
-
-		resp, err := env.mcpHandler.HandleRequest(reqData)
-		if err != nil {
-			t.Fatalf("HandleRequest failed: %v", err)
-		}
-
-		if resp.Error != nil {
-			t.Errorf("unexpected error: %v", resp.Error)
-		}
-	})
-
-	// Test 3: Handle tools/call request
+	// Test 2: Handle tools/call request
 	t.Run("HandleToolsCall", func(t *testing.T) {
-		req := mcp.Request{
-			JSONRPC: "2.0",
-			ID:      2,
-			Method:  "tools/call",
-			Params: map[string]any{
-				"name":      "listUsers",
-				"arguments": map[string]any{},
+		argsJSON := json.RawMessage(`{}`)
+		req := mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{
+				Name:      "listUsers",
+				Arguments: argsJSON,
 			},
 		}
-		reqData, _ := json.Marshal(req)
 
-		resp, err := env.mcpHandler.HandleRequest(reqData)
+		ctx := context.Background()
+		resp, err := env.mcpHandler.HandleCallTool(ctx, &req)
 		if err != nil {
-			t.Fatalf("HandleRequest failed: %v", err)
+			t.Fatalf("HandleCallTool failed: %v", err)
 		}
 
-		if resp.Error != nil {
-			t.Errorf("unexpected error: code=%d message=%s", resp.Error.Code, resp.Error.Message)
+		if resp.IsError {
+			// Check content for error message if present
+			var msg string
+			if len(resp.Content) > 0 {
+				if tc, ok := resp.Content[0].(*mcp.TextContent); ok {
+					msg = tc.Text
+				}
+			}
+			t.Errorf("unexpected error result: %s", msg)
 		}
 	})
 
-	// Test 4: Apply safety controls (read-only mode)
+	// Test 3: Apply safety controls (read-only mode)
 	t.Run("SafetyControls", func(t *testing.T) {
 		tools := env.mcpHandler.BuildMCPTools(specDoc, &config.SafetyConfig{
 			ReadOnlyMode: true,
@@ -490,32 +479,23 @@ func TestErrorScenarios(t *testing.T) {
 		}
 	})
 
-	// Test 5: Invalid JSON-RPC request
-	t.Run("InvalidJSONRPC", func(t *testing.T) {
-		resp, _ := env.mcpHandler.HandleRequest([]byte("invalid json"))
-		if resp.Error == nil {
-			t.Error("expected error for invalid JSON")
+	// Test 5: Call non-existent tool (via Handler)
+	t.Run("CallNonExistentTool", func(t *testing.T) {
+		req := mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{
+				Name: "unknown-tool",
+			},
 		}
-		if resp.Error.Code != mcp.ErrCodeParseError {
-			t.Errorf("expected parse error code, got %d", resp.Error.Code)
-		}
-	})
 
-	// Test 6: Unknown MCP method
-	t.Run("UnknownMCPMethod", func(t *testing.T) {
-		req := mcp.Request{
-			JSONRPC: "2.0",
-			ID:      1,
-			Method:  "unknown/method",
-		}
-		reqData, _ := json.Marshal(req)
+		// Should succeed but return IsError=true
+		resp, err := env.mcpHandler.HandleCallTool(context.Background(), &req)
 
-		resp, _ := env.mcpHandler.HandleRequest(reqData)
-		if resp.Error == nil {
-			t.Error("expected error for unknown method")
-		}
-		if resp.Error.Code != mcp.ErrCodeMethodNotFound {
-			t.Errorf("expected method not found error, got %d", resp.Error.Code)
+		if err != nil {
+			// This path is also acceptable if it bubbles up
+		} else {
+			if !resp.IsError {
+				t.Error("expected error result for unknown tool")
+			}
 		}
 	})
 }
@@ -530,7 +510,13 @@ func TestMCPServerStartup(t *testing.T) {
 	outReader, outWriter, _ := os.Pipe()
 
 	// Create server
-	server := mcp.NewServer(env.mcpHandler, inReader, outWriter)
+	server := mcp.NewServer(&mcp.Implementation{
+		Name:    "testapp",
+		Version: "1.0",
+	}, &mcp.ServerOptions{})
+
+	// Register tools
+	env.mcpHandler.Register(server, &config.SafetyConfig{})
 
 	// Start server in background
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -538,16 +524,15 @@ func TestMCPServerStartup(t *testing.T) {
 
 	errChan := make(chan error, 1)
 	go func() {
-		errChan <- server.Serve(ctx)
+		transport := &mcp.IOTransport{
+			Reader: inReader,
+			Writer: outWriter,
+		}
+		errChan <- server.Run(ctx, transport)
 	}()
 
-	// Send a request
-	req := mcp.Request{
-		JSONRPC: "2.0",
-		ID:      1,
-		Method:  "tools/list",
-	}
-	reqData, _ := json.Marshal(req)
+	// Send a raw JSON-RPC request for tools/list
+	reqData := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	_, _ = inWriter.Write(append(reqData, '\n'))
 	_ = inWriter.Close()
 
@@ -557,7 +542,12 @@ func TestMCPServerStartup(t *testing.T) {
 	n, _ := outReader.Read(buf)
 
 	if n > 0 {
-		var resp mcp.Response
+		// We expect a JSON-RPC response
+		var resp struct {
+			JSONRPC string          `json:"jsonrpc"`
+			Result  json.RawMessage `json:"result,omitempty"`
+			Error   any             `json:"error,omitempty"`
+		}
 		if err := json.Unmarshal(buf[:n], &resp); err != nil {
 			t.Logf("response was: %s", string(buf[:n]))
 		} else {
