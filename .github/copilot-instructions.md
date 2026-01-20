@@ -10,7 +10,7 @@
 
 ### 代码风格
 
-- 遵循 `golangci-lint` 默认规则，运行 `make lint` 检查
+- 遵循 `golangci-lint` 默认规则，运行 `make lint-fix` 检查
 - 使用 `goimports` 格式化导入（`make fmt`）
 - 错误处理: 使用 `fmt.Errorf("context: %w", err)` 包装错误，保留错误链
 - 导出函数必须有 GoDoc 注释
