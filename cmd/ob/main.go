@@ -330,7 +330,7 @@ Example:
 				for _, appName := range apps {
 					info, err := configMgr.GetInstalledAppInfo(appName)
 					if err != nil {
-						fmt.Fprintf(w, "%s\t<error>\t-\t-\n", appName)
+						_, _ = fmt.Fprintf(w, "%s\t<error>\t-\t-\n", appName)
 						continue
 					}
 

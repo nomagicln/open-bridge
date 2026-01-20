@@ -410,7 +410,9 @@ func TestImportProfile(t *testing.T) {
 	// Create app
 	config := NewAppConfig("testapp", "/path/to/spec.yaml")
 	config.AddProfile(NewProfile("default", "https://api.example.com"))
-	m.SaveAppConfig(config)
+	if err := m.SaveAppConfig(config); err != nil {
+		t.Fatalf("SaveAppConfig failed: %v", err)
+	}
 
 	// Export profile
 	exportData, err := m.ExportProfile("testapp", "default")
@@ -420,7 +422,9 @@ func TestImportProfile(t *testing.T) {
 
 	// Create another app
 	config2 := NewAppConfig("otherapp", "/path/to/other.yaml")
-	m.SaveAppConfig(config2)
+	if err := m.SaveAppConfig(config2); err != nil {
+		t.Fatalf("SaveAppConfig failed: %v", err)
+	}
 
 	// Import profile
 	if err := m.ImportProfile("otherapp", exportData); err != nil {

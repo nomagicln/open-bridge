@@ -122,7 +122,7 @@ func (p *SecurePrompter) PromptConfirm(prompt string, defaultYes bool) (bool, er
 		suffix = " [Y/n]: "
 	}
 
-	fmt.Fprint(p.writer, prompt+suffix)
+	_, _ = fmt.Fprint(p.writer, prompt+suffix)
 
 	input, err := p.readInput()
 	if err != nil {
