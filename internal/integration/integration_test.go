@@ -81,7 +81,7 @@ func (e *testEnv) createMockServer(handlers map[string]http.HandlerFunc) *httpte
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
 	}))
 	return e.mockServer
 }
@@ -111,21 +111,21 @@ func TestFullCLIWorkflow(t *testing.T) {
 	mockServer := env.createMockServer(map[string]http.HandlerFunc{
 		"GET /users": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]map[string]any{
+			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{"id": 1, "name": "Alice", "email": "alice@example.com"},
 				{"id": 2, "name": "Bob", "email": "bob@example.com"},
 			})
 		},
 		"GET /users/1": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id": 1, "name": "Alice", "email": "alice@example.com",
 			})
 		},
 		"POST /users": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id": 3, "name": "Charlie", "email": "charlie@example.com",
 			})
 		},
@@ -221,7 +221,7 @@ func TestMCPServerWorkflow(t *testing.T) {
 	mockServer := env.createMockServer(map[string]http.HandlerFunc{
 		"GET /users": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]map[string]any{
+			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{"id": 1, "name": "Alice"},
 			})
 		},

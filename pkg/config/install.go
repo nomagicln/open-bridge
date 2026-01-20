@@ -482,9 +482,9 @@ func getOBBinaryPath() (string, error) {
 
 func promptString(reader io.Reader, writer io.Writer, prompt, defaultVal string) (string, error) {
 	if defaultVal != "" {
-		fmt.Fprintf(writer, "%s [%s]: ", prompt, defaultVal)
+		_, _ = fmt.Fprintf(writer, "%s [%s]: ", prompt, defaultVal)
 	} else {
-		fmt.Fprintf(writer, "%s: ", prompt)
+		_, _ = fmt.Fprintf(writer, "%s: ", prompt)
 	}
 
 	scanner := bufio.NewScanner(reader)
@@ -509,7 +509,7 @@ func promptYesNo(reader io.Reader, writer io.Writer, prompt string, defaultVal b
 		defaultStr = "Y/n"
 	}
 
-	fmt.Fprintf(writer, "%s [%s]: ", prompt, defaultStr)
+	_, _ = fmt.Fprintf(writer, "%s [%s]: ", prompt, defaultStr)
 
 	scanner := bufio.NewScanner(reader)
 	if scanner.Scan() {
