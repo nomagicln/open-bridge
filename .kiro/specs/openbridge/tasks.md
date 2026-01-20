@@ -57,15 +57,15 @@ This implementation plan breaks down the OpenBridge project into discrete, incre
     - Implement ImportProfile with validation
     - _Requirements: 3.6, 3.8, 3.9_
   
-  - [ ]* 3.5 Write property test for configuration persistence round-trip
+  - [x]* 3.5 Write property test for configuration persistence round-trip
     - **Property 3: Configuration Persistence Round-Trip**
     - **Validates: Requirements 2.1, 2.4, 14.1, 14.2, 14.3**
   
-  - [ ]* 3.6 Write property test for profile export credential exclusion
+  - [x]* 3.6 Write property test for profile export credential exclusion
     - **Property 5: Profile Export Excludes Credentials**
     - **Validates: Requirements 3.8**
   
-  - [ ]* 3.7 Write property test for profile import validation
+  - [x]* 3.7 Write property test for profile import validation
     - **Property 6: Profile Import Validation**
     - **Validates: Requirements 3.9**
   
@@ -86,11 +86,11 @@ This implementation plan breaks down the OpenBridge project into discrete, incre
     - Add keyring error handling
     - _Requirements: 8.6_
   
-  - [ ]* 4.3 Write property test for credential keyring round-trip
+  - [x]* 4.3 Write property test for credential keyring round-trip
     - **Property 4: Credential Keyring Round-Trip**
     - **Validates: Requirements 2.7, 8.1, 8.2, 8.6**
   
-  - [ ]* 4.4 Write unit tests for platform-specific keyring backends
+  - [x]* 4.4 Write unit tests for platform-specific keyring backends
     - Test macOS Keychain integration
     - Test Windows Credential Manager integration
     - Test Linux Secret Service integration
@@ -287,7 +287,7 @@ This implementation plan breaks down the OpenBridge project into discrete, incre
     - Test error scenarios
     - _Requirements: All_
   
-  - [ ] 11.3 Test with real OpenAPI specs
+  - [x] 11.3 Test with real OpenAPI specs
     - Test with Petstore API
     - Test with GitHub API
     - Test with Stripe API
@@ -362,20 +362,20 @@ This implementation plan breaks down the OpenBridge project into discrete, incre
     - Example profile configurations
 
 - [ ] 16. Property-based testing implementation
-  - [ ] 16.1 Add gopter dependency and setup
+  - [x] 16.1 Add gopter dependency and setup
     - Add gopter to go.mod
     - Create test generators package
     - Set up property test infrastructure
     - _Requirements: All_
   
-  - [ ] 16.2 Implement property test generators
+  - [x] 16.2 Implement property test generators
     - Create OpenAPI spec generator
     - Create config generator
     - Create parameter generator
     - Create request/response generators
     - _Requirements: All_
   
-  - [ ] 16.3 Run all property tests
+  - [x] 16.3 Run all property tests
     - Execute all property tests with 100 iterations
     - Fix any failures
     - Document property test results

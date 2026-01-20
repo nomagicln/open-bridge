@@ -582,3 +582,10 @@ func isURL(s string) bool {
 	}
 	return u.Scheme == "http" || u.Scheme == "https"
 }
+
+// ParseSpecFromJSON parses an OpenAPI specification from JSON bytes.
+// This is useful for testing with inline spec definitions.
+func (p *Parser) ParseSpecFromJSON(data []byte) (*openapi3.T, error) {
+	ctx := context.Background()
+	return p.parseSpec(ctx, data, "inline-json")
+}
