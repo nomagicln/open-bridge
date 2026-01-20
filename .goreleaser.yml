@@ -5,10 +5,8 @@ version: 2
 
 before:
   hooks:
-    # Run tests before release
-    - go test -race ./...
-    # Run linter
-    - make lint
+    # Tests are already run in CI workflow
+    - go mod tidy
 
 builds:
   - id: ob
