@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -17,10 +18,18 @@ const (
 	mcpListToolsRequest = `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
 )
 
+// getBinaryName returns the platform-specific binary name
+func getBinaryName(baseName string) string {
+	if runtime.GOOS == "windows" {
+		return baseName + ".exe"
+	}
+	return baseName
+}
+
 // BenchmarkColdStart measures the cold start performance of the CLI
 func BenchmarkColdStart(b *testing.B) {
 	// Build the binary first
-	binPath := filepath.Join(b.TempDir(), "ob")
+	binPath := filepath.Join(b.TempDir(), getBinaryName("ob"))
 	cmd := exec.Command("go", "build", "-o", binPath, ".")
 	if err := cmd.Run(); err != nil {
 		b.Fatalf("Failed to build binary: %v", err)
@@ -49,7 +58,7 @@ func BenchmarkColdStart(b *testing.B) {
 // TestColdStartPerformance measures actual cold start performance with realistic conditions
 func TestColdStartPerformance(t *testing.T) {
 	// Build the binary
-	binPath := filepath.Join(t.TempDir(), "ob")
+	binPath := filepath.Join(t.TempDir(), getBinaryName("ob"))
 	cmd := exec.Command("go", "build", "-o", binPath, ".")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to build binary: %v", err)
