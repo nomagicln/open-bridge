@@ -97,16 +97,29 @@ release:
 
     ### Installation
 
-    #### macOS/Linux
+    #### macOS (Apple Silicon)
     ```bash
-    # Download and extract the appropriate archive
-    curl -LO https://github.com/nomagicln/open-bridge/releases/download/{{.Tag}}/ob_{{.Tag}}_{{.Os}}_{{.Arch}}.tar.gz
-    tar xzf ob_{{.Tag}}_{{.Os}}_{{.Arch}}.tar.gz
+    curl -LO https://github.com/nomagicln/open-bridge/releases/download/{{.Tag}}/open-bridge_{{.Version}}_Darwin_arm64.tar.gz
+    tar xzf open-bridge_{{.Version}}_Darwin_arm64.tar.gz
+    sudo mv ob /usr/local/bin/
+    ```
+
+    #### macOS (Intel)
+    ```bash
+    curl -LO https://github.com/nomagicln/open-bridge/releases/download/{{.Tag}}/open-bridge_{{.Version}}_Darwin_x86_64.tar.gz
+    tar xzf open-bridge_{{.Version}}_Darwin_x86_64.tar.gz
+    sudo mv ob /usr/local/bin/
+    ```
+
+    #### Linux (amd64)
+    ```bash
+    curl -LO https://github.com/nomagicln/open-bridge/releases/download/{{.Tag}}/open-bridge_{{.Version}}_Linux_x86_64.tar.gz
+    tar xzf open-bridge_{{.Version}}_Linux_x86_64.tar.gz
     sudo mv ob /usr/local/bin/
     ```
 
     #### Windows
-    Download the `.zip` file, extract it, and add `ob.exe` to your PATH.
+    Download the appropriate `.zip` file from the assets below, extract it, and add `ob.exe` to your PATH.
 
     ### Verify Installation
     ```bash
