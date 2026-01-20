@@ -122,7 +122,7 @@ One Spec, Dual Interface.`,
 		},
 	}
 
-	// Disable the default completion command
+	// Disable the default completion command (we'll use our custom one)
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
 	// Add global flags
@@ -136,6 +136,7 @@ One Spec, Dual Interface.`,
 		newUninstallCmd(),
 		newListCmd(),
 		newRunCmd(),
+		newCompletionCmd(),
 	)
 
 	return rootCmd.Execute()
@@ -235,7 +236,8 @@ This removes the application configuration and any created shims.
 
 Example:
   ob uninstall myapi`,
-		Args: cobra.ExactArgs(1),
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeAppNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			appName := args[0]
 
@@ -370,6 +372,7 @@ Example:
   ob run petstore create pet --name "Fluffy" --status available
   ob run petstore --mcp  # Start MCP server`,
 		Args:               cobra.MinimumNArgs(1),
+		ValidArgsFunction:  completeRunArgs,
 		DisableFlagParsing: true, // Pass all flags to the app handler
 		RunE: func(cmd *cobra.Command, args []string) error {
 			appName := args[0]
@@ -451,4 +454,126 @@ func startMCPServer(appConfig *config.AppConfig, args []string) error {
 	fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s)...\n", appConfig.Name, profileName)
 
 	return server.Serve(context.Background())
+}
+
+// completeAppNames provides completion for installed app names
+func completeAppNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	apps, err := configMgr.ListApps()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+	return apps, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeRunArgs provides completion for the run command
+func completeRunArgs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) == 0 {
+		// Complete app name
+		return completeAppNames(cmd, args, toComplete)
+	}
+
+	// For subsequent args, we need to provide verb and resource completion
+	// This requires loading the app's spec
+	appName := args[0]
+	if !configMgr.AppExists(appName) {
+		return nil, cobra.ShellCompDirectiveError
+	}
+
+	appConfig, err := configMgr.GetAppConfig(appName)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+
+	// Load spec
+	specDoc, ok := specParser.GetCachedSpec(appName)
+	if !ok {
+		var err error
+		specDoc, err = specParser.LoadSpec(appConfig.SpecSource)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+		specParser.CacheSpec(appName, specDoc)
+	}
+
+	tree := mapper.BuildCommandTree(specDoc)
+
+	if len(args) == 1 {
+		// Complete verb
+		verbs := make(map[string]bool)
+		for _, res := range tree.RootResources {
+			for verb := range res.Operations {
+				verbs[verb] = true
+			}
+		}
+		verbList := make([]string, 0, len(verbs))
+		for verb := range verbs {
+			verbList = append(verbList, verb)
+		}
+		return verbList, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	if len(args) == 2 {
+		// Complete resource
+		resources := make([]string, 0, len(tree.RootResources))
+		for resource := range tree.RootResources {
+			resources = append(resources, resource)
+		}
+		return resources, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	// For flags, we need more context about the operation
+	// This is handled by flag completion (not yet implemented)
+	return nil, cobra.ShellCompDirectiveNoFileComp
+}
+
+// newCompletionCmd creates the completion subcommand
+func newCompletionCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "completion [bash|zsh|fish]",
+		Short: "Generate shell completion script",
+		Long: `Generate shell completion script for ob.
+
+The completion script can be sourced to enable auto-completion in your shell.
+
+Bash:
+  # Load in current session
+  source <(ob completion bash)
+  
+  # Install permanently (Linux)
+  ob completion bash > /etc/bash_completion.d/ob
+  
+  # Install permanently (macOS)
+  ob completion bash > /usr/local/etc/bash_completion.d/ob
+
+Zsh:
+  # Load in current session
+  source <(ob completion zsh)
+  
+  # Install permanently
+  ob completion zsh > "${fpath[1]}/_ob"
+
+Fish:
+  # Load in current session
+  ob completion fish | source
+  
+  # Install permanently
+  ob completion fish > ~/.config/fish/completions/ob.fish`,
+		ValidArgs:             []string{"bash", "zsh", "fish"},
+		Args:                  cobra.ExactValidArgs(1),
+		DisableFlagsInUseLine: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch args[0] {
+			case "bash":
+				return cmd.Root().GenBashCompletionV2(os.Stdout, true)
+			case "zsh":
+				return cmd.Root().GenZshCompletion(os.Stdout)
+			case "fish":
+				return cmd.Root().GenFishCompletion(os.Stdout, true)
+			default:
+				return fmt.Errorf("unsupported shell: %s", args[0])
+			}
+		},
+	}
+
+	return cmd
 }
