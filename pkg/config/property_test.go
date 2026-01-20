@@ -46,7 +46,7 @@ func TestPropertyProfileExportExcludesCredentials(t *testing.T) {
 				},
 				DefaultProfile: profileName,
 			}
-			
+
 			err := m.SaveAppConfig(appConfig)
 			if err != nil {
 				return true // Skip this test case if save fails
@@ -63,8 +63,7 @@ func TestPropertyProfileExportExcludesCredentials(t *testing.T) {
 			exported := string(data)
 
 			// Verify the export contains profile data
-			hasProfileData := len(exported) > 0 && (
-				containsAny(exported, appName) || 
+			hasProfileData := len(exported) > 0 && (containsAny(exported, appName) ||
 				containsAny(exported, profileName) ||
 				containsAny(exported, baseURL))
 
@@ -84,7 +83,7 @@ func TestPropertyProfileExportExcludesCredentials(t *testing.T) {
 }
 
 // TestPropertyProfileImportValidation tests that profile import validates required fields
-// Property 6: Profile Import Validation  
+// Property 6: Profile Import Validation
 // This validates Requirement 3.9 - imported profiles must be validated
 func TestPropertyProfileImportValidation(t *testing.T) {
 	if testing.Short() {
@@ -120,7 +119,7 @@ func TestPropertyProfileImportValidation(t *testing.T) {
 				},
 				DefaultProfile: "temp",
 			}
-			
+
 			err := m.SaveAppConfig(appConfig)
 			if err != nil {
 				// If save fails, it's not a test failure - just skip this case
