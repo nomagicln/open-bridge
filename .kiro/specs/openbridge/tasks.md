@@ -86,7 +86,7 @@ This implementation plan breaks down the OpenBridge project into discrete, incre
     - Add keyring error handling
     - _Requirements: 8.6_
   
-  - [ ]* 4.3 Write property test for credential keyring round-trip
+  - [x]* 4.3 Write property test for credential keyring round-trip
     - **Property 4: Credential Keyring Round-Trip**
     - **Validates: Requirements 2.7, 8.1, 8.2, 8.6**
   
@@ -362,13 +362,13 @@ This implementation plan breaks down the OpenBridge project into discrete, incre
     - Example profile configurations
 
 - [ ] 16. Property-based testing implementation
-  - [ ] 16.1 Add gopter dependency and setup
+  - [x] 16.1 Add gopter dependency and setup
     - Add gopter to go.mod
     - Create test generators package
     - Set up property test infrastructure
     - _Requirements: All_
   
-  - [ ] 16.2 Implement property test generators
+  - [x] 16.2 Implement property test generators
     - Create OpenAPI spec generator
     - Create config generator
     - Create parameter generator
