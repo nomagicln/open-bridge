@@ -30,7 +30,7 @@ func TestNewManager(t *testing.T) {
 
 func TestGetConfigDir(t *testing.T) {
 	// Clear any override
-	os.Unsetenv("OPENBRIDGE_CONFIG_DIR")
+	_ = os.Unsetenv("OPENBRIDGE_CONFIG_DIR")
 
 	dir, err := GetConfigDir()
 	if err != nil {
@@ -60,8 +60,10 @@ func TestGetConfigDir(t *testing.T) {
 
 func TestGetConfigDirWithOverride(t *testing.T) {
 	customDir := "/custom/config/dir"
-	os.Setenv("OPENBRIDGE_CONFIG_DIR", customDir)
-	defer os.Unsetenv("OPENBRIDGE_CONFIG_DIR")
+	if err := os.Setenv("OPENBRIDGE_CONFIG_DIR", customDir); err != nil {
+		t.Fatalf("os.Setenv failed: %v", err)
+	}
+	defer func() { _ = os.Unsetenv("OPENBRIDGE_CONFIG_DIR") }()
 
 	dir, err := GetConfigDir()
 	if err != nil {
@@ -281,12 +283,16 @@ func TestListAppsWithInfo(t *testing.T) {
 	config1 := NewAppConfig("app1", "/path/spec1.yaml")
 	config1.Description = "First app"
 	config1.AddProfile(NewProfile("default", "https://api1.example.com"))
-	m.SaveAppConfig(config1)
+	if err := m.SaveAppConfig(config1); err != nil {
+		t.Fatalf("SaveAppConfig failed: %v", err)
+	}
 
 	config2 := NewAppConfig("app2", "/path/spec2.yaml")
 	config2.AddProfile(NewProfile("default", "https://api2.example.com"))
 	config2.AddProfile(NewProfile("prod", "https://prod.example.com"))
-	m.SaveAppConfig(config2)
+	if err := m.SaveAppConfig(config2); err != nil {
+		t.Fatalf("SaveAppConfig failed: %v", err)
+	}
 
 	apps, err := m.ListAppsWithInfo()
 	if err != nil {
@@ -380,7 +386,9 @@ func TestExportProfileNotFound(t *testing.T) {
 	}
 
 	config := NewAppConfig("testapp", "/path/to/spec.yaml")
-	m.SaveAppConfig(config)
+	if err := m.SaveAppConfig(config); err != nil {
+		t.Fatalf("SaveAppConfig failed: %v", err)
+	}
 
 	_, err = m.ExportProfile("testapp", "nonexistent")
 	if err == nil {

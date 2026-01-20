@@ -119,7 +119,7 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 
 	// Prompt for base URL if still empty and interactive
 	if baseURL == "" && opts.Interactive {
-		fmt.Fprintln(opts.Writer, "No server URL found in spec.")
+		_, _ = fmt.Fprintln(opts.Writer, "No server URL found in spec.")
 		baseURL, err = promptString(opts.Reader, opts.Writer, "Base URL", "http://localhost:8080")
 		if err != nil {
 			return nil, err
@@ -175,15 +175,15 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 		shimPath, err := m.CreateShim(appName, opts.ShimDir)
 		if err != nil {
 			// Don't fail installation, just warn
-			fmt.Fprintf(opts.Writer, "Warning: failed to create shim: %v\n", err)
+			_, _ = fmt.Fprintf(opts.Writer, "Warning: failed to create shim: %v\n", err)
 		} else {
 			result.ShimPath = shimPath
 			
 			// Check if shim directory is in PATH
 			shimDir := filepath.Dir(shimPath)
 			if !IsShimDirInPath(shimDir) {
-				fmt.Fprintf(opts.Writer, "\nNote: The shim directory is not in your PATH.\n")
-				fmt.Fprintf(opts.Writer, "%s\n", GetPathInstructions(shimDir))
+				_, _ = fmt.Fprintf(opts.Writer, "\nNote: The shim directory is not in your PATH.\n")
+				_, _ = fmt.Fprintf(opts.Writer, "%s\n", GetPathInstructions(shimDir))
 			}
 		}
 	}
@@ -528,11 +528,11 @@ func promptYesNo(reader io.Reader, writer io.Writer, prompt string, defaultVal b
 }
 
 func promptChoice(reader io.Reader, writer io.Writer, prompt string, choices []string, defaultVal string) (string, error) {
-	fmt.Fprintf(writer, "%s (%s)", prompt, strings.Join(choices, "/"))
+	_, _ = fmt.Fprintf(writer, "%s (%s)", prompt, strings.Join(choices, "/"))
 	if defaultVal != "" {
-		fmt.Fprintf(writer, " [%s]", defaultVal)
+		_, _ = fmt.Fprintf(writer, " [%s]", defaultVal)
 	}
-	fmt.Fprint(writer, ": ")
+	_, _ = fmt.Fprint(writer, ": ")
 
 	scanner := bufio.NewScanner(reader)
 	if scanner.Scan() {

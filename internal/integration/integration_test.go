@@ -548,12 +548,12 @@ func TestMCPServerStartup(t *testing.T) {
 		Method:  "tools/list",
 	}
 	reqData, _ := json.Marshal(req)
-	inWriter.Write(append(reqData, '\n'))
-	inWriter.Close()
+	_, _ = inWriter.Write(append(reqData, '\n'))
+	_ = inWriter.Close()
 
 	// Read response (with timeout)
 	buf := make([]byte, 4096)
-	outReader.SetReadDeadline(time.Now().Add(time.Second))
+	_ = outReader.SetReadDeadline(time.Now().Add(time.Second))
 	n, _ := outReader.Read(buf)
 
 	if n > 0 {
@@ -722,7 +722,7 @@ func TestProfileImportExport(t *testing.T) {
 	profile := appConfig.Profiles["default"]
 	profile.Headers = map[string]string{"X-Custom": "value"}
 	appConfig.Profiles["default"] = profile
-	env.configMgr.SaveAppConfig(appConfig)
+	_ = env.configMgr.SaveAppConfig(appConfig)
 
 	// Export profile
 	t.Run("Export", func(t *testing.T) {

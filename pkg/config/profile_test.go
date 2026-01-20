@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func setupTestApp(t *testing.T) (*Manager, *ProfileManager) {
@@ -201,7 +203,7 @@ func TestDeleteProfileUpdateDefault(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete the default profile
-	err := pm.DeleteProfile("staging")
+	err = pm.DeleteProfile("staging")
 	if err != nil {
 		t.Fatalf("DeleteProfile failed: %v", err)
 	}

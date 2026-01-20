@@ -90,7 +90,7 @@ func (p *SecurePrompter) PromptBasicAuth() (*Credential, error) {
 		return nil, fmt.Errorf("username cannot be empty")
 	}
 
-	fmt.Fprint(p.writer, "Password: ")
+	_, _ = fmt.Fprint(p.writer, "Password: ")
 	password, err := p.readSecureInput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read password: %w", err)
@@ -105,13 +105,13 @@ func (p *SecurePrompter) PromptBasicAuth() (*Credential, error) {
 
 // PromptToken prompts for a single token/secret securely.
 func (p *SecurePrompter) PromptToken(prompt string) (string, error) {
-	fmt.Fprint(p.writer, prompt)
+	_, _ = fmt.Fprint(p.writer, prompt)
 	return p.readSecureInput()
 }
 
 // PromptString prompts for a non-secret string.
 func (p *SecurePrompter) PromptString(prompt string) (string, error) {
-	fmt.Fprint(p.writer, prompt)
+	_, _ = fmt.Fprint(p.writer, prompt)
 	return p.readInput()
 }
 
