@@ -52,7 +52,7 @@ func testPetstoreAPI(t *testing.T) {
 		"POST /pet": func(w http.ResponseWriter, r *http.Request) {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
-			
+
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]any{
@@ -65,7 +65,7 @@ func testPetstoreAPI(t *testing.T) {
 		"PUT /pet": func(w http.ResponseWriter, r *http.Request) {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
-			
+
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(body)
 		},
@@ -198,11 +198,11 @@ func testGitHubAPI(t *testing.T) {
 					"login": "octocat",
 					"id":    1,
 				},
-				"private":     false,
-				"description": "My first repository on GitHub!",
-				"fork":        false,
-				"language":    "Go",
-				"forks_count": 9,
+				"private":          false,
+				"description":      "My first repository on GitHub!",
+				"fork":             false,
+				"language":         "Go",
+				"forks_count":      9,
 				"stargazers_count": 80,
 			})
 		},
@@ -224,7 +224,7 @@ func testGitHubAPI(t *testing.T) {
 		"POST /repos/octocat/Hello-World/issues": func(w http.ResponseWriter, r *http.Request) {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
-			
+
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{
@@ -238,7 +238,7 @@ func testGitHubAPI(t *testing.T) {
 		"PATCH /repos/octocat/Hello-World/issues/1347": func(w http.ResponseWriter, r *http.Request) {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
-			
+
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"id":     1,
@@ -257,7 +257,7 @@ func testGitHubAPI(t *testing.T) {
 				})
 				return
 			}
-			
+
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"login": "octocat",
@@ -386,7 +386,7 @@ func testStripeAPI(t *testing.T) {
 		},
 		"POST /v1/customers": func(w http.ResponseWriter, r *http.Request) {
 			r.ParseForm()
-			
+
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]any{
@@ -398,7 +398,7 @@ func testStripeAPI(t *testing.T) {
 		},
 		"POST /v1/customers/cus_123": func(w http.ResponseWriter, r *http.Request) {
 			r.ParseForm()
-			
+
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"id":     "cus_123",
@@ -438,7 +438,7 @@ func testStripeAPI(t *testing.T) {
 		},
 		"POST /v1/payment_intents": func(w http.ResponseWriter, r *http.Request) {
 			r.ParseForm()
-			
+
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"id":       "pi_123",
@@ -1110,240 +1110,240 @@ components:
 
 // testPetstoreMCP tests MCP functionality with Petstore API spec.
 func testPetstoreMCP(t *testing.T) {
-env := newTestEnv(t)
-defer env.cleanup()
+	env := newTestEnv(t)
+	defer env.cleanup()
 
-// Create mock Petstore API server
-mockServer := env.createMockServer(map[string]http.HandlerFunc{
-"GET /pet/1": func(w http.ResponseWriter, r *http.Request) {
-w.Header().Set("Content-Type", "application/json")
-json.NewEncoder(w).Encode(map[string]any{
-"id":     1,
-"name":   "Doggo",
-"status": "available",
-})
-},
-})
+	// Create mock Petstore API server
+	mockServer := env.createMockServer(map[string]http.HandlerFunc{
+		"GET /pet/1": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":     1,
+				"name":   "Doggo",
+				"status": "available",
+			})
+		},
+	})
 
-// Create spec
-specContent := createPetstoreSpec(mockServer.URL)
-specPath := env.writeSpec(specContent)
+	// Create spec
+	specContent := createPetstoreSpec(mockServer.URL)
+	specPath := env.writeSpec(specContent)
 
-specDoc, err := env.specParser.LoadSpec(specPath)
-if err != nil {
-t.Fatalf("failed to load spec: %v", err)
-}
+	specDoc, err := env.specParser.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
 
-// Install app
-_, err = env.configMgr.InstallApp("petstore", config.InstallOptions{
-SpecSource: specPath,
-CreateShim: false,
-})
-if err != nil {
-t.Fatalf("InstallApp failed: %v", err)
-}
+	// Install app
+	_, err = env.configMgr.InstallApp("petstore", config.InstallOptions{
+		SpecSource: specPath,
+		CreateShim: false,
+	})
+	if err != nil {
+		t.Fatalf("InstallApp failed: %v", err)
+	}
 
-appConfig, _ := env.configMgr.GetAppConfig("petstore")
-env.mcpHandler.SetSpec(specDoc)
-env.mcpHandler.SetAppConfig(appConfig, "default")
+	appConfig, _ := env.configMgr.GetAppConfig("petstore")
+	env.mcpHandler.SetSpec(specDoc)
+	env.mcpHandler.SetAppConfig(appConfig, "default")
 
-// Test building MCP tools
-t.Run("BuildMCPTools", func(t *testing.T) {
-tools := env.mcpHandler.BuildMCPTools(specDoc, nil)
-if len(tools) == 0 {
-t.Error("expected at least one MCP tool")
-}
+	// Test building MCP tools
+	t.Run("BuildMCPTools", func(t *testing.T) {
+		tools := env.mcpHandler.BuildMCPTools(specDoc, nil)
+		if len(tools) == 0 {
+			t.Error("expected at least one MCP tool")
+		}
 
-// Verify at least one pet operation exists
-foundPetOp := false
-for _, tool := range tools {
-if strings.Contains(strings.ToLower(tool.Name), "pet") {
-foundPetOp = true
-if tool.InputSchema == nil {
-t.Errorf("tool %s should have input schema", tool.Name)
-}
-}
-}
-if !foundPetOp {
-t.Error("expected at least one pet-related operation in MCP tools")
-}
-})
+		// Verify at least one pet operation exists
+		foundPetOp := false
+		for _, tool := range tools {
+			if strings.Contains(strings.ToLower(tool.Name), "pet") {
+				foundPetOp = true
+				if tool.InputSchema == nil {
+					t.Errorf("tool %s should have input schema", tool.Name)
+				}
+			}
+		}
+		if !foundPetOp {
+			t.Error("expected at least one pet-related operation in MCP tools")
+		}
+	})
 
-// Test tools/list
-t.Run("ListTools", func(t *testing.T) {
-req := mcp.Request{
-JSONRPC: "2.0",
-ID:      1,
-Method:  "tools/list",
-}
-reqData, _ := json.Marshal(req)
+	// Test tools/list
+	t.Run("ListTools", func(t *testing.T) {
+		req := mcp.Request{
+			JSONRPC: "2.0",
+			ID:      1,
+			Method:  "tools/list",
+		}
+		reqData, _ := json.Marshal(req)
 
-resp, err := env.mcpHandler.HandleRequest(reqData)
-if err != nil {
-t.Fatalf("HandleRequest failed: %v", err)
-}
+		resp, err := env.mcpHandler.HandleRequest(reqData)
+		if err != nil {
+			t.Fatalf("HandleRequest failed: %v", err)
+		}
 
-if resp.Error != nil {
-t.Errorf("unexpected error: %v", resp.Error)
-}
-})
+		if resp.Error != nil {
+			t.Errorf("unexpected error: %v", resp.Error)
+		}
+	})
 }
 
 // testGitHubMCP tests MCP functionality with GitHub API spec.
 func testGitHubMCP(t *testing.T) {
-env := newTestEnv(t)
-defer env.cleanup()
+	env := newTestEnv(t)
+	defer env.cleanup()
 
-// Create mock GitHub API server
-mockServer := env.createMockServer(map[string]http.HandlerFunc{
-"GET /repos/octocat/Hello-World": func(w http.ResponseWriter, r *http.Request) {
-w.Header().Set("Content-Type", "application/json")
-json.NewEncoder(w).Encode(map[string]any{
-"id":   1296269,
-"name": "Hello-World",
-})
-},
-})
+	// Create mock GitHub API server
+	mockServer := env.createMockServer(map[string]http.HandlerFunc{
+		"GET /repos/octocat/Hello-World": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":   1296269,
+				"name": "Hello-World",
+			})
+		},
+	})
 
-// Create spec
-specContent := createGitHubSpec(mockServer.URL)
-specPath := env.writeSpec(specContent)
+	// Create spec
+	specContent := createGitHubSpec(mockServer.URL)
+	specPath := env.writeSpec(specContent)
 
-specDoc, err := env.specParser.LoadSpec(specPath)
-if err != nil {
-t.Fatalf("failed to load spec: %v", err)
-}
+	specDoc, err := env.specParser.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
 
-// Install app
-_, err = env.configMgr.InstallApp("github", config.InstallOptions{
-SpecSource: specPath,
-CreateShim: false,
-})
-if err != nil {
-t.Fatalf("InstallApp failed: %v", err)
-}
+	// Install app
+	_, err = env.configMgr.InstallApp("github", config.InstallOptions{
+		SpecSource: specPath,
+		CreateShim: false,
+	})
+	if err != nil {
+		t.Fatalf("InstallApp failed: %v", err)
+	}
 
-appConfig, _ := env.configMgr.GetAppConfig("github")
-env.mcpHandler.SetSpec(specDoc)
-env.mcpHandler.SetAppConfig(appConfig, "default")
+	appConfig, _ := env.configMgr.GetAppConfig("github")
+	env.mcpHandler.SetSpec(specDoc)
+	env.mcpHandler.SetAppConfig(appConfig, "default")
 
-// Test read-only mode
-t.Run("ReadOnlyMode", func(t *testing.T) {
-tools := env.mcpHandler.BuildMCPTools(specDoc, &config.SafetyConfig{
-ReadOnlyMode: true,
-})
+	// Test read-only mode
+	t.Run("ReadOnlyMode", func(t *testing.T) {
+		tools := env.mcpHandler.BuildMCPTools(specDoc, &config.SafetyConfig{
+			ReadOnlyMode: true,
+		})
 
-// Verify no write operations (POST, PUT, PATCH, DELETE)
-for _, tool := range tools {
-lowerName := strings.ToLower(tool.Name)
-if strings.Contains(lowerName, "create") ||
-strings.Contains(lowerName, "update") ||
-strings.Contains(lowerName, "delete") ||
-strings.Contains(lowerName, "apply") {
-t.Errorf("tool '%s' should be filtered in read-only mode", tool.Name)
-}
-}
-})
+		// Verify no write operations (POST, PUT, PATCH, DELETE)
+		for _, tool := range tools {
+			lowerName := strings.ToLower(tool.Name)
+			if strings.Contains(lowerName, "create") ||
+				strings.Contains(lowerName, "update") ||
+				strings.Contains(lowerName, "delete") ||
+				strings.Contains(lowerName, "apply") {
+				t.Errorf("tool '%s' should be filtered in read-only mode", tool.Name)
+			}
+		}
+	})
 
-// Test tools/list with GitHub spec
-t.Run("ListTools", func(t *testing.T) {
-req := mcp.Request{
-JSONRPC: "2.0",
-ID:      1,
-Method:  "tools/list",
-}
-reqData, _ := json.Marshal(req)
+	// Test tools/list with GitHub spec
+	t.Run("ListTools", func(t *testing.T) {
+		req := mcp.Request{
+			JSONRPC: "2.0",
+			ID:      1,
+			Method:  "tools/list",
+		}
+		reqData, _ := json.Marshal(req)
 
-resp, err := env.mcpHandler.HandleRequest(reqData)
-if err != nil {
-t.Fatalf("HandleRequest failed: %v", err)
-}
+		resp, err := env.mcpHandler.HandleRequest(reqData)
+		if err != nil {
+			t.Fatalf("HandleRequest failed: %v", err)
+		}
 
-if resp.Error != nil {
-t.Errorf("unexpected error: %v", resp.Error)
-}
-})
+		if resp.Error != nil {
+			t.Errorf("unexpected error: %v", resp.Error)
+		}
+	})
 }
 
 // testStripeMCP tests MCP functionality with Stripe API spec.
 func testStripeMCP(t *testing.T) {
-env := newTestEnv(t)
-defer env.cleanup()
+	env := newTestEnv(t)
+	defer env.cleanup()
 
-// Create mock Stripe API server
-mockServer := env.createMockServer(map[string]http.HandlerFunc{
-"GET /v1/customers": func(w http.ResponseWriter, r *http.Request) {
-w.Header().Set("Content-Type", "application/json")
-json.NewEncoder(w).Encode(map[string]any{
-"object": "list",
-"data": []map[string]any{
-{"id": "cus_123", "email": "test@example.com"},
-},
-})
-},
-})
+	// Create mock Stripe API server
+	mockServer := env.createMockServer(map[string]http.HandlerFunc{
+		"GET /v1/customers": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"object": "list",
+				"data": []map[string]any{
+					{"id": "cus_123", "email": "test@example.com"},
+				},
+			})
+		},
+	})
 
-// Create spec
-specContent := createStripeSpec(mockServer.URL)
-specPath := env.writeSpec(specContent)
+	// Create spec
+	specContent := createStripeSpec(mockServer.URL)
+	specPath := env.writeSpec(specContent)
 
-specDoc, err := env.specParser.LoadSpec(specPath)
-if err != nil {
-t.Fatalf("failed to load spec: %v", err)
-}
+	specDoc, err := env.specParser.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
 
-// Install app
-_, err = env.configMgr.InstallApp("stripe", config.InstallOptions{
-SpecSource: specPath,
-CreateShim: false,
-})
-if err != nil {
-t.Fatalf("InstallApp failed: %v", err)
-}
+	// Install app
+	_, err = env.configMgr.InstallApp("stripe", config.InstallOptions{
+		SpecSource: specPath,
+		CreateShim: false,
+	})
+	if err != nil {
+		t.Fatalf("InstallApp failed: %v", err)
+	}
 
-appConfig, _ := env.configMgr.GetAppConfig("stripe")
-env.mcpHandler.SetSpec(specDoc)
-env.mcpHandler.SetAppConfig(appConfig, "default")
+	appConfig, _ := env.configMgr.GetAppConfig("stripe")
+	env.mcpHandler.SetSpec(specDoc)
+	env.mcpHandler.SetAppConfig(appConfig, "default")
 
-// Test building tools
-t.Run("BuildMCPTools", func(t *testing.T) {
-tools := env.mcpHandler.BuildMCPTools(specDoc, nil)
-if len(tools) == 0 {
-t.Error("expected at least one MCP tool")
-}
+	// Test building tools
+	t.Run("BuildMCPTools", func(t *testing.T) {
+		tools := env.mcpHandler.BuildMCPTools(specDoc, nil)
+		if len(tools) == 0 {
+			t.Error("expected at least one MCP tool")
+		}
 
-// Verify customer operations exist
-foundCustomerOp := false
-for _, tool := range tools {
-if strings.Contains(strings.ToLower(tool.Name), "customer") {
-foundCustomerOp = true
-}
-}
-if !foundCustomerOp {
-t.Error("expected at least one customer-related operation in MCP tools")
-}
-})
+		// Verify customer operations exist
+		foundCustomerOp := false
+		for _, tool := range tools {
+			if strings.Contains(strings.ToLower(tool.Name), "customer") {
+				foundCustomerOp = true
+			}
+		}
+		if !foundCustomerOp {
+			t.Error("expected at least one customer-related operation in MCP tools")
+		}
+	})
 
-// Test operation allowlist
-t.Run("AllowedOperations", func(t *testing.T) {
-tools := env.mcpHandler.BuildMCPTools(specDoc, &config.SafetyConfig{
-AllowedOperations: []string{"listCustomers"},
-})
+	// Test operation allowlist
+	t.Run("AllowedOperations", func(t *testing.T) {
+		tools := env.mcpHandler.BuildMCPTools(specDoc, &config.SafetyConfig{
+			AllowedOperations: []string{"listCustomers"},
+		})
 
-// Should only have operations in the allowlist
-if len(tools) > 1 {
-t.Logf("Expected only allowlisted operations, got %d tools", len(tools))
-}
+		// Should only have operations in the allowlist
+		if len(tools) > 1 {
+			t.Logf("Expected only allowlisted operations, got %d tools", len(tools))
+		}
 
-// Verify the allowed operation is present
-found := false
-for _, tool := range tools {
-if tool.Name == "listCustomers" {
-found = true
-}
-}
-if !found && len(tools) > 0 {
-t.Error("expected listCustomers in tools when using allowlist")
-}
-})
+		// Verify the allowed operation is present
+		found := false
+		for _, tool := range tools {
+			if tool.Name == "listCustomers" {
+				found = true
+			}
+		}
+		if !found && len(tools) > 0 {
+			t.Error("expected listCustomers in tools when using allowlist")
+		}
+	})
 }
