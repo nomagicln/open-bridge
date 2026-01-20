@@ -536,7 +536,7 @@ Fish:
   # Install permanently
   ob completion fish > ~/.config/fish/completions/ob.fish`,
 		ValidArgs:             []string{"bash", "zsh", "fish"},
-		Args:                  cobra.ExactValidArgs(1),
+		Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			shell := args[0]
