@@ -478,8 +478,8 @@ func validateProfileName(name string) error {
 
 	// Check for invalid characters
 	for _, r := range name {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '-' || r == '_') {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') &&
+			(r < '0' || r > '9') && r != '-' && r != '_' {
 			return fmt.Errorf("profile name can only contain letters, numbers, hyphens, and underscores")
 		}
 	}

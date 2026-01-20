@@ -96,9 +96,10 @@ func (b *Builder) InjectAuth(req *http.Request, appName, profileName string, aut
 	case "bearer":
 		req.Header.Set("Authorization", "Bearer "+cred.Token)
 	case "api_key":
-		if authConfig.Location == "header" {
+		switch authConfig.Location {
+		case "header":
 			req.Header.Set(authConfig.KeyName, cred.Token)
-		} else if authConfig.Location == "query" {
+		case "query":
 			q := req.URL.Query()
 			q.Set(authConfig.KeyName, cred.Token)
 			req.URL.RawQuery = q.Encode()

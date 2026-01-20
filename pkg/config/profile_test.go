@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func setupTestApp(t *testing.T) (*Manager, *ProfileManager) {
@@ -25,7 +27,9 @@ servers:
   - url: https://api.example.com
 paths: {}
 `
-	os.WriteFile(specPath, []byte(specContent), 0644)
+	if err := os.WriteFile(specPath, []byte(specContent), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
 
 	// Install app
 	_, err = m.InstallApp("testapp", InstallOptions{SpecSource: specPath})
@@ -177,12 +181,13 @@ func TestDeleteProfile(t *testing.T) {
 	_, pm := setupTestApp(t)
 
 	// Create a second profile first
-	pm.CreateProfile("staging", ProfileOptions{
+	err := pm.CreateProfile("staging", ProfileOptions{
 		BaseURL: "https://staging.example.com",
 	})
+	require.NoError(t, err)
 
 	// Delete the staging profile
-	err := pm.DeleteProfile("staging")
+	err = pm.DeleteProfile("staging")
 	if err != nil {
 		t.Fatalf("DeleteProfile failed: %v", err)
 	}
@@ -196,11 +201,13 @@ func TestDeleteProfileUpdateDefault(t *testing.T) {
 	_, pm := setupTestApp(t)
 
 	// Create profiles and set one as default
-	pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
-	pm.SetDefaultProfile("staging")
+	err := pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
+	require.NoError(t, err)
+	err = pm.SetDefaultProfile("staging")
+	require.NoError(t, err)
 
 	// Delete the default profile
-	err := pm.DeleteProfile("staging")
+	err = pm.DeleteProfile("staging")
 	if err != nil {
 		t.Fatalf("DeleteProfile failed: %v", err)
 	}
@@ -255,10 +262,11 @@ func TestRenameProfileToExisting(t *testing.T) {
 	_, pm := setupTestApp(t)
 
 	// Create another profile
-	pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
+	err := pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
+	require.NoError(t, err)
 
 	// Try to rename to existing name
-	err := pm.RenameProfile("default", "staging")
+	err = pm.RenameProfile("default", "staging")
 
 	if err == nil {
 		t.Error("expected error when renaming to existing profile")
@@ -273,9 +281,10 @@ func TestCopyProfile(t *testing.T) {
 	_, pm := setupTestApp(t)
 
 	// Add some data to the default profile
-	pm.SetProfileHeader("default", "X-Custom", "value")
+	err := pm.SetProfileHeader("default", "X-Custom", "value")
+	require.NoError(t, err)
 
-	err := pm.CopyProfile("default", "staging")
+	err = pm.CopyProfile("default", "staging")
 	if err != nil {
 		t.Fatalf("CopyProfile failed: %v", err)
 	}
@@ -316,10 +325,11 @@ func TestSetDefaultProfile(t *testing.T) {
 	_, pm := setupTestApp(t)
 
 	// Create another profile
-	pm.CreateProfile("prod", ProfileOptions{BaseURL: "https://prod.example.com"})
+	err := pm.CreateProfile("prod", ProfileOptions{BaseURL: "https://prod.example.com"})
+	require.NoError(t, err)
 
 	// Set as default
-	err := pm.SetDefaultProfile("prod")
+	err = pm.SetDefaultProfile("prod")
 	if err != nil {
 		t.Fatalf("SetDefaultProfile failed: %v", err)
 	}
@@ -341,8 +351,10 @@ func TestSetDefaultProfileNotFound(t *testing.T) {
 func TestListProfiles(t *testing.T) {
 	_, pm := setupTestApp(t)
 
-	pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
-	pm.CreateProfile("prod", ProfileOptions{BaseURL: "https://prod.example.com"})
+	err := pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
+	require.NoError(t, err)
+	err = pm.CreateProfile("prod", ProfileOptions{BaseURL: "https://prod.example.com"})
+	require.NoError(t, err)
 
 	profiles := pm.ListProfiles()
 
@@ -362,11 +374,12 @@ func TestListProfiles(t *testing.T) {
 func TestListProfilesWithInfo(t *testing.T) {
 	_, pm := setupTestApp(t)
 
-	pm.CreateProfile("staging", ProfileOptions{
+	err := pm.CreateProfile("staging", ProfileOptions{
 		BaseURL:     "https://staging.example.com",
 		Description: "Staging",
 		AuthType:    "bearer",
 	})
+	require.NoError(t, err)
 
 	profiles := pm.ListProfilesWithInfo()
 
@@ -407,8 +420,10 @@ func TestListProfilesWithInfo(t *testing.T) {
 func TestSelectProfile(t *testing.T) {
 	_, pm := setupTestApp(t)
 
-	pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
-	pm.CreateProfile("prod", ProfileOptions{BaseURL: "https://prod.example.com"})
+	err := pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
+	require.NoError(t, err)
+	err = pm.CreateProfile("prod", ProfileOptions{BaseURL: "https://prod.example.com"})
+	require.NoError(t, err)
 
 	// Test explicit selection
 	profile, err := pm.SelectProfile("staging")
@@ -446,9 +461,10 @@ func TestSetProfileHeader(t *testing.T) {
 func TestDeleteProfileHeader(t *testing.T) {
 	_, pm := setupTestApp(t)
 
-	pm.SetProfileHeader("default", "X-Custom-Header", "value")
+	err := pm.SetProfileHeader("default", "X-Custom-Header", "value")
+	require.NoError(t, err)
 
-	err := pm.DeleteProfileHeader("default", "X-Custom-Header")
+	err = pm.DeleteProfileHeader("default", "X-Custom-Header")
 	if err != nil {
 		t.Fatalf("DeleteProfileHeader failed: %v", err)
 	}
@@ -628,7 +644,8 @@ func TestSelectProfileForApp(t *testing.T) {
 func TestGetProfileNames(t *testing.T) {
 	m, pm := setupTestApp(t)
 
-	pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
+	err := pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
+	require.NoError(t, err)
 
 	names, err := m.GetProfileNames("testapp")
 	if err != nil {
@@ -646,7 +663,9 @@ func TestProfileReload(t *testing.T) {
 	// Modify config directly through manager
 	config, _ := m.GetAppConfig("testapp")
 	config.Description = "Modified"
-	m.SaveAppConfig(config)
+	if err := m.SaveAppConfig(config); err != nil {
+		t.Fatalf("SaveAppConfig failed: %v", err)
+	}
 
 	// Reload profile manager
 	err := pm.Reload()
