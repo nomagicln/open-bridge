@@ -30,6 +30,11 @@ var (
 	date    = "unknown"
 )
 
+var obCommands = map[string]bool{
+	"install": true, "uninstall": true, "list": true, "run": true,
+	"completion": true, "version": true, "help": true,
+}
+
 // Global dependencies
 var (
 	configMgr        *config.Manager
@@ -106,12 +111,8 @@ func Execute() error {
 	}
 
 	if len(os.Args) > 1 {
-		obCommands := map[string]bool{
-			"install": true, "uninstall": true, "list": true, "run": true,
-			"completion": true, "version": true, "help": true,
-		}
 		appName := os.Args[1]
-		if !obCommands[strings.ToLower(appName)] && configMgr.AppExists(appName) {
+		if !obCommands[appName] && configMgr.AppExists(appName) {
 			if err := appRouter.Execute(os.Args); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				return err
