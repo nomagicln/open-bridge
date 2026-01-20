@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -30,9 +29,14 @@ var (
 	date    = "unknown"
 )
 
-var obCommands = map[string]bool{
-	"install": true, "uninstall": true, "list": true, "run": true,
-	"completion": true, "version": true, "help": true,
+var obCommands = map[string]struct{}{
+	"install":    {},
+	"uninstall":  {},
+	"list":       {},
+	"run":        {},
+	"completion": {},
+	"version":    {},
+	"help":       {},
 }
 
 // Global dependencies
@@ -98,26 +102,17 @@ func main() {
 // Execute runs the root command
 func Execute() error {
 	// Check if we're running as a shim (binary name is not 'ob')
-	binaryName := filepath.Base(os.Args[0])
-	binaryName = strings.TrimSuffix(binaryName, filepath.Ext(binaryName))
+	binaryName := router.BinaryName(os.Args)
 
 	if binaryName != "ob" {
 		// Shim mode: route directly to app handler
-		if err := appRouter.Execute(os.Args); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return err
-		}
-		return nil
+		return executeApp(os.Args)
 	}
 
 	if len(os.Args) > 1 {
 		appName := os.Args[1]
-		if !obCommands[appName] && configMgr.AppExists(appName) {
-			if err := appRouter.Execute(os.Args); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				return err
-			}
-			return nil
+		if _, isCommand := obCommands[appName]; !isCommand && configMgr.AppExists(appName) {
+			return executeApp(os.Args)
 		}
 	}
 
@@ -165,6 +160,14 @@ One Spec, Dual Interface.`,
 	)
 
 	return rootCmd.Execute()
+}
+
+func executeApp(args []string) error {
+	if err := appRouter.Execute(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return err
+	}
+	return nil
 }
 
 // newInstallCmd creates the install subcommand

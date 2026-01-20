@@ -2,6 +2,7 @@ package router
 
 import (
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/nomagicln/open-bridge/pkg/cli"
@@ -53,7 +54,13 @@ func TestExecuteRoutesObArgs(t *testing.T) {
 		t.Fatalf("NewManager failed: %v", err)
 	}
 
-	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "petstore.json")
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("failed to resolve current test file path")
+	}
+
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", ".."))
+	specPath := filepath.Join(repoRoot, "internal", "integration", "testdata", "petstore.json")
 	absSpecPath, err := filepath.Abs(specPath)
 	if err != nil {
 		t.Fatalf("failed to resolve spec path: %v", err)

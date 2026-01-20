@@ -22,6 +22,28 @@ type Router struct {
 	specParser *spec.Parser
 }
 
+// BinaryName returns the normalized executable name from args.
+func BinaryName(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	binaryName := filepath.Base(args[0])
+	return strings.TrimSuffix(binaryName, filepath.Ext(binaryName))
+}
+
+func commandArgs(args []string) []string {
+	if len(args) <= 1 {
+		return []string{}
+	}
+	if BinaryName(args) == "ob" {
+		if len(args) > 2 {
+			return args[2:]
+		}
+		return []string{}
+	}
+	return args[1:]
+}
+
 // NewRouter creates a new command router.
 func NewRouter(
 	cliHandler *cli.Handler,
@@ -63,25 +85,13 @@ func (r *Router) Execute(args []string) error {
 	}
 
 	// Default to CLI mode
-	commandArgs := args[1:]
-	binaryName := filepath.Base(args[0])
-	binaryName = strings.TrimSuffix(binaryName, filepath.Ext(binaryName))
-	if binaryName == "ob" {
-		if len(args) > 2 {
-			commandArgs = args[2:]
-		} else {
-			commandArgs = []string{}
-		}
-	}
-	return r.cliHandler.ExecuteCommand(appName, appConfig, commandArgs)
+	return r.cliHandler.ExecuteCommand(appName, appConfig, commandArgs(args))
 }
 
 // detectAppName determines the app name from args or binary name.
 func (r *Router) detectAppName(args []string) string {
 	// Get binary name
-	binaryPath := args[0]
-	binaryName := filepath.Base(binaryPath)
-	binaryName = strings.TrimSuffix(binaryName, filepath.Ext(binaryName))
+	binaryName := BinaryName(args)
 
 	// If binary is 'ob', first arg is app name or ob command
 	if binaryName == "ob" {
