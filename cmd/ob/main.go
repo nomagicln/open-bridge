@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/nomagicln/open-bridge/pkg/cli"
+	"github.com/nomagicln/open-bridge/pkg/completion"
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/credential"
 	"github.com/nomagicln/open-bridge/pkg/mcp"
@@ -31,14 +32,15 @@ var (
 
 // Global dependencies
 var (
-	configMgr  *config.Manager
-	specParser *spec.Parser
-	credMgr    *credential.Manager
-	mapper     *semantic.Mapper
-	reqBuilder *request.Builder
-	cliHandler *cli.Handler
-	mcpHandler *mcp.Handler
-	appRouter  *router.Router
+	configMgr        *config.Manager
+	specParser       *spec.Parser
+	credMgr          *credential.Manager
+	mapper           *semantic.Mapper
+	reqBuilder       *request.Builder
+	cliHandler       *cli.Handler
+	mcpHandler       *mcp.Handler
+	appRouter        *router.Router
+	completionHelper *completion.Provider
 )
 
 func init() {
@@ -76,6 +78,9 @@ func init() {
 
 	// Router
 	appRouter = router.NewRouter(cliHandler, mcpHandler, configMgr, specParser)
+
+	// Completion provider
+	completionHelper = completion.NewProvider(configMgr, specParser, mapper)
 }
 
 func main() {
@@ -458,10 +463,7 @@ func startMCPServer(appConfig *config.AppConfig, args []string) error {
 
 // completeAppNames provides completion for installed app names
 func completeAppNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	apps, err := configMgr.ListApps()
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveError
-	}
+	apps := completionHelper.CompleteAppNames(toComplete)
 	return apps, cobra.ShellCompDirectiveNoFileComp
 }
 
@@ -472,57 +474,32 @@ func completeRunArgs(cmd *cobra.Command, args []string, toComplete string) ([]st
 		return completeAppNames(cmd, args, toComplete)
 	}
 
-	// For subsequent args, we need to provide verb and resource completion
-	// This requires loading the app's spec
 	appName := args[0]
 	if !configMgr.AppExists(appName) {
 		return nil, cobra.ShellCompDirectiveError
 	}
 
-	appConfig, err := configMgr.GetAppConfig(appName)
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveError
-	}
-
-	// Load spec
-	specDoc, ok := specParser.GetCachedSpec(appName)
-	if !ok {
-		var err error
-		specDoc, err = specParser.LoadSpec(appConfig.SpecSource)
-		if err != nil {
-			return nil, cobra.ShellCompDirectiveError
-		}
-		specParser.CacheSpec(appName, specDoc)
-	}
-
-	tree := mapper.BuildCommandTree(specDoc)
-
 	if len(args) == 1 {
 		// Complete verb
-		verbs := make(map[string]bool)
-		for _, res := range tree.RootResources {
-			for verb := range res.Operations {
-				verbs[verb] = true
-			}
-		}
-		verbList := make([]string, 0, len(verbs))
-		for verb := range verbs {
-			verbList = append(verbList, verb)
-		}
-		return verbList, cobra.ShellCompDirectiveNoFileComp
+		verbs := completionHelper.CompleteVerbs(appName, toComplete)
+		return verbs, cobra.ShellCompDirectiveNoFileComp
 	}
 
 	if len(args) == 2 {
-		// Complete resource
-		resources := make([]string, 0, len(tree.RootResources))
-		for resource := range tree.RootResources {
-			resources = append(resources, resource)
-		}
+		// Complete resource (filter by verb if possible)
+		verb := args[1]
+		resources := completionHelper.CompleteResourcesForVerb(appName, verb, toComplete)
 		return resources, cobra.ShellCompDirectiveNoFileComp
 	}
 
-	// For flags, we need more context about the operation
-	// This is handled by flag completion (not yet implemented)
+	// For args after verb and resource, complete flags
+	if len(args) >= 3 && strings.HasPrefix(toComplete, "-") {
+		verb := args[1]
+		resource := args[2]
+		flags := completionHelper.CompleteFlags(appName, verb, resource, toComplete)
+		return flags, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return nil, cobra.ShellCompDirectiveNoFileComp
 }
 
