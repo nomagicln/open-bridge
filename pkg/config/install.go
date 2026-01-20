@@ -294,7 +294,7 @@ func (m *Manager) CreateShim(appName, shimDir string) (string, error) {
 		// Create batch file on Windows
 		shimPath = filepath.Join(shimDir, appName+".cmd")
 		shimContent = fmt.Sprintf(`@echo off
-"%s" %s %%*
+"%s" %s %%%%*
 `, obPath, appName)
 
 	default:
