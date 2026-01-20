@@ -197,7 +197,8 @@ func TestDeleteProfileUpdateDefault(t *testing.T) {
 
 	// Create profiles and set one as default
 	pm.CreateProfile("staging", ProfileOptions{BaseURL: "https://staging.example.com"})
-	pm.SetDefaultProfile("staging")
+	err := pm.SetDefaultProfile("staging")
+	require.NoError(t, err)
 
 	// Delete the default profile
 	err := pm.DeleteProfile("staging")
