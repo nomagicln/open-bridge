@@ -57,15 +57,15 @@ This implementation plan breaks down the OpenBridge project into discrete, incre
     - Implement ImportProfile with validation
     - _Requirements: 3.6, 3.8, 3.9_
   
-  - [ ]* 3.5 Write property test for configuration persistence round-trip
+  - [x]* 3.5 Write property test for configuration persistence round-trip
     - **Property 3: Configuration Persistence Round-Trip**
     - **Validates: Requirements 2.1, 2.4, 14.1, 14.2, 14.3**
   
-  - [ ]* 3.6 Write property test for profile export credential exclusion
+  - [x]* 3.6 Write property test for profile export credential exclusion
     - **Property 5: Profile Export Excludes Credentials**
     - **Validates: Requirements 3.8**
   
-  - [ ]* 3.7 Write property test for profile import validation
+  - [x]* 3.7 Write property test for profile import validation
     - **Property 6: Profile Import Validation**
     - **Validates: Requirements 3.9**
   
