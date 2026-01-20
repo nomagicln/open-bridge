@@ -65,7 +65,7 @@ func (f *ErrorFormatter) FormatErrorWithContext(err error, installedApps []strin
 func (f *ErrorFormatter) formatAppNotFoundError(err *config.AppNotFoundError, installedApps []string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Error: App '%s' is not installed.\n\n", err.AppName))
-	
+
 	// Suggest similar app names if available
 	if len(installedApps) > 0 {
 		suggestions := f.SuggestSimilarApps(err.AppName, installedApps)
@@ -77,7 +77,7 @@ func (f *ErrorFormatter) formatAppNotFoundError(err *config.AppNotFoundError, in
 			sb.WriteString("\n")
 		}
 	}
-	
+
 	sb.WriteString("To install an app, use:\n")
 	sb.WriteString(fmt.Sprintf("  ob install %s --spec <path-or-url>\n\n", err.AppName))
 	sb.WriteString("To see all installed apps, use:\n")
@@ -253,6 +253,11 @@ func (f *ErrorFormatter) FormatHTTPError(resp *http.Response, body []byte) strin
 
 // FormatUsageHelp formats usage help for a command.
 func (f *ErrorFormatter) FormatUsageHelp(appName, verb, resource string, operation *openapi3.Operation, opParams openapi3.Parameters) string {
+	return f.FormatUsageHelpWithBody(appName, verb, resource, operation, opParams, nil)
+}
+
+// FormatUsageHelpWithBody formats usage help for a command including request body parameters.
+func (f *ErrorFormatter) FormatUsageHelpWithBody(appName, verb, resource string, operation *openapi3.Operation, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) string {
 	var sb strings.Builder
 
 	// Command syntax
@@ -265,7 +270,7 @@ func (f *ErrorFormatter) FormatUsageHelp(appName, verb, resource string, operati
 		sb.WriteString(fmt.Sprintf("Description: %s\n\n", operation.Description))
 	}
 
-	// Required parameters
+	// Collect required and optional parameters from URL params
 	var requiredParams []string
 	var optionalParams []string
 
@@ -278,6 +283,21 @@ func (f *ErrorFormatter) FormatUsageHelp(appName, verb, resource string, operati
 		}
 	}
 
+	// Extract request body parameters
+	var bodyProperties map[string]*openapi3.SchemaRef
+	var requiredBodyProps []string
+	if requestBody != nil {
+		for _, mediaType := range requestBody.Content {
+			if mediaType.Schema != nil && mediaType.Schema.Value != nil {
+				schema := mediaType.Schema.Value
+				bodyProperties = schema.Properties
+				requiredBodyProps = schema.Required
+				break
+			}
+		}
+	}
+
+	// Display required URL parameters
 	if len(requiredParams) > 0 {
 		sb.WriteString("Required Parameters:\n")
 		for _, paramRef := range opParams {
@@ -289,6 +309,18 @@ func (f *ErrorFormatter) FormatUsageHelp(appName, verb, resource string, operati
 		sb.WriteString("\n")
 	}
 
+	// Display required body parameters
+	if len(requiredBodyProps) > 0 && bodyProperties != nil {
+		sb.WriteString("Required Body Parameters:\n")
+		for _, propName := range requiredBodyProps {
+			if propSchema, ok := bodyProperties[propName]; ok {
+				sb.WriteString(f.formatBodyProperty(propName, propSchema, true))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	// Display optional URL parameters
 	if len(optionalParams) > 0 {
 		sb.WriteString("Optional Parameters:\n")
 		for _, paramRef := range opParams {
@@ -300,6 +332,32 @@ func (f *ErrorFormatter) FormatUsageHelp(appName, verb, resource string, operati
 		sb.WriteString("\n")
 	}
 
+	// Display optional body parameters
+	if bodyProperties != nil {
+		var optionalBodyProps []string
+		for propName := range bodyProperties {
+			isRequired := false
+			for _, req := range requiredBodyProps {
+				if req == propName {
+					isRequired = true
+					break
+				}
+			}
+			if !isRequired {
+				optionalBodyProps = append(optionalBodyProps, propName)
+			}
+		}
+		if len(optionalBodyProps) > 0 {
+			sb.WriteString("Optional Body Parameters:\n")
+			for _, propName := range optionalBodyProps {
+				if propSchema, ok := bodyProperties[propName]; ok {
+					sb.WriteString(f.formatBodyProperty(propName, propSchema, false))
+				}
+			}
+			sb.WriteString("\n")
+		}
+	}
+
 	// Output format flags
 	sb.WriteString("Output Flags:\n")
 	sb.WriteString("  --json       Output in JSON format\n")
@@ -308,9 +366,116 @@ func (f *ErrorFormatter) FormatUsageHelp(appName, verb, resource string, operati
 
 	// Example
 	sb.WriteString("Example:\n")
-	sb.WriteString(f.formatExample(appName, verb, resource, opParams))
+	sb.WriteString(f.formatExampleWithBody(appName, verb, resource, opParams, bodyProperties, requiredBodyProps))
 
 	return sb.String()
+}
+
+// formatBodyProperty formats a body property for help output.
+func (f *ErrorFormatter) formatBodyProperty(name string, schemaRef *openapi3.SchemaRef, required bool) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("  --%s", name))
+
+	// Add type information
+	if schemaRef != nil && schemaRef.Value != nil {
+		schema := schemaRef.Value
+		if schema.Type != nil {
+			sb.WriteString(fmt.Sprintf(" <%s>", schema.Type.Slice()[0]))
+		}
+
+		// Add description
+		if schema.Description != "" {
+			sb.WriteString(fmt.Sprintf("\n      %s", schema.Description))
+		}
+
+		// Add enum values if present
+		if len(schema.Enum) > 0 {
+			sb.WriteString("\n      Allowed values: ")
+			var values []string
+			for _, v := range schema.Enum {
+				values = append(values, fmt.Sprintf("%v", v))
+			}
+			sb.WriteString(strings.Join(values, ", "))
+		}
+
+		// Add example if present
+		if schema.Example != nil {
+			sb.WriteString(fmt.Sprintf("\n      Example: %v", schema.Example))
+		}
+	}
+
+	if required {
+		sb.WriteString(" (required)")
+	}
+
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// formatExampleWithBody formats an example command including body parameters.
+func (f *ErrorFormatter) formatExampleWithBody(appName, verb, resource string, opParams openapi3.Parameters, bodyProps map[string]*openapi3.SchemaRef, requiredBodyProps []string) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("  %s %s %s", appName, verb, resource))
+
+	// Add example values for required URL parameters
+	for _, paramRef := range opParams {
+		param := paramRef.Value
+		if param.Required {
+			exampleValue := f.getExampleValue(param)
+			sb.WriteString(fmt.Sprintf(" --%s %s", param.Name, exampleValue))
+		}
+	}
+
+	// Add example values for required body parameters
+	for _, propName := range requiredBodyProps {
+		if propSchema, ok := bodyProps[propName]; ok {
+			exampleValue := f.getExampleValueForSchema(propName, propSchema)
+			sb.WriteString(fmt.Sprintf(" --%s %s", propName, exampleValue))
+		}
+	}
+
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// getExampleValueForSchema returns an example value for a schema property.
+func (f *ErrorFormatter) getExampleValueForSchema(name string, schemaRef *openapi3.SchemaRef) string {
+	if schemaRef == nil || schemaRef.Value == nil {
+		return "\"value\""
+	}
+
+	schema := schemaRef.Value
+
+	// Check for example in schema
+	if schema.Example != nil {
+		return fmt.Sprintf("\"%v\"", schema.Example)
+	}
+
+	// Use enum value if available
+	if len(schema.Enum) > 0 {
+		return fmt.Sprintf("\"%v\"", schema.Enum[0])
+	}
+
+	// Generate example based on type
+	if schema.Type != nil {
+		switch {
+		case schema.Type.Is("string"):
+			return fmt.Sprintf("\"%s-value\"", name)
+		case schema.Type.Is("integer"):
+			return "123"
+		case schema.Type.Is("number"):
+			return "123.45"
+		case schema.Type.Is("boolean"):
+			return "true"
+		case schema.Type.Is("array"):
+			return "\"value1,value2\""
+		case schema.Type.Is("object"):
+			return "\"{}\""
+		}
+	}
+
+	return "\"value\""
 }
 
 // formatParameter formats a single parameter for help output.

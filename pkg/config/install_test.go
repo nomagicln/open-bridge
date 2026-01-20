@@ -391,27 +391,37 @@ func TestCreateAndRemoveShim(t *testing.T) {
 	}
 
 	// Verify shim exists
-	if _, err := os.Stat(shimPath); os.IsNotExist(err) {
+	if _, err := os.Lstat(shimPath); os.IsNotExist(err) {
 		t.Error("expected shim file to exist")
 	}
 
-	// Verify shim is executable (Unix only)
-	if runtime.GOOS != "windows" {
-		info, _ := os.Stat(shimPath)
-		if info.Mode()&0100 == 0 {
-			t.Error("expected shim to be executable")
+	// Platform-specific verification
+	switch runtime.GOOS {
+	case "windows":
+		// Read shim content
+		content, err := os.ReadFile(shimPath)
+		if err != nil {
+			t.Fatalf("failed to read shim: %v", err)
 		}
-	}
 
-	// Read shim content
-	content, err := os.ReadFile(shimPath)
-	if err != nil {
-		t.Fatalf("failed to read shim: %v", err)
-	}
+		// Verify shim contains app name
+		if !strings.Contains(string(content), "testapp") {
+			t.Error("expected shim to contain app name")
+		}
+	default:
+		// Unix: shim is symlink
+		info, err := os.Lstat(shimPath)
+		if err != nil {
+			t.Fatalf("failed to lstat shim: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Error("expected Unix shim to be a symbolic link")
+		}
 
-	// Verify shim contains app name
-	if !strings.Contains(string(content), "testapp") {
-		t.Error("expected shim to contain app name")
+		// Verify file name matches app name
+		if filepath.Base(shimPath) != "testapp" {
+			t.Errorf("expected shim name to be 'testapp', got '%s'", filepath.Base(shimPath))
+		}
 	}
 }
 
@@ -706,17 +716,16 @@ func TestShimContentFormat(t *testing.T) {
 		t.Fatalf("CreateShim failed: %v", err)
 	}
 
-	content, err := os.ReadFile(shimPath)
-	if err != nil {
-		t.Fatalf("failed to read shim: %v", err)
-	}
-
-	contentStr := string(content)
-
 	// Verify shim format based on platform
 	switch runtime.GOOS {
 	case "windows":
 		// Windows batch file
+		content, err := os.ReadFile(shimPath)
+		if err != nil {
+			t.Fatalf("failed to read shim: %v", err)
+		}
+
+		contentStr := string(content)
 		if !strings.HasPrefix(contentStr, "@echo off") {
 			t.Error("expected Windows shim to start with '@echo off'")
 		}
@@ -727,18 +736,26 @@ func TestShimContentFormat(t *testing.T) {
 			t.Error("expected Windows shim to contain '%%*' for argument forwarding")
 		}
 	default:
-		// Unix shell script
-		if !strings.HasPrefix(contentStr, "#!/bin/sh") {
-			t.Error("expected Unix shim to start with '#!/bin/sh'")
+		// Unix symlink
+		info, err := os.Lstat(shimPath)
+		if err != nil {
+			t.Fatalf("failed to lstat shim: %v", err)
 		}
-		if !strings.Contains(contentStr, "testapp") {
-			t.Error("expected shim to contain app name 'testapp'")
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Error("expected Unix shim to be a symbolic link")
 		}
-		if !strings.Contains(contentStr, `"$@"`) {
-			t.Error("expected Unix shim to contain '\"$@\"' for argument forwarding")
+
+		target, err := os.Readlink(shimPath)
+		if err != nil {
+			t.Fatalf("failed to readlink shim: %v", err)
 		}
-		if !strings.Contains(contentStr, "exec") {
-			t.Error("expected Unix shim to use 'exec' for efficient process replacement")
+		if target == "" {
+			t.Error("expected Unix shim symlink target to not be empty")
+		}
+
+		// Verify file name is correct
+		if filepath.Base(shimPath) != "testapp" {
+			t.Errorf("expected shim name to be 'testapp', got '%s'", filepath.Base(shimPath))
 		}
 	}
 }

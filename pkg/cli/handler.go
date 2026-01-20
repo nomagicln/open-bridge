@@ -45,15 +45,31 @@ func NewHandler(
 
 // ExecuteCommand parses and executes a CLI command.
 func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, args []string) error {
-	// Check for help flag
-	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
+	// Handle no args - show app help
+	if len(args) == 0 {
 		return h.showAppHelp(appName, appConfig)
 	}
 
-	if len(args) < 2 {
-		return h.showInvalidSyntaxError(appName)
+	// Check for help flag at start
+	if args[0] == "--help" || args[0] == "-h" {
+		return h.showAppHelp(appName, appConfig)
 	}
 
+	// Handle cases with only 1 argument
+	if len(args) == 1 {
+		firstArg := args[0]
+		// If the single arg is --help or -h, show app help (already handled above)
+		// Otherwise, check if it's a resource name - show resource help
+		return h.showResourceOrVerbHelp(appName, firstArg, appConfig)
+	}
+
+	// Handle cases with 2 arguments where second might be --help
+	if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+		// `app resource --help` - show resource help
+		return h.showResourceHelp(appName, args[0], appConfig)
+	}
+
+	// Now we have at least 2 args, parse as verb resource
 	verb := args[0]
 	resource := args[1]
 	flagArgs := args[2:]
@@ -79,8 +95,8 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 
 	// Build command tree and find operation
 	tree := h.mapper.BuildCommandTree(specDoc)
-	res, ok := tree.RootResources[resource]
-	if !ok {
+	res := h.findResource(tree, resource)
+	if res == nil {
 		return h.showUnknownResourceError(resource, tree)
 	}
 
@@ -186,6 +202,40 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 	}
 
 	fmt.Println(output)
+	return nil
+}
+
+// findResource searches for a resource by name in both root resources and sub-resources.
+func (h *Handler) findResource(tree *semantic.CommandTree, name string) *semantic.Resource {
+	// Normalize name: replace / with - to support URL-style resource paths
+	normalizedName := strings.ReplaceAll(name, "/", "-")
+
+	// First check root resources
+	if res, ok := tree.RootResources[normalizedName]; ok {
+		return res
+	}
+
+	// Search in sub-resources of all root resources
+	for _, rootRes := range tree.RootResources {
+		if found := h.findResourceRecursive(rootRes, normalizedName); found != nil {
+			return found
+		}
+	}
+
+	return nil
+}
+
+// findResourceRecursive searches for a resource in sub-resources recursively.
+func (h *Handler) findResourceRecursive(parent *semantic.Resource, name string) *semantic.Resource {
+	for subName, subRes := range parent.SubResources {
+		if subName == name {
+			return subRes
+		}
+		// Check nested sub-resources
+		if found := h.findResourceRecursive(subRes, name); found != nil {
+			return found
+		}
+	}
 	return nil
 }
 
@@ -380,6 +430,97 @@ func (h *Handler) showInvalidSyntaxError(appName string) error {
 	return fmt.Errorf("%s", sb.String())
 }
 
+// showResourceOrVerbHelp handles single-argument input, determining if it's a resource or verb.
+// If it's a valid resource, shows resource help. Otherwise shows an error.
+func (h *Handler) showResourceOrVerbHelp(appName, arg string, appConfig *config.AppConfig) error {
+	// Load spec
+	specDoc, err := h.loadSpec(appName, appConfig)
+	if err != nil {
+		return err
+	}
+
+	tree := h.mapper.BuildCommandTree(specDoc)
+
+	// Check if arg is a resource
+	res := h.findResource(tree, arg)
+	if res != nil {
+		return h.showResourceHelpFromResource(appName, arg, res, appConfig)
+	}
+
+	// Not a valid resource, show syntax help
+	return h.showInvalidSyntaxError(appName)
+}
+
+// showResourceHelp shows help for a specific resource.
+func (h *Handler) showResourceHelp(appName, resourceName string, appConfig *config.AppConfig) error {
+	// Load spec
+	specDoc, err := h.loadSpec(appName, appConfig)
+	if err != nil {
+		return err
+	}
+
+	tree := h.mapper.BuildCommandTree(specDoc)
+
+	// Find resource
+	res := h.findResource(tree, resourceName)
+	if res == nil {
+		return h.showUnknownResourceError(resourceName, tree)
+	}
+
+	return h.showResourceHelpFromResource(appName, resourceName, res, appConfig)
+}
+
+// showResourceHelpFromResource displays help for a specific resource.
+func (h *Handler) showResourceHelpFromResource(appName, resourceName string, res *semantic.Resource, appConfig *config.AppConfig) error {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Resource: %s\n\n", resourceName))
+
+	if appConfig.Description != "" {
+		sb.WriteString(fmt.Sprintf("API: %s\n\n", appConfig.Description))
+	}
+
+	sb.WriteString("Available Operations:\n")
+	if len(res.Operations) == 0 {
+		sb.WriteString("  (no operations available)\n")
+	} else {
+		for verbName, op := range res.Operations {
+			sb.WriteString(fmt.Sprintf("  %s %s", verbName, resourceName))
+			if op.Summary != "" {
+				sb.WriteString(fmt.Sprintf(" - %s", op.Summary))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	// Show sub-resources if any
+	if len(res.SubResources) > 0 {
+		sb.WriteString("\nSub-resources:\n")
+		for subName := range res.SubResources {
+			sb.WriteString(fmt.Sprintf("  %s\n", subName))
+		}
+	}
+
+	sb.WriteString("\nFor detailed command help:\n")
+	sb.WriteString(fmt.Sprintf("  %s <verb> %s --help\n", appName, resourceName))
+
+	fmt.Print(sb.String())
+	return nil
+}
+
+// loadSpec loads and caches the spec for an app.
+func (h *Handler) loadSpec(appName string, appConfig *config.AppConfig) (*openapi3.T, error) {
+	specDoc, ok := h.specParser.GetCachedSpec(appName)
+	if !ok {
+		var err error
+		specDoc, err = h.specParser.LoadSpec(appConfig.SpecSource)
+		if err != nil {
+			return nil, fmt.Errorf("%s", h.errorFormatter.FormatError(fmt.Errorf("failed to load spec: %w", err)))
+		}
+		h.specParser.CacheSpec(appName, specDoc)
+	}
+	return specDoc, nil
+}
+
 // showAppHelp displays help for the entire app.
 func (h *Handler) showAppHelp(appName string, appConfig *config.AppConfig) error {
 	var sb strings.Builder
@@ -405,8 +546,12 @@ func (h *Handler) showAppHelp(appName string, appConfig *config.AppConfig) error
 	tree := h.mapper.BuildCommandTree(specDoc)
 
 	sb.WriteString("Available Resources:\n")
-	for resourceName := range tree.RootResources {
+	for resourceName, res := range tree.RootResources {
 		sb.WriteString(fmt.Sprintf("  %s\n", resourceName))
+		// List sub-resources
+		for subName := range res.SubResources {
+			sb.WriteString(fmt.Sprintf("    %s\n", subName))
+		}
 	}
 
 	sb.WriteString("\nCommon Verbs:\n")
@@ -443,8 +588,8 @@ func (h *Handler) showCommandHelp(appName, verb, resource string, appConfig *con
 
 	// Build command tree and find operation
 	tree := h.mapper.BuildCommandTree(specDoc)
-	res, ok := tree.RootResources[resource]
-	if !ok {
+	res := h.findResource(tree, resource)
+	if res == nil {
 		return fmt.Errorf("unknown resource: %s", resource)
 	}
 
@@ -477,8 +622,14 @@ func (h *Handler) showCommandHelp(appName, verb, resource string, appConfig *con
 		return fmt.Errorf("operation not found for %s %s", op.Method, op.Path)
 	}
 
+	// Get request body if present
+	var requestBody *openapi3.RequestBody
+	if opSpec.RequestBody != nil && opSpec.RequestBody.Value != nil {
+		requestBody = opSpec.RequestBody.Value
+	}
+
 	// Format and display help
-	help := h.errorFormatter.FormatUsageHelp(appName, verb, resource, opSpec, opSpec.Parameters)
+	help := h.errorFormatter.FormatUsageHelpWithBody(appName, verb, resource, opSpec, opSpec.Parameters, requestBody)
 	fmt.Print(help)
 	return nil
 }
@@ -488,10 +639,14 @@ func (h *Handler) showUnknownResourceError(resource string, tree *semantic.Comma
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Error: Unknown resource '%s'.\n\n", resource))
 
-	// List available resources
+	// List available resources (including sub-resources)
 	sb.WriteString("Available resources:\n")
-	for resourceName := range tree.RootResources {
+	for resourceName, res := range tree.RootResources {
 		sb.WriteString(fmt.Sprintf("  %s\n", resourceName))
+		// List sub-resources
+		for subName := range res.SubResources {
+			sb.WriteString(fmt.Sprintf("    %s\n", subName))
+		}
 	}
 
 	sb.WriteString("\nFor more information, use:\n")

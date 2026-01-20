@@ -120,68 +120,38 @@ func (m *Mapper) BuildCommandTree(spec *openapi3.T) *CommandTree {
 	return tree
 }
 
-// getOrCreateResource works recursively to ensure parent resources exist.
+// getOrCreateResource creates a resource with a compound name if it has a parent.
+// For example, /store/order becomes "storeorder" as a root resource.
 func (m *Mapper) getOrCreateResource(tree *CommandTree, allResources map[string]*Resource, name string, parentName string) *Resource {
-	// Construct a unique key for the resource
-	// For root resources: "name"
-	// For nested resources: "parent.name"
-
-	var parent *Resource
+	// Build compound resource name
+	var resourceName string
 	var key string
 
 	if parentName != "" {
-		// Ensure parent exists
-		// We assume parent is a root resource if we haven't seen it yet.
-		// In a complex hierarchy, the parent might also be nested, but ExtractResult
-		// currently returns only the immediate parent.
-		// Since we traverse paths, we ideally encounter parents first if paths are well-ordered,
-		// but sort order of strings (/users vs /users/{id}/posts) handles this gracefully
-		// as /users is shorter (if no parameters or params handled correctly).
-
-		parentKey := parentName
-		// Check if parent exists in allResources (potentially finding nested parent if key matches?)
-		// But here we assume parentName refers to a resource name.
-		// We first assume it's a root resource.
-
-		if p, ok := allResources[parentKey]; ok {
-			parent = p
-		} else {
-			// Check recursively? No, infinite loop risk if not careful.
-			// Just create it as root.
-			parent = &Resource{
-				Name:         parentName,
-				Operations:   make(map[string]*Operation),
-				SubResources: make(map[string]*Resource),
-				verbSet:      NewVerbSet(nil),
-			}
-			tree.RootResources[parentName] = parent
-			allResources[parentKey] = parent
-		}
-
+		// Create compound name: parentName-name (e.g., "store-order")
+		resourceName = parentName + "-" + name
 		key = parentName + "." + name
 	} else {
+		resourceName = name
 		key = name
 	}
 
+	// Check if resource already exists
 	if res, ok := allResources[key]; ok {
 		return res
 	}
 
+	// Create new resource as a root resource (flattened)
 	res := &Resource{
-		Name:         name,
+		Name:         resourceName,
 		Operations:   make(map[string]*Operation),
 		SubResources: make(map[string]*Resource),
-		Parent:       parent,
+		Parent:       nil, // No parent hierarchy - all resources are flat
 		verbSet:      NewVerbSet(nil),
 	}
 
 	allResources[key] = res
-
-	if parent != nil {
-		parent.SubResources[name] = res
-	} else {
-		tree.RootResources[name] = res
-	}
+	tree.RootResources[resourceName] = res
 
 	return res
 }

@@ -51,6 +51,10 @@ type ExtractResult struct {
 
 	// OriginalSegment is the original path segment the resource was extracted from.
 	OriginalSegment string
+
+	// ActionHint contains the action segment if detected (e.g., findByStatus).
+	// This can be used by verb mapping to infer the verb.
+	ActionHint string
 }
 
 // Extract extracts resource information from an API path and operation.
@@ -94,18 +98,74 @@ func (e *ResourceExtractor) Extract(path string, operation *openapi3.Operation) 
 		return result
 	}
 
-	// The last resource segment is the main resource
+	// Check if the last segment is an action pattern (e.g., findByStatus, searchByName)
+	// If so, the actual resource is the previous segment
 	lastIdx := len(resourceSegments) - 1
-	result.Resource = NormalizeName(resourceSegments[lastIdx])
-	result.OriginalSegment = resourceSegments[lastIdx]
+	lastSegment := resourceSegments[lastIdx]
 
-	// If there's more than one resource segment, we have a nested resource
-	if len(resourceSegments) > 1 {
-		result.ParentResource = NormalizeName(resourceSegments[lastIdx-1])
-		result.IsNested = true
+	if len(resourceSegments) > 1 && e.isActionSegment(lastSegment) {
+		// The last segment is an action, use the previous segment as the resource
+		result.Resource = NormalizeName(resourceSegments[lastIdx-1])
+		result.OriginalSegment = resourceSegments[lastIdx-1]
+		// Store the action hint for verb mapping (could be used later)
+		result.ActionHint = lastSegment
+
+		// Check for further nesting
+		if len(resourceSegments) > 2 {
+			result.ParentResource = NormalizeName(resourceSegments[lastIdx-2])
+			result.IsNested = true
+		}
+	} else {
+		// Normal case: last segment is the resource
+		result.Resource = NormalizeName(lastSegment)
+		result.OriginalSegment = lastSegment
+
+		// If there's more than one resource segment, we have a nested resource
+		if len(resourceSegments) > 1 {
+			result.ParentResource = NormalizeName(resourceSegments[lastIdx-1])
+			result.IsNested = true
+		}
 	}
 
 	return result
+}
+
+// isActionSegment checks if a path segment represents an action rather than a resource.
+// Common patterns: findByX, searchByX, listX, getX, createX, updateX, deleteX, etc.
+func (e *ResourceExtractor) isActionSegment(segment string) bool {
+	lower := strings.ToLower(segment)
+
+	// Action verb prefixes
+	actionPrefixes := []string{
+		"find", "search", "query", "filter",
+		"list", "get", "fetch", "load",
+		"create", "add", "new",
+		"update", "modify", "edit", "patch",
+		"delete", "remove", "clear",
+		"check", "verify", "validate",
+		"enable", "disable", "activate", "deactivate",
+		"start", "stop", "restart", "pause", "resume",
+		"export", "import", "download", "upload",
+		"sync", "refresh", "reset",
+		"approve", "reject", "cancel",
+		"publish", "unpublish", "archive", "unarchive",
+		"lock", "unlock",
+		"send", "resend",
+		"clone", "copy", "move", "rename",
+		"batch", "bulk",
+	}
+
+	for _, prefix := range actionPrefixes {
+		if strings.HasPrefix(lower, prefix) && len(segment) > len(prefix) {
+			// Make sure it's followed by another word (camelCase or separator)
+			nextChar := segment[len(prefix)]
+			if nextChar >= 'A' && nextChar <= 'Z' || nextChar == '_' || nextChar == '-' {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // parsePathSegments splits a path into segments and cleans them.

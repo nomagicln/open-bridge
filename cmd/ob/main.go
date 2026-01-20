@@ -85,7 +85,7 @@ func init() {
 
 func main() {
 	if err := Execute(); err != nil {
-		// Don't print error here - it's already formatted and printed by handlers
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
@@ -111,7 +111,8 @@ to two distinct interfaces:
   - An MCP server for AI agents
 
 One Spec, Dual Interface.`,
-		Version: fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, date),
+		Version:      fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, date),
+		SilenceUsage: true,
 		// Handle unknown subcommands as app names
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

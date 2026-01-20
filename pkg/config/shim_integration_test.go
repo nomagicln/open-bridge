@@ -89,6 +89,18 @@ paths:
 	// Verify shim format
 	switch runtime.GOOS {
 	case "windows":
+		// Read shim content and verify it's correct
+		content, err := os.ReadFile(result.ShimPath)
+		if err != nil {
+			t.Fatalf("failed to read shim: %v", err)
+		}
+		contentStr := string(content)
+
+		// Verify shim contains app name
+		if !strings.Contains(contentStr, "shimtest") {
+			t.Error("shim does not contain app name")
+		}
+
 		if !strings.HasPrefix(contentStr, "@echo off") {
 			t.Error("Windows shim should start with '@echo off'")
 		}
@@ -96,14 +108,22 @@ paths:
 			t.Error("Windows shim should contain '%%*' for argument forwarding")
 		}
 	default:
-		if !strings.HasPrefix(contentStr, "#!/bin/sh") {
-			t.Error("Unix shim should start with '#!/bin/sh'")
+		// Unix shims are now symlinks to the ob binary
+		info, err := os.Lstat(result.ShimPath)
+		if err != nil {
+			t.Fatalf("failed to lstat shim: %v", err)
 		}
-		if !strings.Contains(contentStr, `"$@"`) {
-			t.Error("Unix shim should contain '\"$@\"' for argument forwarding")
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Error("Unix shim should be a symbolic link")
 		}
-		if !strings.Contains(contentStr, "exec") {
-			t.Error("Unix shim should use 'exec'")
+
+		// Verify symlink target exists (or is the test executable)
+		target, err := os.Readlink(result.ShimPath)
+		if err != nil {
+			t.Fatalf("failed to readlink shim: %v", err)
+		}
+		if target == "" {
+			t.Error("Unix shim symlink target should not be empty")
 		}
 	}
 
@@ -138,20 +158,32 @@ func TestShimWithOBBinary(t *testing.T) {
 		t.Fatalf("CreateShim failed: %v", err)
 	}
 
-	content, err := os.ReadFile(shimPath)
-	if err != nil {
-		t.Fatalf("failed to read shim: %v", err)
-	}
-
-	contentStr := string(content)
-
 	// Verify shim references ob binary
 	// The shim should contain a path to the ob executable, or the current executable (in tests)
 	executable, _ := os.Executable()
 	executableName := filepath.Base(executable)
 
-	if !strings.Contains(contentStr, "ob") && !strings.Contains(contentStr, "open-bridge") && !strings.Contains(contentStr, executableName) {
-		t.Errorf("shim should reference ob binary or current executable (%s), got shim content:\n%s", executableName, contentStr)
+	switch runtime.GOOS {
+	case "windows":
+		content, err := os.ReadFile(shimPath)
+		if err != nil {
+			t.Fatalf("failed to read shim: %v", err)
+		}
+		contentStr := string(content)
+		if !strings.Contains(contentStr, "ob") && !strings.Contains(contentStr, "open-bridge") && !strings.Contains(contentStr, executableName) {
+			t.Errorf("shim should reference ob binary or current executable (%s), got shim content:\n%s", executableName, contentStr)
+		}
+	default:
+		// Unix shims are symlinks
+		target, err := os.Readlink(shimPath)
+		if err != nil {
+			t.Fatalf("failed to readlink shim: %v", err)
+		}
+		targetBase := filepath.Base(target)
+		// The symlink target should be the test executable or "ob"
+		if targetBase != "ob" && !strings.Contains(targetBase, "open-bridge") && targetBase != executableName {
+			t.Errorf("shim symlink should point to ob binary or current executable (%s), got: %s", executableName, target)
+		}
 	}
 }
 
@@ -216,36 +248,47 @@ func TestShimExecutionSimulation(t *testing.T) {
 		t.Fatalf("CreateShim failed: %v", err)
 	}
 
-	// Try to execute the shim (this will fail because ob binary doesn't exist in test env)
-	// But we can verify the shim file is properly formatted for execution
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/c", "type", shimPath)
-	} else {
-		cmd = exec.Command("cat", shimPath)
-	}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to read shim: %v", err)
-	}
-
-	outputStr := string(output)
-
-	// Verify the shim content looks correct
-	if !strings.Contains(outputStr, "testapp") {
-		t.Error("shim should contain app name 'testapp'")
-	}
-
 	// Platform-specific verification
 	switch runtime.GOOS {
 	case "windows":
+		// Try to read the shim content via cmd
+		cmd := exec.Command("cmd", "/c", "type", shimPath)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("failed to read shim: %v", err)
+		}
+
+		outputStr := string(output)
+
+		// Verify the shim content looks correct
+		if !strings.Contains(outputStr, "testapp") {
+			t.Error("shim should contain app name 'testapp'")
+		}
 		if !strings.Contains(outputStr, "@echo off") {
 			t.Error("Windows shim should contain '@echo off'")
 		}
 	default:
-		if !strings.Contains(outputStr, "#!/bin/sh") {
-			t.Error("Unix shim should contain shebang")
+		// Unix shims are symlinks - verify the symlink properties
+		info, err := os.Lstat(shimPath)
+		if err != nil {
+			t.Fatalf("failed to lstat shim: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Error("Unix shim should be a symbolic link")
+		}
+
+		// Verify symlink target
+		target, err := os.Readlink(shimPath)
+		if err != nil {
+			t.Fatalf("failed to readlink shim: %v", err)
+		}
+		if target == "" {
+			t.Error("Unix shim symlink target should not be empty")
+		}
+
+		// Verify the shim file name matches the app name
+		if filepath.Base(shimPath) != "testapp" {
+			t.Errorf("shim file name should be 'testapp', got: %s", filepath.Base(shimPath))
 		}
 	}
 }

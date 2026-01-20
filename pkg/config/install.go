@@ -178,7 +178,7 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 			_, _ = fmt.Fprintf(opts.Writer, "Warning: failed to create shim: %v\n", err)
 		} else {
 			result.ShimPath = shimPath
-			
+
 			// Check if shim directory is in PATH
 			shimDir := filepath.Dir(shimPath)
 			if !IsShimDirInPath(shimDir) {
@@ -298,14 +298,21 @@ func (m *Manager) CreateShim(appName, shimDir string) (string, error) {
 `, obPath, appName)
 
 	default:
-		// Create shell script on Unix-like systems
+		// Create symlink on Unix-like systems
+		// This makes the binary name be the app name, which triggers shim mode in main.go
 		shimPath = filepath.Join(shimDir, appName)
-		shimContent = fmt.Sprintf(`#!/bin/sh
-exec "%s" %s "$@"
-`, obPath, appName)
+
+		// Remove existing file/symlink if present
+		_ = os.Remove(shimPath)
+
+		// Create symlink to ob binary
+		if err := os.Symlink(obPath, shimPath); err != nil {
+			return "", fmt.Errorf("failed to create symlink: %w", err)
+		}
+		return shimPath, nil
 	}
 
-	// Write shim file
+	// Write shim file (Windows only now)
 	if err := os.WriteFile(shimPath, []byte(shimContent), 0755); err != nil {
 		return "", fmt.Errorf("failed to write shim: %w", err)
 	}
