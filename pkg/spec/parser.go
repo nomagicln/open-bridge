@@ -156,7 +156,7 @@ func (p *Parser) loadFromURL(ctx context.Context, specURL string) (*openapi3.T, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch spec from '%s': %w", specURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to fetch spec from '%s': HTTP %d %s", specURL, resp.StatusCode, resp.Status)

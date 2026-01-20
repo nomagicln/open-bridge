@@ -120,7 +120,7 @@ paths:
 		// Shim still exists in custom directory, which is expected
 		// since RemoveShim checks default directory
 		// Let's manually remove it for cleanup
-		os.Remove(result.ShimPath)
+		_ = os.Remove(result.ShimPath)
 	}
 }
 

@@ -399,7 +399,8 @@ func TestDeleteCredentialIntegration(t *testing.T) {
 	profileName := "test-delete"
 
 	// Store a credential
-	m.StoreCredential(appName, profileName, NewBearerCredential("token"))
+	err = m.StoreCredential(appName, profileName, NewBearerCredential("token"))
+	require.NoError(t, err)
 
 	// Delete it
 	if err := m.DeleteCredential(appName, profileName); err != nil {
@@ -437,7 +438,8 @@ func TestHasCredentialIntegration(t *testing.T) {
 	// Should not exist initially
 	if m.HasCredential(appName, profileName) {
 		// Clean up first
-		m.DeleteCredential(appName, profileName)
+		err = m.DeleteCredential(appName, profileName)
+		require.NoError(t, err)
 	}
 
 	if m.HasCredential(appName, profileName) {
@@ -445,7 +447,8 @@ func TestHasCredentialIntegration(t *testing.T) {
 	}
 
 	// Store credential
-	m.StoreCredential(appName, profileName, NewBearerCredential("token"))
+	err = m.StoreCredential(appName, profileName, NewBearerCredential("token"))
+	require.NoError(t, err)
 
 	// Should exist now
 	if !m.HasCredential(appName, profileName) {
@@ -453,7 +456,8 @@ func TestHasCredentialIntegration(t *testing.T) {
 	}
 
 	// Clean up
-	m.DeleteCredential(appName, profileName)
+	err = m.DeleteCredential(appName, profileName)
+	require.NoError(t, err)
 }
 
 func TestListCredentialsIntegration(t *testing.T) {
@@ -475,11 +479,13 @@ func TestListCredentialsIntegration(t *testing.T) {
 	// Clean up any existing credentials
 	profiles, _ := m.ListCredentials(appName)
 	for _, p := range profiles {
-		m.DeleteCredential(appName, p)
+		err = m.DeleteCredential(appName, p)
+		require.NoError(t, err)
 	}
 
 	// Store multiple credentials
-	m.StoreCredential(appName, "profile1", NewBearerCredential("token1"))
+	err = m.StoreCredential(appName, "profile1", NewBearerCredential("token1"))
+	require.NoError(t, err)
 	m.StoreCredential(appName, "profile2", NewBearerCredential("token2"))
 
 	// List credentials

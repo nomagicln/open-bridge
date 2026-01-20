@@ -90,7 +90,7 @@ type Duration struct {
 
 // MarshalYAML implements yaml.Marshaler.
 func (d Duration) MarshalYAML() (interface{}, error) {
-	return d.Duration.String(), nil
+	return d.String(), nil
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler.
