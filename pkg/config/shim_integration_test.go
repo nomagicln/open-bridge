@@ -104,8 +104,11 @@ paths:
 		if !strings.HasPrefix(contentStr, "@echo off") {
 			t.Error("Windows shim should start with '@echo off'")
 		}
-		if !strings.Contains(contentStr, "%%*") {
-			t.Error("Windows shim should contain '%%*' for argument forwarding")
+		if !strings.Contains(contentStr, "run shimtest") {
+			t.Error("Windows shim should contain 'run shimtest'")
+		}
+		if !strings.Contains(contentStr, "%*") {
+			t.Error("Windows shim should contain '%*' for argument forwarding")
 		}
 	default:
 		// Unix shims are now symlinks to the ob binary

@@ -732,8 +732,11 @@ func TestShimContentFormat(t *testing.T) {
 		if !strings.Contains(contentStr, "testapp") {
 			t.Error("expected shim to contain app name 'testapp'")
 		}
-		if !strings.Contains(contentStr, "%%*") {
-			t.Error("expected Windows shim to contain '%%*' for argument forwarding")
+		if !strings.Contains(contentStr, "run testapp") {
+			t.Error("expected Windows shim to contain 'run testapp'")
+		}
+		if !strings.Contains(contentStr, "%*") {
+			t.Error("expected Windows shim to contain '%*' for argument forwarding")
 		}
 	default:
 		// Unix symlink
