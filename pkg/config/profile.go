@@ -350,6 +350,27 @@ func (pm *ProfileManager) ProfileCount() int {
 	return len(pm.config.Profiles)
 }
 
+func (pm *ProfileManager) setProfileStringMapValue(
+	profileName, key, value string,
+	getMap func(*Profile) map[string]string,
+	setMap func(*Profile, map[string]string),
+) error {
+	profile, exists := pm.config.Profiles[profileName]
+	if !exists {
+		return &ProfileNotFoundError{AppName: pm.appName, ProfileName: profileName}
+	}
+
+	target := getMap(&profile)
+	if target == nil {
+		target = make(map[string]string)
+		setMap(&profile, target)
+	}
+	target[key] = value
+	pm.config.Profiles[profileName] = profile
+
+	return pm.Save()
+}
+
 // SelectProfile selects a profile based on the following priority:
 // 1. Explicit profile name if provided
 // 2. Profile from environment variable OPENBRIDGE_PROFILE
@@ -369,18 +390,17 @@ func (pm *ProfileManager) SelectProfile(explicitName string) (*Profile, error) {
 
 // SetProfileHeader sets a header for a profile.
 func (pm *ProfileManager) SetProfileHeader(profileName, headerName, headerValue string) error {
-	profile, exists := pm.config.Profiles[profileName]
-	if !exists {
-		return &ProfileNotFoundError{AppName: pm.appName, ProfileName: profileName}
-	}
-
-	if profile.Headers == nil {
-		profile.Headers = make(map[string]string)
-	}
-	profile.Headers[headerName] = headerValue
-	pm.config.Profiles[profileName] = profile
-
-	return pm.Save()
+	return pm.setProfileStringMapValue(
+		profileName,
+		headerName,
+		headerValue,
+		func(p *Profile) map[string]string {
+			return p.Headers
+		},
+		func(p *Profile, m map[string]string) {
+			p.Headers = m
+		},
+	)
 }
 
 // DeleteProfileHeader removes a header from a profile.
@@ -400,18 +420,17 @@ func (pm *ProfileManager) DeleteProfileHeader(profileName, headerName string) er
 
 // SetProfileQueryParam sets a query parameter for a profile.
 func (pm *ProfileManager) SetProfileQueryParam(profileName, paramName, paramValue string) error {
-	profile, exists := pm.config.Profiles[profileName]
-	if !exists {
-		return &ProfileNotFoundError{AppName: pm.appName, ProfileName: profileName}
-	}
-
-	if profile.QueryParams == nil {
-		profile.QueryParams = make(map[string]string)
-	}
-	profile.QueryParams[paramName] = paramValue
-	pm.config.Profiles[profileName] = profile
-
-	return pm.Save()
+	return pm.setProfileStringMapValue(
+		profileName,
+		paramName,
+		paramValue,
+		func(p *Profile) map[string]string {
+			return p.QueryParams
+		},
+		func(p *Profile, m map[string]string) {
+			p.QueryParams = m
+		},
+	)
 }
 
 // ConfigureSafety configures AI safety settings for a profile.

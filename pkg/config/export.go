@@ -256,36 +256,15 @@ type ImportValidationResult struct {
 	Profile  *ExportedProfile
 }
 
-// ValidateImport validates import data without actually importing.
-func (m *Manager) ValidateImport(appName string, data []byte) (*ImportValidationResult, error) {
-	result := &ImportValidationResult{
-		Valid:    true,
-		Errors:   make([]string, 0),
-		Warnings: make([]string, 0),
-	}
-
-	// Check app exists
-	if !m.AppExists(appName) {
-		result.Valid = false
-		result.Errors = append(result.Errors, fmt.Sprintf("app '%s' does not exist", appName))
-		return result, nil
-	}
-
-	// Try to parse the data
-	exportData, err := parseImportData(data)
-	if err != nil {
-		result.Valid = false
-		result.Errors = append(result.Errors, fmt.Sprintf("failed to parse import data: %v", err))
-		return result, nil
-	}
-
+// validateImportData validates the export data and populates the result.
+func (m *Manager) validateImportData(appName string, exportData *ProfileExportV2, result *ImportValidationResult) string {
 	result.Profile = &exportData.Profile
 
-	// Validate profile name
 	profileName := exportData.ProfileName
 	if profileName == "" {
 		profileName = exportData.Profile.Name
 	}
+
 	if profileName == "" {
 		result.Valid = false
 		result.Errors = append(result.Errors, "profile name is required")
@@ -294,46 +273,60 @@ func (m *Manager) ValidateImport(appName string, data []byte) (*ImportValidation
 		result.Errors = append(result.Errors, fmt.Sprintf("invalid profile name: %v", err))
 	}
 
-	// Validate base URL
 	if exportData.Profile.BaseURL == "" {
 		result.Valid = false
 		result.Errors = append(result.Errors, "base URL is required")
 	}
 
-	// Check for version compatibility
+	m.addImportWarnings(appName, exportData, profileName, result)
+	return profileName
+}
+
+// addImportWarnings adds validation warnings to the result.
+func (m *Manager) addImportWarnings(appName string, exportData *ProfileExportV2, profileName string, result *ImportValidationResult) {
 	if exportData.Version == "" {
 		result.Warnings = append(result.Warnings, "no version specified in import data, assuming legacy format")
 	}
 
-	// Check if profile already exists
-	config, _ := m.GetAppConfig(appName)
-	if _, exists := config.Profiles[profileName]; exists {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("profile '%s' already exists and will be overwritten if imported with --overwrite", profileName))
+	config, err := m.GetAppConfig(appName)
+	if err == nil {
+		if _, exists := config.Profiles[profileName]; exists {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("profile '%s' already exists and will be overwritten if imported with --overwrite", profileName))
+		}
 	}
 
-	// Check for empty auth type
 	if exportData.Profile.Auth.Type == "" {
 		result.Warnings = append(result.Warnings, "no authentication type specified")
 	}
+}
 
+// ValidateImport validates import data without actually importing.
+func (m *Manager) ValidateImport(appName string, data []byte) (*ImportValidationResult, error) {
+	result := &ImportValidationResult{
+		Valid:    true,
+		Errors:   make([]string, 0),
+		Warnings: make([]string, 0),
+	}
+
+	if !m.AppExists(appName) {
+		result.Valid = false
+		result.Errors = append(result.Errors, fmt.Sprintf("app '%s' does not exist", appName))
+		return result, nil
+	}
+
+	exportData, err := parseImportData(data)
+	if err != nil {
+		result.Valid = false
+		result.Errors = append(result.Errors, fmt.Sprintf("failed to parse import data: %v", err))
+		return result, nil
+	}
+
+	m.validateImportData(appName, exportData, result)
 	return result, nil
 }
 
-// ImportProfileWithOptions imports a profile with the given options.
-func (m *Manager) ImportProfileWithOptions(appName string, data []byte, opts ImportOptions) error {
-	// Parse import data
-	exportData, err := parseImportData(data)
-	if err != nil {
-		return fmt.Errorf("failed to parse import data: %w", err)
-	}
-
-	// Get app config
-	config, err := m.GetAppConfig(appName)
-	if err != nil {
-		return err
-	}
-
-	// Determine profile name
+// resolveImportProfileName determines the profile name for import.
+func resolveImportProfileName(exportData *ProfileExportV2, opts ImportOptions) (string, error) {
 	profileName := opts.TargetProfileName
 	if profileName == "" {
 		profileName = exportData.ProfileName
@@ -343,48 +336,66 @@ func (m *Manager) ImportProfileWithOptions(appName string, data []byte, opts Imp
 	}
 
 	if profileName == "" {
-		return fmt.Errorf("profile name is required")
+		return "", fmt.Errorf("profile name is required")
 	}
 
-	// Validate profile name
 	if err := validateProfileName(profileName); err != nil {
+		return "", err
+	}
+
+	return profileName, nil
+}
+
+// mergeProfileHeaders merges existing headers into the new profile.
+func mergeProfileHeaders(profile *Profile, existingProfile Profile) {
+	if profile.Headers == nil {
+		profile.Headers = make(map[string]string)
+	}
+	for k, v := range existingProfile.Headers {
+		if _, ok := profile.Headers[k]; !ok {
+			profile.Headers[k] = v
+		}
+	}
+}
+
+// ImportProfileWithOptions imports a profile with the given options.
+func (m *Manager) ImportProfileWithOptions(appName string, data []byte, opts ImportOptions) error {
+	exportData, err := parseImportData(data)
+	if err != nil {
+		return fmt.Errorf("failed to parse import data: %w", err)
+	}
+
+	config, err := m.GetAppConfig(appName)
+	if err != nil {
 		return err
 	}
 
-	// Check if profile exists
+	profileName, err := resolveImportProfileName(exportData, opts)
+	if err != nil {
+		return err
+	}
+
 	existingProfile, exists := config.Profiles[profileName]
 	if exists && !opts.Overwrite {
 		return &ProfileExistsError{AppName: appName, ProfileName: profileName}
 	}
 
-	// Create the profile from exported data
 	profile := convertExportedToProfile(exportData.Profile, profileName)
 
-	// Merge headers if requested and profile exists
 	if opts.MergeHeaders && exists {
-		if profile.Headers == nil {
-			profile.Headers = make(map[string]string)
-		}
-		for k, v := range existingProfile.Headers {
-			if _, ok := profile.Headers[k]; !ok {
-				profile.Headers[k] = v
-			}
-		}
+		mergeProfileHeaders(&profile, existingProfile)
 	}
 
-	// Store the profile
 	if config.Profiles == nil {
 		config.Profiles = make(map[string]Profile)
 	}
 	config.Profiles[profileName] = profile
 
-	// Set as default if requested
 	if opts.SetAsDefault {
 		config.DefaultProfile = profileName
 	}
 
 	config.UpdatedAt = time.Now()
-
 	return m.SaveAppConfig(config)
 }
 

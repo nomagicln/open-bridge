@@ -109,10 +109,7 @@ func TestExtractResourceName(t *testing.T) {
 }
 
 func TestNormalizeName(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
+	tests := []stringMappingCase{
 		{"users", "users"},
 		{"Users", "users"},
 		{"user-profiles", "userprofiles"},
@@ -120,14 +117,7 @@ func TestNormalizeName(t *testing.T) {
 		{"UserProfiles", "userprofiles"},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result := NormalizeName(tt.input)
-			if result != tt.expected {
-				t.Errorf("NormalizeName(%q) = %q, expected %q", tt.input, result, tt.expected)
-			}
-		})
-	}
+	runStringMappingTests(t, "NormalizeName", tests, NormalizeName)
 }
 
 func TestSingularize(t *testing.T) {

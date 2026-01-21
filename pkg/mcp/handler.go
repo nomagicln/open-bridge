@@ -66,41 +66,31 @@ func (h *Handler) GetTools(safetyConfig *config.SafetyConfig) []mcp.Tool {
 	return tools
 }
 
-// HandleCallTool handles tool execution requests.
-func (h *Handler) HandleCallTool(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	toolName := request.Params.Name
+// errorResult creates an MCP error result with the given message.
+func errorResult(format string, args ...any) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: fmt.Sprintf(format, args...)},
+		},
+		IsError: true,
+	}
+}
 
-	// Unmarshal arguments from json.RawMessage
+// parseToolArguments unmarshals the tool arguments from the request.
+func parseToolArguments(request *mcp.CallToolRequest) (map[string]any, error) {
 	var arguments map[string]any
 	if len(request.Params.Arguments) > 0 {
 		if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{
-					&mcp.TextContent{
-						Text: fmt.Sprintf("Error unmarshaling arguments: %v", err),
-					},
-				},
-				IsError: true,
-			}, nil
+			return nil, err
 		}
 	}
+	return arguments, nil
+}
 
-	// Map tool name to operation
-	operation, method, path, err := h.MapToolToOperation(toolName)
-	if err != nil {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{
-					Text: fmt.Sprintf("Error mapping tool: %v", err),
-				},
-			},
-			IsError: true,
-		}, nil
-	}
-
-	// Get profile configuration
+// getActiveProfile returns the active profile name and configuration.
+func (h *Handler) getActiveProfile() (string, *config.Profile, error) {
 	if h.appConfig == nil {
-		return nil, fmt.Errorf("app configuration not set")
+		return "", nil, fmt.Errorf("app configuration not set")
 	}
 
 	profileName := h.profileName
@@ -110,73 +100,64 @@ func (h *Handler) HandleCallTool(ctx context.Context, request *mcp.CallToolReque
 
 	profile, ok := h.appConfig.GetProfile(profileName)
 	if !ok {
-		return nil, fmt.Errorf("profile '%s' not found", profileName)
+		return "", nil, fmt.Errorf("profile '%s' not found", profileName)
 	}
 
-	// Build HTTP request
+	return profileName, profile, nil
+}
+
+// buildAndExecuteRequest builds and executes the HTTP request.
+func (h *Handler) buildAndExecuteRequest(operation *openapi3.Operation, method, path string, arguments map[string]any, profileName string, profile *config.Profile) (*mcp.CallToolResult, error) {
 	var requestBody *openapi3.RequestBody
 	if operation.RequestBody != nil {
 		requestBody = operation.RequestBody.Value
 	}
 
-	httpReq, err := h.requestBuilder.BuildRequest(
-		method,
-		path,
-		profile.BaseURL,
-		arguments,
-		operation.Parameters,
-		requestBody,
-	)
+	httpReq, err := h.requestBuilder.BuildRequest(method, path, profile.BaseURL, arguments, operation.Parameters, requestBody)
 	if err != nil {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{
-					Text: fmt.Sprintf("Failed to build request: %v", err),
-				},
-			},
-			IsError: true,
-		}, nil
+		return errorResult("Failed to build request: %v", err), nil
 	}
 
-	// Inject authentication
 	if err := h.requestBuilder.InjectAuth(httpReq, h.appConfig.Name, profileName, &profile.Auth); err != nil {
 		return nil, fmt.Errorf("failed to inject authentication: %w", err)
 	}
 
-	// Add custom headers from profile
 	for key, value := range profile.Headers {
 		httpReq.Header.Set(key, value)
 	}
 
-	// Execute API call
 	httpResp, err := h.httpClient.Do(httpReq)
 	if err != nil {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{
-					Text: fmt.Sprintf("Failed to execute API call: %v", err),
-				},
-			},
-			IsError: true,
-		}, nil
+		return errorResult("Failed to execute API call: %v", err), nil
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	// Read response body
 	bodyBytes, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{
-					Text: fmt.Sprintf("Failed to read response body: %v", err),
-				},
-			},
-			IsError: true,
-		}, nil
+		return errorResult("Failed to read response body: %v", err), nil
 	}
 
-	// Format response in MCP result format
 	return h.FormatMCPResult(httpResp.StatusCode, bodyBytes), nil
+}
+
+// HandleCallTool handles tool execution requests.
+func (h *Handler) HandleCallTool(_ context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	arguments, err := parseToolArguments(request)
+	if err != nil {
+		return errorResult("Error unmarshaling arguments: %v", err), nil
+	}
+
+	operation, method, path, err := h.MapToolToOperation(request.Params.Name)
+	if err != nil {
+		return errorResult("Error mapping tool: %v", err), nil
+	}
+
+	profileName, profile, err := h.getActiveProfile()
+	if err != nil {
+		return nil, err
+	}
+
+	return h.buildAndExecuteRequest(operation, method, path, arguments, profileName, profile)
 }
 
 // mapToolToOperation maps a tool name to its corresponding OpenAPI operation.

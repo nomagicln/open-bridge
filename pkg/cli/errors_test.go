@@ -88,54 +88,34 @@ func TestErrorFormatter_FormatNetworkError(t *testing.T) {
 func TestErrorFormatter_FormatHTTPError(t *testing.T) {
 	formatter := NewErrorFormatter()
 
-	tests := []struct {
-		name       string
-		statusCode int
-		body       []byte
-		contains   []string
-	}{
+	tests := []httpErrorCase{
 		{
 			name:       "400 Bad Request",
 			statusCode: http.StatusBadRequest,
 			body:       []byte(`{"error": "Invalid input"}`),
-			contains:   []string{"HTTP 400", "invalid or malformed", "Invalid input"},
+			expected:   []string{"HTTP 400", "invalid or malformed", "Invalid input"},
 		},
 		{
 			name:       "401 Unauthorized",
 			statusCode: http.StatusUnauthorized,
 			body:       []byte(`{"error": "Authentication required"}`),
-			contains:   []string{"HTTP 401", "Authentication", "credentials"},
+			expected:   []string{"HTTP 401", "Authentication", "credentials"},
 		},
 		{
 			name:       "404 Not Found",
 			statusCode: http.StatusNotFound,
 			body:       []byte(`{"error": "Resource not found"}`),
-			contains:   []string{"HTTP 404", "not found"},
+			expected:   []string{"HTTP 404", "not found"},
 		},
 		{
 			name:       "500 Internal Server Error",
 			statusCode: http.StatusInternalServerError,
 			body:       []byte(`{"error": "Server error"}`),
-			contains:   []string{"HTTP 500", "internal error"},
+			expected:   []string{"HTTP 500", "internal error"},
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp := &http.Response{
-				StatusCode: tt.statusCode,
-				Status:     http.StatusText(tt.statusCode),
-			}
-
-			result := formatter.FormatHTTPError(resp, tt.body)
-
-			for _, expected := range tt.contains {
-				if !strings.Contains(result, expected) {
-					t.Errorf("Expected error to contain '%s', got: %s", expected, result)
-				}
-			}
-		})
-	}
+	runHTTPErrorCases(t, formatter, tests)
 }
 
 func TestErrorFormatter_FormatUsageHelp(t *testing.T) {
@@ -309,53 +289,40 @@ func TestErrorFormatter_LevenshteinDistance(t *testing.T) {
 	}
 }
 
-func TestErrorFormatter_FormatMissingParameterError(t *testing.T) {
+func TestErrorFormatter_FormatErrorMessages(t *testing.T) {
 	formatter := NewErrorFormatter()
-	err := errors.New("required parameter 'user_id' is missing")
 
-	result := formatter.FormatError(err)
+	tests := []struct {
+		name     string
+		err      error
+		expected []string
+	}{
+		{
+			name:     "missing parameter",
+			err:      errors.New("required parameter 'user_id' is missing"),
+			expected: []string{"required parameter", "Usage:", "--help"},
+		},
+		{
+			name:     "unknown resource",
+			err:      errors.New("unknown resource: users"),
+			expected: []string{"Unknown resource", "users", "--help"},
+		},
+		{
+			name:     "unknown verb",
+			err:      errors.New("unknown verb 'create' for resource 'users'"),
+			expected: []string{"unknown verb", "Common verbs", "create"},
+		},
+	}
 
-	if !strings.Contains(result, "required parameter") {
-		t.Errorf("Expected error to mention required parameter, got: %s", result)
-	}
-	if !strings.Contains(result, "Usage:") {
-		t.Errorf("Expected error to show usage, got: %s", result)
-	}
-	if !strings.Contains(result, "--help") {
-		t.Errorf("Expected error to suggest help, got: %s", result)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatter.FormatError(tt.err)
 
-func TestErrorFormatter_FormatUnknownResourceError(t *testing.T) {
-	formatter := NewErrorFormatter()
-	err := errors.New("unknown resource: users")
-
-	result := formatter.FormatError(err)
-
-	if !strings.Contains(result, "Unknown resource") {
-		t.Errorf("Expected error to mention unknown resource, got: %s", result)
-	}
-	if !strings.Contains(result, "users") {
-		t.Errorf("Expected error to contain resource name, got: %s", result)
-	}
-	if !strings.Contains(result, "--help") {
-		t.Errorf("Expected error to suggest help, got: %s", result)
-	}
-}
-
-func TestErrorFormatter_FormatUnknownVerbError(t *testing.T) {
-	formatter := NewErrorFormatter()
-	err := errors.New("unknown verb 'create' for resource 'users'")
-
-	result := formatter.FormatError(err)
-
-	if !strings.Contains(result, "unknown verb") {
-		t.Errorf("Expected error to mention unknown verb, got: %s", result)
-	}
-	if !strings.Contains(result, "Common verbs") {
-		t.Errorf("Expected error to list common verbs, got: %s", result)
-	}
-	if !strings.Contains(result, "create") {
-		t.Errorf("Expected error to mention create verb, got: %s", result)
+			for _, expected := range tt.expected {
+				if !strings.Contains(result, expected) {
+					t.Errorf("Expected error to contain '%s', got: %s", expected, result)
+				}
+			}
+		})
 	}
 }

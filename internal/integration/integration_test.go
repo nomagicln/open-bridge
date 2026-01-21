@@ -4,6 +4,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -561,7 +562,7 @@ func TestMCPServerStartup(t *testing.T) {
 	cancel()
 	select {
 	case err := <-errChan:
-		if err != nil && err != context.Canceled {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Logf("server error (expected on shutdown): %v", err)
 		}
 	case <-time.After(time.Second):

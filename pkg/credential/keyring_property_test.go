@@ -38,7 +38,7 @@ func TestPropertyCredentialRoundTrip(t *testing.T) {
 		t.Skipf("keyring not available: %v", err)
 	}
 
-	properties := gopter.NewProperties(proptest.FastTestParameters())
+	properties := gopter.NewProperties(proptest.TestParameters())
 
 	// Property: Any credential stored can be retrieved with the same values
 	properties.Property("credential round-trip preserves values", prop.ForAll(
@@ -120,7 +120,7 @@ func TestPropertyCredentialDeletion(t *testing.T) {
 		t.Skipf("keyring not available: %v", err)
 	}
 
-	properties := gopter.NewProperties(proptest.FastTestParameters())
+	properties := gopter.NewProperties(proptest.TestParameters())
 
 	// Property: Deleted credentials cannot be retrieved
 	properties.Property("deleted credentials cannot be retrieved", prop.ForAll(
@@ -171,7 +171,7 @@ func TestPropertyCredentialIsolation(t *testing.T) {
 		t.Skipf("keyring not available: %v", err)
 	}
 
-	properties := gopter.NewProperties(proptest.FastTestParameters())
+	properties := gopter.NewProperties(proptest.TestParameters())
 
 	// Property: Credentials from different apps/profiles don't interfere
 	properties.Property("credentials are isolated by app and profile", prop.ForAll(

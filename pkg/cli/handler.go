@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -43,164 +44,191 @@ func NewHandler(
 	}
 }
 
-// ExecuteCommand parses and executes a CLI command.
-func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, args []string) error {
-	// Handle no args - show app help
-	if len(args) == 0 {
-		return h.showAppHelp(appName, appConfig)
+// handleHelpCommands handles help-related command patterns.
+// Returns true if help was handled, false otherwise.
+func (h *Handler) handleHelpCommands(appName string, appConfig *config.AppConfig, args []string) (bool, error) {
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
+		return true, h.showAppHelp(appName, appConfig)
 	}
 
-	// Check for help flag at start
-	if args[0] == "--help" || args[0] == "-h" {
-		return h.showAppHelp(appName, appConfig)
-	}
-
-	// Handle cases with only 1 argument
 	if len(args) == 1 {
-		firstArg := args[0]
-		// If the single arg is --help or -h, show app help (already handled above)
-		// Otherwise, check if it's a resource name - show resource help
-		return h.showResourceOrVerbHelp(appName, firstArg, appConfig)
+		return true, h.showResourceOrVerbHelp(appName, args[0], appConfig)
 	}
 
-	// Handle cases with 2 arguments where second might be --help
 	if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
-		// `app resource --help` - show resource help
-		return h.showResourceHelp(appName, args[0], appConfig)
+		return true, h.showResourceHelp(appName, args[0], appConfig)
 	}
 
-	// Now we have at least 2 args, parse as resource verb
-	resource := args[0]
-	verb := args[1]
-	flagArgs := args[2:]
-
-	// Check for help flag for specific command
-	for _, arg := range flagArgs {
+	// Check for help flag in remaining args
+	for _, arg := range args[2:] {
 		if arg == "--help" || arg == "-h" {
-			return h.showCommandHelp(appName, resource, verb, appConfig)
+			return true, h.showCommandHelp(appName, args[0], args[1], appConfig)
 		}
 	}
 
-	// Load spec
-	specDoc, ok := h.specParser.GetCachedSpec(appName)
-	if !ok {
-		var err error
-		specDoc, err = h.specParser.LoadSpec(appConfig.SpecSource)
-		if err != nil {
-			// Format spec loading error with helpful troubleshooting
-			return fmt.Errorf("%s", h.errorFormatter.FormatError(fmt.Errorf("failed to load spec: %w", err)))
-		}
-		h.specParser.CacheSpec(appName, specDoc)
+	return false, nil
+}
+
+// loadAndCacheSpec loads the spec, using cache if available.
+func (h *Handler) loadAndCacheSpec(appName string, appConfig *config.AppConfig) (*openapi3.T, error) {
+	if specDoc, ok := h.specParser.GetCachedSpec(appName); ok {
+		return specDoc, nil
 	}
 
-	// Build command tree and find operation
-	tree := h.mapper.BuildCommandTree(specDoc)
-	res := h.findResource(tree, resource)
-	if res == nil {
-		return h.showUnknownResourceError(resource, tree)
+	specDoc, err := h.specParser.LoadSpec(appConfig.SpecSource)
+	if err != nil {
+		return nil, h.printAndWrapError(h.errorFormatter.FormatError(fmt.Errorf("failed to load spec: %w", err)), err)
 	}
+	h.specParser.CacheSpec(appName, specDoc)
+	return specDoc, nil
+}
 
-	op, ok := res.Operations[verb]
-	if !ok {
-		return h.showUnknownVerbError(verb, resource, res)
-	}
-
-	// Parse flags
-	params := h.parseFlags(flagArgs)
-
-	// Get profile
-	profile := h.getProfile(appConfig)
-
-	// Get operation from spec
-	pathItem := specDoc.Paths.Find(op.Path)
-	if pathItem == nil {
-		return fmt.Errorf("path not found: %s", op.Path)
-	}
-
-	var opSpec *openapi3.Operation
-	switch op.Method {
+// getOperationSpec retrieves the operation spec for the given method.
+func getOperationSpec(pathItem *openapi3.PathItem, method string) *openapi3.Operation {
+	switch method {
 	case "GET":
-		opSpec = pathItem.Get
+		return pathItem.Get
 	case "POST":
-		opSpec = pathItem.Post
+		return pathItem.Post
 	case "PUT":
-		opSpec = pathItem.Put
+		return pathItem.Put
 	case "PATCH":
-		opSpec = pathItem.Patch
+		return pathItem.Patch
 	case "DELETE":
-		opSpec = pathItem.Delete
+		return pathItem.Delete
+	default:
+		return nil
 	}
+}
 
-	if opSpec == nil {
-		return fmt.Errorf("operation not found for %s %s", op.Method, op.Path)
-	}
+// printAndWrapError prints a formatted error message to stderr and returns a PrintedError
+// to prevent double printing when the error bubbles up to main().
+func (h *Handler) printAndWrapError(message string, underlying error) error {
+	fmt.Fprintln(os.Stderr, message)
+	return &PrintedError{Err: underlying}
+}
 
-	// Get request body if present
+// executeAPIRequest builds and executes the API request.
+func (h *Handler) executeAPIRequest(appName string, op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile) ([]byte, error) {
 	var requestBody *openapi3.RequestBody
 	if opSpec.RequestBody != nil && opSpec.RequestBody.Value != nil {
 		requestBody = opSpec.RequestBody.Value
 	}
 
-	// Validate parameters before building request
-	if err := h.reqBuilder.ValidateParams(params, opSpec.Parameters, requestBody); err != nil {
-		// Show detailed parameter error with help
-		return h.showParameterValidationError(err, appName, resource, verb, opSpec.Parameters)
-	}
-
-	// Build request
-	req, err := h.reqBuilder.BuildRequest(
-		op.Method,
-		op.Path,
-		profile.BaseURL,
-		params,
-		opSpec.Parameters,
-		requestBody,
-	)
+	req, err := h.reqBuilder.BuildRequest(op.Method, op.Path, profile.BaseURL, params, opSpec.Parameters, requestBody)
 	if err != nil {
-		return fmt.Errorf("failed to build request: %w", err)
+		return nil, fmt.Errorf("failed to build request: %w", err)
 	}
 
-	// Inject auth
 	if err := h.reqBuilder.InjectAuth(req, appName, profile.Name, &profile.Auth); err != nil {
-		return fmt.Errorf("failed to inject auth: %w", err)
+		return nil, fmt.Errorf("failed to inject auth: %w", err)
 	}
 
-	// Execute request
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
-		// Format network error with helpful troubleshooting
-		return fmt.Errorf("%s", h.errorFormatter.FormatError(err))
+		return nil, h.printAndWrapError(h.errorFormatter.FormatError(err), err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Read response
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
+		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Check for HTTP errors
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("%s", h.errorFormatter.FormatHTTPError(resp, body))
+		return nil, h.printAndWrapError(h.errorFormatter.FormatHTTPError(resp, body), nil)
 	}
 
-	// Format output
-	outputFormat := "table"
+	return body, nil
+}
+
+// resolveOperation finds the resource and operation for the given command.
+func (h *Handler) resolveOperation(specDoc *openapi3.T, resource, verb string) (*semantic.Resource, *semantic.Operation, error) {
+	tree := h.mapper.BuildCommandTree(specDoc)
+	res := h.findResource(tree, resource)
+	if res == nil {
+		return nil, nil, h.showUnknownResourceError(resource, tree)
+	}
+
+	op, ok := res.Operations[verb]
+	if !ok {
+		return nil, nil, h.showUnknownVerbError(verb, resource, res)
+	}
+
+	return res, op, nil
+}
+
+// getOperationRequestBody extracts the request body from the operation spec if present.
+func getOperationRequestBody(opSpec *openapi3.Operation) *openapi3.RequestBody {
+	if opSpec.RequestBody != nil && opSpec.RequestBody.Value != nil {
+		return opSpec.RequestBody.Value
+	}
+	return nil
+}
+
+// ExecuteCommand parses and executes a CLI command.
+func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, args []string) error {
+	if handled, err := h.handleHelpCommands(appName, appConfig, args); handled {
+		return err
+	}
+
+	resource, verb, flagArgs := args[0], args[1], args[2:]
+
+	specDoc, err := h.loadAndCacheSpec(appName, appConfig)
+	if err != nil {
+		return err
+	}
+
+	_, op, err := h.resolveOperation(specDoc, resource, verb)
+	if err != nil {
+		return err
+	}
+
+	pathItem := specDoc.Paths.Find(op.Path)
+	if pathItem == nil {
+		return fmt.Errorf("path not found: %s", op.Path)
+	}
+
+	opSpec := getOperationSpec(pathItem, op.Method)
+	if opSpec == nil {
+		return fmt.Errorf("operation not found for %s %s", op.Method, op.Path)
+	}
+
+	params := h.parseFlags(flagArgs)
+	requestBody := getOperationRequestBody(opSpec)
+
+	if err := h.reqBuilder.ValidateParams(params, opSpec.Parameters, requestBody); err != nil {
+		return h.showParameterValidationError(err, appName, resource, verb, opSpec.Parameters)
+	}
+
+	body, err := h.executeAPIRequest(appName, op, opSpec, params, h.getProfile(appConfig))
+	if err != nil {
+		return err
+	}
+
+	return h.formatAndPrintOutput(body, params)
+}
+
+// determineOutputFormat extracts the output format from parameters.
+func determineOutputFormat(params map[string]any) string {
 	if f, ok := params["output"].(string); ok {
-		outputFormat = f
+		return f
 	}
 	if _, ok := params["json"]; ok {
-		outputFormat = "json"
+		return "json"
 	}
 	if _, ok := params["yaml"]; ok {
-		outputFormat = "yaml"
+		return "yaml"
 	}
+	return "table"
+}
 
-	output, err := h.FormatOutput(body, outputFormat)
+// formatAndPrintOutput formats the response body and prints it.
+func (h *Handler) formatAndPrintOutput(body []byte, params map[string]any) error {
+	output, err := h.FormatOutput(body, determineOutputFormat(params))
 	if err != nil {
 		return fmt.Errorf("failed to format output: %w", err)
 	}
-
 	fmt.Println(output)
 	return nil
 }
@@ -417,16 +445,14 @@ func (h *Handler) formatAsTable(data any) string {
 }
 
 // showInvalidSyntaxError displays usage help for invalid command syntax.
-func (h *Handler) showInvalidSyntaxError(appName string) error {
+func (h *Handler) showInvalidSyntaxError(appName string, tree *semantic.CommandTree) error {
 	var sb strings.Builder
 	sb.WriteString("Error: Invalid command syntax.\n\n")
-	sb.WriteString(fmt.Sprintf("Usage: %s <resource> <verb> [flags]\n\n", appName))
+	fmt.Fprintf(&sb, "Usage: %s <resource> <verb> [flags]\n\n", appName)
 	sb.WriteString("Examples:\n")
-	sb.WriteString(fmt.Sprintf("  %s user create --name \"John\" --email \"john@example.com\"\n", appName))
-	sb.WriteString(fmt.Sprintf("  %s users list\n", appName))
-	sb.WriteString(fmt.Sprintf("  %s user get --id 123\n\n", appName))
-	sb.WriteString("For more information, use:\n")
-	sb.WriteString(fmt.Sprintf("  %s --help\n", appName))
+	h.writeResourceExamples(&sb, appName, tree)
+	sb.WriteString("\nFor more information, use:\n")
+	fmt.Fprintf(&sb, "  %s --help\n", appName)
 	return fmt.Errorf("%s", sb.String())
 }
 
@@ -448,7 +474,7 @@ func (h *Handler) showResourceOrVerbHelp(appName, arg string, appConfig *config.
 	}
 
 	// Not a valid resource, show syntax help
-	return h.showInvalidSyntaxError(appName)
+	return h.showInvalidSyntaxError(appName, tree)
 }
 
 // showResourceHelp shows help for a specific resource.
@@ -473,10 +499,10 @@ func (h *Handler) showResourceHelp(appName, resourceName string, appConfig *conf
 // showResourceHelpFromResource displays help for a specific resource.
 func (h *Handler) showResourceHelpFromResource(appName, resourceName string, res *semantic.Resource, appConfig *config.AppConfig) error {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Resource: %s\n\n", resourceName))
+	fmt.Fprintf(&sb, "Resource: %s\n\n", resourceName)
 
 	if appConfig.Description != "" {
-		sb.WriteString(fmt.Sprintf("API: %s\n\n", appConfig.Description))
+		fmt.Fprintf(&sb, "API: %s\n\n", appConfig.Description)
 	}
 
 	sb.WriteString("Available Operations:\n")
@@ -486,7 +512,7 @@ func (h *Handler) showResourceHelpFromResource(appName, resourceName string, res
 		for verbName, op := range res.Operations {
 			sb.WriteString(fmt.Sprintf("  %s %s", resourceName, verbName))
 			if op.Summary != "" {
-				sb.WriteString(fmt.Sprintf(" - %s", op.Summary))
+				fmt.Fprintf(&sb, " - %s", op.Summary)
 			}
 			sb.WriteString("\n")
 		}
@@ -496,7 +522,7 @@ func (h *Handler) showResourceHelpFromResource(appName, resourceName string, res
 	if len(res.SubResources) > 0 {
 		sb.WriteString("\nSub-resources:\n")
 		for subName := range res.SubResources {
-			sb.WriteString(fmt.Sprintf("  %s\n", subName))
+			fmt.Fprintf(&sb, "  %s\n", subName)
 		}
 	}
 
@@ -514,7 +540,7 @@ func (h *Handler) loadSpec(appName string, appConfig *config.AppConfig) (*openap
 		var err error
 		specDoc, err = h.specParser.LoadSpec(appConfig.SpecSource)
 		if err != nil {
-			return nil, fmt.Errorf("%s", h.errorFormatter.FormatError(fmt.Errorf("failed to load spec: %w", err)))
+			return nil, h.printAndWrapError(h.errorFormatter.FormatError(fmt.Errorf("failed to load spec: %w", err)), err)
 		}
 		h.specParser.CacheSpec(appName, specDoc)
 	}
@@ -522,12 +548,14 @@ func (h *Handler) loadSpec(appName string, appConfig *config.AppConfig) (*openap
 }
 
 // showAppHelp displays help for the entire app.
+//
+//nolint:unparam // Returns nil for consistency with other help methods that may return errors.
 func (h *Handler) showAppHelp(appName string, appConfig *config.AppConfig) error {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Usage: %s <resource> <verb> [flags]\n\n", appName))
+	fmt.Fprintf(&sb, "Usage: %s <resource> <verb> [flags]\n\n", appName)
 
 	if appConfig.Description != "" {
-		sb.WriteString(fmt.Sprintf("Description: %s\n\n", appConfig.Description))
+		fmt.Fprintf(&sb, "Description: %s\n\n", appConfig.Description)
 	}
 
 	// Load spec to show available resources
@@ -536,7 +564,9 @@ func (h *Handler) showAppHelp(appName string, appConfig *config.AppConfig) error
 		var err error
 		specDoc, err = h.specParser.LoadSpec(appConfig.SpecSource)
 		if err != nil {
-			sb.WriteString("(Unable to load API specification)\n")
+			sb.WriteString("(Unable to load API specification)\n\n")
+			sb.WriteString("Examples:\n")
+			fmt.Fprintf(&sb, "  %s <resource> <verb> [flags]\n", appName)
 			fmt.Print(sb.String())
 			return nil
 		}
@@ -547,10 +577,10 @@ func (h *Handler) showAppHelp(appName string, appConfig *config.AppConfig) error
 
 	sb.WriteString("Available Resources:\n")
 	for resourceName, res := range tree.RootResources {
-		sb.WriteString(fmt.Sprintf("  %s\n", resourceName))
+		fmt.Fprintf(&sb, "  %s\n", resourceName)
 		// List sub-resources
 		for subName := range res.SubResources {
-			sb.WriteString(fmt.Sprintf("    %s\n", subName))
+			fmt.Fprintf(&sb, "    %s\n", subName)
 		}
 	}
 
@@ -565,12 +595,52 @@ func (h *Handler) showAppHelp(appName string, appConfig *config.AppConfig) error
 	sb.WriteString("  --profile, -p    Profile to use\n\n")
 
 	sb.WriteString("Examples:\n")
-	sb.WriteString(fmt.Sprintf("  %s user create --name \"John\"\n", appName))
-	sb.WriteString(fmt.Sprintf("  %s users list --json\n", appName))
-	sb.WriteString(fmt.Sprintf("  %s user get --id 123\n", appName))
+	h.writeResourceExamples(&sb, appName, tree)
 
 	fmt.Print(sb.String())
 	return nil
+}
+
+// writeResourceExamples writes dynamic examples based on actual resources.
+func (h *Handler) writeResourceExamples(sb *strings.Builder, appName string, tree *semantic.CommandTree) {
+	// Get first available resource for examples
+	var exampleResource string
+	var exampleVerbs []string
+	for resourceName, res := range tree.RootResources {
+		exampleResource = resourceName
+		for verbName := range res.Operations {
+			exampleVerbs = append(exampleVerbs, verbName)
+			if len(exampleVerbs) >= 3 {
+				break
+			}
+		}
+		break
+	}
+
+	if exampleResource == "" {
+		// Fallback to generic examples if no resources found
+		fmt.Fprintf(sb, "  %s <resource> <verb> [flags]\n", appName)
+		return
+	}
+
+	// Generate examples based on actual verbs
+	for _, verb := range exampleVerbs {
+		switch verb {
+		case "create":
+			fmt.Fprintf(sb, "  %s %s create --name \"example\"\n", appName, exampleResource)
+		case "list":
+			fmt.Fprintf(sb, "  %s %s list --json\n", appName, exampleResource)
+		case "get":
+			fmt.Fprintf(sb, "  %s %s get --id 123\n", appName, exampleResource)
+		default:
+			fmt.Fprintf(sb, "  %s %s %s\n", appName, exampleResource, verb)
+		}
+	}
+
+	// If we have less than 2 examples, add some generic ones
+	if len(exampleVerbs) < 2 {
+		fmt.Fprintf(sb, "  %s %s --help\n", appName, exampleResource)
+	}
 }
 
 // showCommandHelp displays help for a specific command.
@@ -598,54 +668,48 @@ func (h *Handler) showCommandHelp(appName, resource, verb string, appConfig *con
 		return fmt.Errorf("unknown verb '%s' for resource '%s'", verb, resource)
 	}
 
-	// Get operation from spec
-	pathItem := specDoc.Paths.Find(op.Path)
-	if pathItem == nil {
-		return fmt.Errorf("path not found: %s", op.Path)
+	opSpec, err := h.getOperationFromSpec(specDoc, op)
+	if err != nil {
+		return err
 	}
 
-	var opSpec *openapi3.Operation
-	switch op.Method {
-	case "GET":
-		opSpec = pathItem.Get
-	case "POST":
-		opSpec = pathItem.Post
-	case "PUT":
-		opSpec = pathItem.Put
-	case "PATCH":
-		opSpec = pathItem.Patch
-	case "DELETE":
-		opSpec = pathItem.Delete
-	}
-
-	if opSpec == nil {
-		return fmt.Errorf("operation not found for %s %s", op.Method, op.Path)
-	}
-
-	// Get request body if present
 	var requestBody *openapi3.RequestBody
 	if opSpec.RequestBody != nil && opSpec.RequestBody.Value != nil {
 		requestBody = opSpec.RequestBody.Value
 	}
 
-	// Format and display help
 	help := h.errorFormatter.FormatUsageHelpWithBody(appName, resource, verb, opSpec, opSpec.Parameters, requestBody)
 	fmt.Print(help)
 	return nil
 }
 
+// getOperationFromSpec retrieves the operation spec from the spec document.
+func (h *Handler) getOperationFromSpec(specDoc *openapi3.T, op *semantic.Operation) (*openapi3.Operation, error) {
+	pathItem := specDoc.Paths.Find(op.Path)
+	if pathItem == nil {
+		return nil, fmt.Errorf("path not found: %s", op.Path)
+	}
+
+	opSpec := getOperationSpec(pathItem, op.Method)
+	if opSpec == nil {
+		return nil, fmt.Errorf("operation not found for %s %s", op.Method, op.Path)
+	}
+
+	return opSpec, nil
+}
+
 // showUnknownResourceError displays error for unknown resource with suggestions.
 func (h *Handler) showUnknownResourceError(resource string, tree *semantic.CommandTree) error {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Error: Unknown resource '%s'.\n\n", resource))
+	fmt.Fprintf(&sb, "Error: Unknown resource '%s'.\n\n", resource)
 
 	// List available resources (including sub-resources)
 	sb.WriteString("Available resources:\n")
 	for resourceName, res := range tree.RootResources {
-		sb.WriteString(fmt.Sprintf("  %s\n", resourceName))
+		fmt.Fprintf(&sb, "  %s\n", resourceName)
 		// List sub-resources
 		for subName := range res.SubResources {
-			sb.WriteString(fmt.Sprintf("    %s\n", subName))
+			fmt.Fprintf(&sb, "    %s\n", subName)
 		}
 	}
 
@@ -661,13 +725,13 @@ func (h *Handler) showUnknownVerbError(verb, resource string, res *semantic.Reso
 	sb.WriteString(fmt.Sprintf("Error: Unknown verb '%s' for resource '%s'.\n\n", verb, resource))
 
 	// List available verbs for this resource
-	sb.WriteString(fmt.Sprintf("Available verbs for '%s':\n", resource))
+	fmt.Fprintf(&sb, "Available verbs for '%s':\n", resource)
 	for verbName := range res.Operations {
-		sb.WriteString(fmt.Sprintf("  %s\n", verbName))
+		fmt.Fprintf(&sb, "  %s\n", verbName)
 	}
 
 	sb.WriteString("\nFor more information, use:\n")
-	sb.WriteString(fmt.Sprintf("  <app> %s --help\n", resource))
+	fmt.Fprintf(&sb, "  <app> %s --help\n", resource)
 
 	return fmt.Errorf("%s", sb.String())
 }
@@ -698,12 +762,12 @@ func (h *Handler) showParameterValidationError(
 		for _, paramRef := range opParams {
 			param := paramRef.Value
 			if param.Required {
-				sb.WriteString(fmt.Sprintf("  --%s", param.Name))
+				fmt.Fprintf(&sb, "  --%s", param.Name)
 				if param.Schema != nil && param.Schema.Value != nil && param.Schema.Value.Type != nil {
-					sb.WriteString(fmt.Sprintf(" <%s>", param.Schema.Value.Type.Slice()[0]))
+					fmt.Fprintf(&sb, " <%s>", param.Schema.Value.Type.Slice()[0])
 				}
 				if param.Description != "" {
-					sb.WriteString(fmt.Sprintf(" - %s", param.Description))
+					fmt.Fprintf(&sb, " - %s", param.Description)
 				}
 				sb.WriteString("\n")
 			}

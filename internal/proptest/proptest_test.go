@@ -9,7 +9,7 @@ import (
 
 // TestPropertyTestingSetup verifies that gopter is properly set up.
 func TestPropertyTestingSetup(t *testing.T) {
-	properties := gopter.NewProperties(FastTestParameters())
+	properties := gopter.NewProperties(TestParameters())
 
 	// Property: String concatenation is associative
 	properties.Property("string concatenation is associative", prop.ForAll(
@@ -26,7 +26,7 @@ func TestPropertyTestingSetup(t *testing.T) {
 
 // TestGeneratorSetup tests that basic generators work.
 func TestGeneratorSetup(t *testing.T) {
-	properties := gopter.NewProperties(FastTestParameters())
+	properties := gopter.NewProperties(TestParameters())
 
 	// Test AlphaString generator
 	properties.Property("AlphaString generates strings", prop.ForAll(

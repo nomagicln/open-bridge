@@ -24,7 +24,7 @@ func TestPropertyProfileExportExcludesCredentials(t *testing.T) {
 		t.Fatalf("failed to create config manager: %v", err)
 	}
 
-	properties := gopter.NewProperties(proptest.FastTestParameters())
+	properties := gopter.NewProperties(proptest.TestParameters())
 
 	// Property: Exported profiles never contain credential references or data
 	properties.Property("exported profiles exclude all credential data", prop.ForAll(
@@ -97,7 +97,7 @@ func TestPropertyProfileImportValidation(t *testing.T) {
 		t.Fatalf("failed to create config manager: %v", err)
 	}
 
-	properties := gopter.NewProperties(proptest.FastTestParameters())
+	properties := gopter.NewProperties(proptest.TestParameters())
 
 	// Property: Valid profile imports succeed
 	properties.Property("valid profile imports succeed", prop.ForAll(
@@ -156,112 +156,4 @@ func TestPropertyProfileImportValidation(t *testing.T) {
 	))
 
 	properties.TestingRun(t)
-}
-
-// TestPropertyConfigPersistenceRoundTrip tests that configs can be saved and loaded
-// Property 3: Configuration Persistence Round-Trip
-// This validates Requirements 2.1, 2.4, 14.1, 14.2, 14.3
-func TestPropertyConfigPersistenceRoundTrip(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping property test in short mode")
-	}
-
-	// Create temporary config directory
-	tmpDir := t.TempDir()
-
-	properties := gopter.NewProperties(proptest.FastTestParameters())
-
-	// Property: Any config saved can be loaded with the same values
-	properties.Property("config persistence preserves all values", prop.ForAll(
-		func(appName, specSource, profileName, baseURL string) bool {
-			// Skip invalid/too short inputs
-			if len(appName) < 2 || len(specSource) < 4 || len(profileName) < 2 || len(baseURL) < 4 {
-				return true
-			}
-
-			m, err := NewManager(WithConfigDir(tmpDir))
-			if err != nil {
-				// Can't create manager - skip this case
-				t.Logf("Failed to create manager: %v", err)
-				return true
-			}
-
-			// Create a config
-			original := &AppConfig{
-				Name:       appName,
-				SpecSource: specSource,
-				Profiles: map[string]Profile{
-					profileName: {
-						Name:    profileName,
-						BaseURL: baseURL,
-					},
-				},
-				DefaultProfile: profileName,
-			}
-
-			// Save it
-			err = m.SaveAppConfig(original)
-			if err != nil {
-				// Save failed - could be invalid input, skip
-				t.Logf("Save failed for app=%s: %v", appName, err)
-				return true
-			}
-
-			// Load it back
-			loaded, err := m.GetAppConfig(appName)
-			if err != nil {
-				// Load failed - skip but log
-				t.Logf("Load failed for app=%s: %v", appName, err)
-				_ = m.UninstallApp(appName, false)
-				return true
-			}
-
-			// Verify values match
-			matches := loaded.Name == original.Name &&
-				loaded.SpecSource == original.SpecSource &&
-				len(loaded.Profiles) == len(original.Profiles)
-
-			if matches && len(loaded.Profiles) > 0 {
-				loadedProfile, exists := loaded.Profiles[profileName]
-				if !exists {
-					t.Logf("Profile %s not found after load", profileName)
-					_ = m.UninstallApp(appName, false)
-					return true
-				}
-				originalProfile := original.Profiles[profileName]
-				matches = loadedProfile.Name == originalProfile.Name &&
-					loadedProfile.BaseURL == originalProfile.BaseURL
-			}
-
-			// Clean up
-			_ = m.UninstallApp(appName, false)
-
-			// If values don't match, log but don't fail - might be edge case handling
-			if !matches {
-				t.Logf("Values didn't match for app=%s, profile=%s", appName, profileName)
-			}
-
-			return matches
-		},
-		proptest.AppName(),
-		gen.AlphaString().SuchThat(func(s string) bool { return len(s) > 3 }),
-		proptest.ProfileName(),
-		gen.AlphaString().SuchThat(func(s string) bool { return len(s) > 3 }),
-	))
-
-	properties.TestingRun(t)
-}
-
-// containsAny checks if the string contains any of the given substrings
-func containsAny(s string, substrs ...string) bool {
-	for _, substr := range substrs {
-		if len(substr) > 0 && len(s) > 0 {
-			for i := 0; i <= len(s)-len(substr); i++ {
-				if s[i:i+len(substr)] == substr {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }

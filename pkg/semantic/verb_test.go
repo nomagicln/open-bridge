@@ -258,10 +258,7 @@ func TestIsActionVerb(t *testing.T) {
 }
 
 func TestVerbDescription(t *testing.T) {
-	tests := []struct {
-		verb     string
-		expected string
-	}{
+	tests := []stringMappingCase{
 		{"list", "List all resources"},
 		{"get", "Get a single resource"},
 		{"create", "Create a new resource"},
@@ -269,14 +266,7 @@ func TestVerbDescription(t *testing.T) {
 		{"custom", "Perform custom operation"},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.verb, func(t *testing.T) {
-			result := VerbDescription(tt.verb)
-			if result != tt.expected {
-				t.Errorf("VerbDescription(%q) = %q, expected %q", tt.verb, result, tt.expected)
-			}
-		})
-	}
+	runStringMappingTests(t, "VerbDescription", tests, VerbDescription)
 }
 
 func TestVerbMappingSource(t *testing.T) {

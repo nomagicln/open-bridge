@@ -375,13 +375,7 @@ func TestUninstallAppNotFound(t *testing.T) {
 	}
 
 	err = m.UninstallApp("nonexistent", false)
-	if err == nil {
-		t.Error("expected error for nonexistent app")
-	}
-
-	if _, ok := err.(*AppNotFoundError); !ok {
-		t.Errorf("expected AppNotFoundError, got %T", err)
-	}
+	assertNonexistentAppError(t, err)
 }
 
 func TestCreateAndRemoveShim(t *testing.T) {
@@ -752,27 +746,7 @@ func TestShimContentFormat(t *testing.T) {
 			t.Error("expected Windows shim to contain '%*' for argument forwarding")
 		}
 	default:
-		// Unix symlink
-		info, err := os.Lstat(shimPath)
-		if err != nil {
-			t.Fatalf("failed to lstat shim: %v", err)
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			t.Error("expected Unix shim to be a symbolic link")
-		}
-
-		target, err := os.Readlink(shimPath)
-		if err != nil {
-			t.Fatalf("failed to readlink shim: %v", err)
-		}
-		if target == "" {
-			t.Error("expected Unix shim symlink target to not be empty")
-		}
-
-		// Verify file name is correct
-		if filepath.Base(shimPath) != "testapp" {
-			t.Errorf("expected shim name to be 'testapp', got '%s'", filepath.Base(shimPath))
-		}
+		assertUnixShimSymlink(t, shimPath, "testapp")
 	}
 }
 

@@ -5,6 +5,7 @@
 </p>
 
 [![CI](https://github.com/nomagicln/open-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/nomagicln/open-bridge/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/nomagicln/open-bridge/graph/badge.svg)](https://codecov.io/gh/nomagicln/open-bridge)
 [![Go Report Card](https://goreportcard.com/badge/github.com/nomagicln/open-bridge)](https://goreportcard.com/report/github.com/nomagicln/open-bridge)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Cat Alliance](https://img.shields.io/badge/Cat%20Alliance-Member-orange?logo=kitty-terminal&logoColor=white)](https://github.com/nomagicln/open-bridge/blob/main/NOTICE)
@@ -41,6 +42,7 @@ Download the latest release from the [Releases page](https://github.com/nomagicl
 ## Quick Start
 
 ### 1. Install an API
+
 ```bash
 ob install myapi --spec ./openapi.yaml
 ```

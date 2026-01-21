@@ -4,6 +4,7 @@ package credential
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -266,7 +267,8 @@ func IsCredentialNotFound(err error) bool {
 		return false
 	}
 
-	_, ok := err.(*CredentialNotFoundError)
+	credentialNotFoundError := &CredentialNotFoundError{}
+	ok := errors.As(err, &credentialNotFoundError)
 	if ok {
 		return true
 	}

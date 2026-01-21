@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/nomagicln/open-bridge/pkg/spec"
 )
 
@@ -69,116 +70,72 @@ type InstallResult struct {
 	SpecInfo   *spec.SpecInfo
 }
 
-// InstallApp installs an API as a CLI application.
-func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResult, error) {
-	// Validate app name
-	if err := validateAppName(appName); err != nil {
-		return nil, err
-	}
-
-	// Check if app already exists
-	appExists := m.AppExists(appName)
-	if appExists {
-		if !opts.Force {
-			return nil, fmt.Errorf("app '%s' already exists (use --force to overwrite)", appName)
-		}
-
-		// Load existing config to use as defaults
-		existingConfig, err := m.GetAppConfig(appName)
-		if err == nil {
-			// Merge existing config into options if options are empty
-			if opts.SpecSource == "" && len(opts.SpecSources) == 0 {
-				opts.SpecSource = existingConfig.SpecSource
-				opts.SpecSources = existingConfig.SpecSources
-			}
-			if opts.Description == "" {
-				opts.Description = existingConfig.Description
-			}
-			if profile, ok := existingConfig.Profiles[existingConfig.DefaultProfile]; ok {
-				if opts.BaseURL == "" {
-					opts.BaseURL = profile.BaseURL
-				}
-				if opts.AuthType == "" {
-					opts.AuthType = profile.Auth.Type
-				}
-			}
-		}
-	}
-
-	// Set defaults for interactive I/O
-	if opts.Reader == nil {
-		opts.Reader = os.Stdin
-	}
-	if opts.Writer == nil {
-		opts.Writer = os.Stdout
-	}
-
-	// Interactive mode: prompt for missing information
-	if opts.Interactive {
-		var err error
-		opts, err = m.promptForMissingInfo(opts)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Validate spec source
+// mergeExistingAppConfig merges existing app config into install options if options are empty.
+func mergeExistingAppConfig(opts InstallOptions, existing *AppConfig) InstallOptions {
 	if opts.SpecSource == "" && len(opts.SpecSources) == 0 {
-		return nil, fmt.Errorf("spec source is required")
+		opts.SpecSource = existing.SpecSource
+		opts.SpecSources = existing.SpecSources
 	}
+	if opts.Description == "" {
+		opts.Description = existing.Description
+	}
+	if profile, ok := existing.Profiles[existing.DefaultProfile]; ok {
+		if opts.BaseURL == "" {
+			opts.BaseURL = profile.BaseURL
+		}
+		if opts.AuthType == "" {
+			opts.AuthType = profile.Auth.Type
+		}
+	}
+	return opts
+}
 
-	// Load and validate the spec
-	parser := spec.NewParser()
-	specSource := opts.SpecSource
-	specSources := opts.SpecSources
+// prepareSpecSources normalizes spec sources and returns the primary source.
+func prepareSpecSources(specSource string, specSources []string) (string, []string, string, error) {
 	var err error
 	if specSource != "" {
 		specSource, err = normalizeSpecSource(specSource)
 		if err != nil {
-			return nil, err
+			return "", nil, "", err
 		}
 	}
 	if len(specSources) > 0 {
 		specSources, err = normalizeSpecSources(specSources)
 		if err != nil {
-			return nil, err
+			return "", nil, "", err
 		}
 	}
 	primarySource := specSource
 	if primarySource == "" && len(specSources) > 0 {
 		primarySource = specSources[0]
 	}
+	return specSource, specSources, primarySource, nil
+}
 
-	specDoc, err := parser.LoadSpec(primarySource)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load spec: %w", err)
-	}
-
-	specInfo := spec.GetSpecInfo(specDoc, primarySource)
-
-	// Determine base URL
+// resolveBaseURL determines the base URL from options, spec, or prompts.
+func resolveBaseURL(opts InstallOptions, specDoc *openapi3.T) (string, error) {
 	baseURL := opts.BaseURL
-	if baseURL == "" {
-		// Try to get from spec
-		if len(specDoc.Servers) > 0 {
-			baseURL = specDoc.Servers[0].URL
-		}
+	if baseURL == "" && len(specDoc.Servers) > 0 {
+		baseURL = specDoc.Servers[0].URL
 	}
 
-	// Prompt for base URL if still empty and interactive
 	if baseURL == "" && opts.Interactive {
 		_, _ = fmt.Fprintln(opts.Writer, "No server URL found in spec.")
+		var err error
 		baseURL, err = promptString(opts.Reader, opts.Writer, "Base URL", "http://localhost:8080")
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 	}
 
 	if baseURL == "" {
-		return nil, fmt.Errorf("base URL is required (use --base-url or add servers to spec)")
+		return "", fmt.Errorf("base URL is required (use --base-url or add servers to spec)")
 	}
+	return baseURL, nil
+}
 
-	// Create app configuration
+// createAppConfig creates the app configuration structure.
+func createAppConfig(appName, specSource string, specSources []string, opts InstallOptions, baseURL string, specInfo *spec.SpecInfo) *AppConfig {
 	now := time.Now()
 	config := &AppConfig{
 		Name:           appName,
@@ -191,11 +148,9 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 		UpdatedAt:      now,
 		Profiles: map[string]Profile{
 			"default": {
-				Name:    "default",
-				BaseURL: baseURL,
-				Auth: AuthConfig{
-					Type: opts.AuthType,
-				},
+				Name:      "default",
+				BaseURL:   baseURL,
+				Auth:      AuthConfig{Type: opts.AuthType},
 				Headers:   opts.Headers,
 				Timeout:   Duration{Duration: 30 * time.Second},
 				IsDefault: true,
@@ -203,12 +158,106 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 		},
 	}
 
-	// Use spec info for description if not provided
 	if config.Description == "" && specInfo != nil {
 		config.Description = specInfo.Title
 	}
+	return config
+}
 
-	// Save configuration
+// createShimIfRequested creates a shim for the app if requested.
+func (m *Manager) createShimIfRequested(opts InstallOptions, appName string, result *InstallResult) {
+	if !opts.CreateShim {
+		return
+	}
+
+	shimPath, err := m.CreateShim(appName, opts.ShimDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(opts.Writer, "Warning: failed to create shim: %v\n", err)
+		return
+	}
+
+	result.ShimPath = shimPath
+
+	shimDir := filepath.Dir(shimPath)
+	if !IsShimDirInPath(shimDir) {
+		_, _ = fmt.Fprintf(opts.Writer, "\nNote: The shim directory is not in your PATH.\n")
+		_, _ = fmt.Fprintf(opts.Writer, "%s\n", GetPathInstructions(shimDir))
+	}
+}
+
+// handleExistingApp checks if app exists and handles force option.
+func (m *Manager) handleExistingApp(appName string, opts InstallOptions) (InstallOptions, error) {
+	if !m.AppExists(appName) {
+		return opts, nil
+	}
+	if !opts.Force {
+		return opts, fmt.Errorf("app '%s' already exists (use --force to overwrite)", appName)
+	}
+	if existingConfig, err := m.GetAppConfig(appName); err == nil {
+		opts = mergeExistingAppConfig(opts, existingConfig)
+	}
+	return opts, nil
+}
+
+// setDefaultIO sets default reader/writer if not provided.
+func setDefaultIO(opts InstallOptions) InstallOptions {
+	if opts.Reader == nil {
+		opts.Reader = os.Stdin
+	}
+	if opts.Writer == nil {
+		opts.Writer = os.Stdout
+	}
+	return opts
+}
+
+// InstallApp installs an API as a CLI application.
+func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResult, error) {
+	if err := validateAppName(appName); err != nil {
+		return nil, err
+	}
+
+	opts, err := m.handleExistingApp(appName, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	opts = setDefaultIO(opts)
+
+	if opts.Interactive {
+		opts, err = m.promptForMissingInfo(opts)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if opts.SpecSource == "" && len(opts.SpecSources) == 0 {
+		return nil, fmt.Errorf("spec source is required")
+	}
+
+	return m.doInstall(appName, opts)
+}
+
+// doInstall performs the actual installation after validation.
+func (m *Manager) doInstall(appName string, opts InstallOptions) (*InstallResult, error) {
+	specSource, specSources, primarySource, err := prepareSpecSources(opts.SpecSource, opts.SpecSources)
+	if err != nil {
+		return nil, err
+	}
+
+	parser := spec.NewParser()
+	specDoc, err := parser.LoadSpec(primarySource)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load spec: %w", err)
+	}
+
+	baseURL, err := resolveBaseURL(opts, specDoc)
+	if err != nil {
+		return nil, err
+	}
+
+	specInfo := spec.GetSpecInfo(specDoc, primarySource)
+	config := createAppConfig(appName, specSource, specSources, opts, baseURL, specInfo)
+
 	if err := m.SaveAppConfig(config); err != nil {
 		return nil, fmt.Errorf("failed to save config: %w", err)
 	}
@@ -219,24 +268,7 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 		SpecInfo:   specInfo,
 	}
 
-	// Create shim if requested
-	if opts.CreateShim {
-		shimPath, err := m.CreateShim(appName, opts.ShimDir)
-		if err != nil {
-			// Don't fail installation, just warn
-			_, _ = fmt.Fprintf(opts.Writer, "Warning: failed to create shim: %v\n", err)
-		} else {
-			result.ShimPath = shimPath
-
-			// Check if shim directory is in PATH
-			shimDir := filepath.Dir(shimPath)
-			if !IsShimDirInPath(shimDir) {
-				_, _ = fmt.Fprintf(opts.Writer, "\nNote: The shim directory is not in your PATH.\n")
-				_, _ = fmt.Fprintf(opts.Writer, "%s\n", GetPathInstructions(shimDir))
-			}
-		}
-	}
-
+	m.createShimIfRequested(opts, appName, result)
 	return result, nil
 }
 
@@ -278,12 +310,10 @@ func isWebURL(source string) bool {
 	return parsed.Scheme == "http" || parsed.Scheme == "https"
 }
 
-// promptForMissingInfo prompts the user for missing installation information.
-func (m *Manager) promptForMissingInfo(opts InstallOptions) (InstallOptions, error) {
-	reader := opts.Reader
-	writer := opts.Writer
+// promptAndNormalizeSpec prompts for spec source and normalizes paths.
+func promptAndNormalizeSpec(opts InstallOptions) (InstallOptions, error) {
+	reader, writer := opts.Reader, opts.Writer
 
-	// Prompt for spec source if not provided
 	if opts.SpecSource == "" && len(opts.SpecSources) == 0 {
 		source, err := promptString(reader, writer, "OpenAPI spec path or URL", "")
 		if err != nil {
@@ -311,7 +341,18 @@ func (m *Manager) promptForMissingInfo(opts InstallOptions) (InstallOptions, err
 		opts.SpecSources = sources
 	}
 
-	// Prompt for description if not provided
+	return opts, nil
+}
+
+// promptForMissingInfo prompts the user for missing installation information.
+func (m *Manager) promptForMissingInfo(opts InstallOptions) (InstallOptions, error) {
+	reader, writer := opts.Reader, opts.Writer
+
+	opts, err := promptAndNormalizeSpec(opts)
+	if err != nil {
+		return opts, err
+	}
+
 	if opts.Description == "" {
 		desc, err := promptString(reader, writer, "Description (optional)", "")
 		if err != nil {
@@ -320,7 +361,6 @@ func (m *Manager) promptForMissingInfo(opts InstallOptions) (InstallOptions, err
 		opts.Description = desc
 	}
 
-	// Prompt for auth type if not provided
 	if opts.AuthType == "" {
 		authType, err := promptChoice(reader, writer, "Authentication type",
 			[]string{"none", "bearer", "api_key", "basic"}, "none")
@@ -330,7 +370,6 @@ func (m *Manager) promptForMissingInfo(opts InstallOptions) (InstallOptions, err
 		opts.AuthType = authType
 	}
 
-	// Prompt for shim creation
 	createShim, err := promptYesNo(reader, writer, "Create command shortcut (shim)?", true)
 	if err != nil {
 		return opts, err

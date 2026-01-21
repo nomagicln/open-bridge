@@ -16,17 +16,12 @@ import (
 func TestErrorHandling_HTTPErrors(t *testing.T) {
 	formatter := NewErrorFormatter()
 
-	tests := []struct {
-		name            string
-		statusCode      int
-		body            []byte
-		expectedPhrases []string
-	}{
+	tests := []httpErrorCase{
 		{
 			name:       "400 Bad Request with JSON error",
 			statusCode: http.StatusBadRequest,
 			body:       []byte(`{"error": "Invalid input", "field": "email"}`),
-			expectedPhrases: []string{
+			expected: []string{
 				"HTTP 400",
 				"invalid or malformed",
 				"Invalid input",
@@ -36,7 +31,7 @@ func TestErrorHandling_HTTPErrors(t *testing.T) {
 			name:       "401 Unauthorized",
 			statusCode: http.StatusUnauthorized,
 			body:       []byte(`{"message": "Invalid token"}`),
-			expectedPhrases: []string{
+			expected: []string{
 				"HTTP 401",
 				"Authentication",
 				"credentials",
@@ -47,7 +42,7 @@ func TestErrorHandling_HTTPErrors(t *testing.T) {
 			name:       "404 Not Found",
 			statusCode: http.StatusNotFound,
 			body:       []byte(`{"error": "User not found"}`),
-			expectedPhrases: []string{
+			expected: []string{
 				"HTTP 404",
 				"not found",
 				"User not found",
@@ -57,7 +52,7 @@ func TestErrorHandling_HTTPErrors(t *testing.T) {
 			name:       "429 Too Many Requests",
 			statusCode: http.StatusTooManyRequests,
 			body:       []byte(`{"error": "Rate limit exceeded"}`),
-			expectedPhrases: []string{
+			expected: []string{
 				"HTTP 429",
 				"Too many requests",
 				"Rate limit exceeded",
@@ -67,7 +62,7 @@ func TestErrorHandling_HTTPErrors(t *testing.T) {
 			name:       "500 Internal Server Error",
 			statusCode: http.StatusInternalServerError,
 			body:       []byte(`{"error": "Database connection failed"}`),
-			expectedPhrases: []string{
+			expected: []string{
 				"HTTP 500",
 				"internal error",
 				"Database connection failed",
@@ -77,7 +72,7 @@ func TestErrorHandling_HTTPErrors(t *testing.T) {
 			name:       "503 Service Unavailable",
 			statusCode: http.StatusServiceUnavailable,
 			body:       []byte(`{"error": "Service is down for maintenance"}`),
-			expectedPhrases: []string{
+			expected: []string{
 				"HTTP 503",
 				"temporarily unavailable",
 				"Service is down for maintenance",
@@ -85,22 +80,7 @@ func TestErrorHandling_HTTPErrors(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp := &http.Response{
-				StatusCode: tt.statusCode,
-				Status:     http.StatusText(tt.statusCode),
-			}
-
-			result := formatter.FormatHTTPError(resp, tt.body)
-
-			for _, phrase := range tt.expectedPhrases {
-				if !strings.Contains(result, phrase) {
-					t.Errorf("Expected error to contain '%s', got: %s", phrase, result)
-				}
-			}
-		})
-	}
+	runHTTPErrorCases(t, formatter, tests)
 }
 
 // TestErrorHandling_NetworkErrors tests network error formatting.
