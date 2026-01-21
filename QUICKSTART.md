@@ -129,5 +129,5 @@ ob uninstall todo
 
 ## Next Steps
 
-- Check out the [README.md](./README.md) for more advanced configuration and features.
-- Explore how to use OpenBridge as an [MCP Server](./README.md#3-use-with-ai-mcp-mode) for AI agents.
+- Check out the [README](../README.md) for more advanced configuration and features.
+- Explore how to use OpenBridge as an [MCP Server](../README.md#3-use-with-ai-mcp-mode) for AI agents.

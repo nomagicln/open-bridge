@@ -111,7 +111,7 @@ myapi users list --profile prod
 | `ob uninstall <name>` | Remove an installed application |
 | `ob list` | List all installed applications |
 | `ob run <name> [args...]` | Run commands for an installed application |
-| `ob completion [bash\|zsh\|fish]` | Generate shell completion script |
+| `ob completion [bash|zsh|fish]` | Generate shell completion script |
 | `ob version` | Show version information |
 | `ob help` | Show help |
 

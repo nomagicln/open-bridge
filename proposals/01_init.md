@@ -22,7 +22,7 @@
 
 ## 2. 问题陈述与背景 (Problem Statement)
 
-当前 API 消费端存在显著痛点：
+当前 API 使用端存在显著痛点：
 
 1. **CLI 体验差：** `curl` 过于底层，参数构造繁琐；生成的 SDK CLI 往往生硬（仅是 API 的 1:1 映射），缺乏业务语义（如 `kubectl` 般的流畅感）。
 2. **AI 接入成本高：** 为了让 AI (如 ChatGPT/Claude) 调用内部 API，开发者需要专门编写 Plugin 代码或 Function Calling 适配层，维护成本高。
