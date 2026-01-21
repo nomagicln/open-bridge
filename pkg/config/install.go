@@ -241,7 +241,7 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 }
 
 // normalizeSpecSource resolves local spec paths to absolute paths and preserves HTTP URLs.
-// It does not validate that the file exists; loading the spec handles that validation.
+// It does not validate that the file exists; loading the spec fails later if the path is invalid.
 func normalizeSpecSource(source string) (string, error) {
 	if source == "" {
 		return "", nil
