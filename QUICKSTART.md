@@ -30,7 +30,17 @@ Verify the installation:
 
 ## Step 2: Start the Example Todo Service
 
-We provide a simple Todo API in the `examples/todo-service` directory. Open a new terminal window to run this service.
+We provide a feature-rich Todo API in the `examples/todo-service` directory. This service demonstrates complex nested data structures including:
+
+- **Priority levels**: low, medium, high, critical
+- **Status tracking**: pending, in_progress, completed, blocked, cancelled
+- **Nested subtasks**: Break down todos into smaller tasks
+- **Labels & tags**: Organize with custom labels and colors
+- **Reminders**: Schedule notifications
+- **Attachments**: Link files to todos
+- **Batch operations**: Create or delete multiple todos at once
+
+Open a new terminal window to run this service:
 
 ```bash
 cd examples/todo-service
@@ -40,7 +50,7 @@ uv sync
 uv run uvicorn main:app --reload
 ```
 
-The service should now be running at `http://localhost:8000`. You can verify it by opening `http://localhost:8000/docs` in your browser.
+The service should now be running at `http://localhost:8000`. You can verify it by opening `http://localhost:8000/docs` in your browser to see the interactive API documentation.
 
 ## Step 3: Install the Todo App into OpenBridge
 
@@ -71,25 +81,43 @@ Let's see what we can do with the `todos` resource:
 todo todos --help
 ```
 
-You will see operations like `list`, `create`, `get`, `update`, and `delete`.
+You will see operations like `list`, `create`, `get`, `update`, `delete`, and batch operations.
 
 ## Step 5: Manage Todos
 
 Now, let's perform some operations using the semantic CLI. Notice the command structure: `<app> <resource> <verb>`.
 
-### Create a Todo
+### Create a Todo with Complex Data
+
+Create a todo with priority, labels, subtasks, and a due date:
 
 ```bash
-todo todos create --title "Buy groceries" --description "Milk, Eggs, Bread"
+todo todos create \
+  --title "Complete project documentation" \
+  --description "Write comprehensive API docs with examples" \
+  --priority "high" \
+  --status "in_progress" \
+  --due_date "2025-02-01T17:00:00Z" \
+  --labels '[{"name": "documentation", "color": "#3B82F6"}, {"name": "urgent", "color": "#EF4444"}]' \
+  --subtasks '[{"title": "Write API overview"}, {"title": "Add code examples"}, {"title": "Review and polish"}]' \
+  --estimated_minutes 240
 ```
 
-### List Todos
+### List Todos with Filtering
 
 ```bash
+# List all todos (paginated)
 todo todos list
-```
 
-You should see a table output listing your newly created todo.
+# Filter by status
+todo todos list --status "in_progress"
+
+# Filter by priority and search
+todo todos list --priority "high" --search "documentation"
+
+# Sort by due date
+todo todos list --sort_by "due_date" --sort_order "asc"
+```
 
 ### Get a Specific Todo
 
@@ -101,10 +129,10 @@ todo todos get --todo_id 1
 
 ### Update a Todo
 
-Let's mark the todo as completed.
+Update the status and add actual time spent:
 
 ```bash
-todo todos update --todo_id 1 --completed true
+todo todos update --todo_id 1 --status "completed" --actual_minutes 180
 ```
 
 Verify the change:
@@ -119,7 +147,41 @@ todo todos get --todo_id 1
 todo todos delete --todo_id 1
 ```
 
-## Step 6: Uninstall (Optional)
+## Step 6: Batch Operations (Advanced)
+
+The Todo service supports batch operations for efficiency.
+
+### Batch Create
+
+Create multiple todos at once:
+
+```bash
+todo todos batch create --items '[
+  {"title": "Task 1", "priority": "low"},
+  {"title": "Task 2", "priority": "medium"},
+  {"title": "Task 3", "priority": "high", "labels": [{"name": "important", "color": "#EF4444"}]}
+]'
+```
+
+### Batch Delete
+
+Delete multiple todos by IDs:
+
+```bash
+todo todos batch delete --ids '[1, 2, 3]'
+```
+
+## Step 7: View Statistics
+
+Get aggregated statistics about all your todos:
+
+```bash
+todo todos stats
+```
+
+This shows counts by status, priority, overdue items, and completion metrics.
+
+## Step 8: Uninstall (Optional)
 
 If you want to remove the `todo` app from OpenBridge:
 
@@ -131,3 +193,4 @@ ob uninstall todo
 
 - Check out the [README.md](./README.md) for more advanced configuration and features.
 - Explore how to use OpenBridge as an [MCP Server](./README.md#3-use-with-ai-mcp-mode) for AI agents.
+- See the [Todo Service README](./examples/todo-service/README.md) for detailed API documentation.
