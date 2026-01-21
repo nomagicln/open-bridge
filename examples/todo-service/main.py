@@ -436,10 +436,11 @@ def list_todos(
     # Sort
     # Use a far-future date as fallback for items without due_date (safer than datetime.max)
     far_future = datetime(9999, 12, 31, tzinfo=timezone.utc)
+    priority_order = {p: i for i, p in enumerate(Priority)}
     sort_key_map = {
         "created_at": lambda t: t.metadata.created_at,
         "due_date": lambda t: t.due_date or far_future,
-        "priority": lambda t: list(Priority).index(t.priority),
+        "priority": lambda t: priority_order[t.priority],
     }
     sort_func = sort_key_map.get(sort_by, sort_key_map["created_at"])
     result.sort(key=sort_func, reverse=(sort_order == "desc"))
