@@ -144,10 +144,6 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 			return nil, err
 		}
 	}
-	if specSource == "" && len(specSources) == 0 {
-		return nil, fmt.Errorf("spec source is required")
-	}
-
 	primarySource := specSource
 	if primarySource == "" && len(specSources) > 0 {
 		primarySource = specSources[0]
@@ -267,9 +263,7 @@ func normalizeSpecSources(sources []string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if value != "" {
-			normalized = append(normalized, value)
-		}
+		normalized = append(normalized, value)
 	}
 	return normalized, nil
 }
