@@ -617,14 +617,16 @@ def update_todo(todo_id: int, todo_update: TodoUpdate) -> Todo:
         }
     )
 
-    # Check if being completed
+    # Handle completed_at transitions based on status changes
     completed_at = stored_todo.completed_at
-    if (
-        "status" in update_data
-        and update_data["status"] == Status.COMPLETED
-        and stored_todo.status != Status.COMPLETED
-    ):
-        completed_at = datetime.now(timezone.utc)
+    if "status" in update_data:
+        new_status = update_data["status"]
+        if new_status == Status.COMPLETED and stored_todo.status != Status.COMPLETED:
+            # Transition to COMPLETED: set completed_at timestamp
+            completed_at = datetime.now(timezone.utc)
+        elif new_status != Status.COMPLETED and stored_todo.status == Status.COMPLETED:
+            # Transition away from COMPLETED: clear completed_at to avoid stale data
+            completed_at = None
 
     updated_todo = stored_todo.model_copy(
         update={**update_data, "metadata": updated_metadata, "completed_at": completed_at}
