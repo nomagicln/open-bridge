@@ -269,7 +269,7 @@ func normalizeSpecSources(sources []string) ([]string, error) {
 	return normalized, nil
 }
 
-// isWebURL checks for HTTP(S) URLs.
+// isWebURL checks for HTTP/HTTPS URLs only.
 func isWebURL(source string) bool {
 	parsed, err := url.Parse(source)
 	if err != nil {
