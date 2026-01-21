@@ -180,22 +180,7 @@ func TestIntegration_FileInput(t *testing.T) {
 func TestIntegration_CommaSeparatedArrays(t *testing.T) {
 	b := NewBuilder(nil)
 
-	schema := &openapi3.Schema{
-		Type: &openapi3.Types{"object"},
-		Properties: map[string]*openapi3.SchemaRef{
-			"name": {
-				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
-			},
-			"roles": {
-				Value: &openapi3.Schema{
-					Type: &openapi3.Types{"array"},
-					Items: &openapi3.SchemaRef{
-						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
-					},
-				},
-			},
-		},
-	}
+	schema := objectSchemaWithStringArray("name", "roles")
 
 	// Simulate CLI flag: --roles "admin,developer,user"
 	params := map[string]any{

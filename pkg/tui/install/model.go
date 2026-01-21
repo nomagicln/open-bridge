@@ -102,21 +102,8 @@ type Model struct {
 	defaultDescription string
 }
 
-func NewModel(appName string, opts config.InstallOptions, appExists bool) Model {
-	m := Model{
-		step:              StepSpecInput,
-		appName:           appName,
-		options:           opts,
-		appExists:         appExists,
-		collectedHeaders:  make(map[string]string),
-		authOptions:       []string{"none", "bearer", "api_key", "basic"},
-		shimOptions:       []string{"Yes", "No"},
-		confirmOptions:    []string{"No", "Yes"},
-		addHeadersOptions: []string{"No", "Yes"},
-		history:           []string{},
-	}
-
-	// Initialize inputs
+// initializeTextInputs sets up all text input fields for the model.
+func (m *Model) initializeTextInputs(opts config.InstallOptions) {
 	m.specInput = textinput.New()
 	m.specInput.Placeholder = "https://example.com/openapi.json or ./spec.yaml"
 	m.specInput.Focus()
@@ -153,19 +140,37 @@ func NewModel(appName string, opts config.InstallOptions, appExists bool) Model 
 	m.headerValueInput.Placeholder = "Value"
 	m.headerValueInput.Width = 30
 	m.headerValueInput.CharLimit = 500
+}
 
-	// Initialize spinner
+// initializeSpinner sets up the loading spinner.
+func (m *Model) initializeSpinner() {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 	m.spinner = s
+}
 
-	// If spec is already provided, skip to loading
+func NewModel(appName string, opts config.InstallOptions, appExists bool) Model {
+	m := Model{
+		step:              StepSpecInput,
+		appName:           appName,
+		options:           opts,
+		appExists:         appExists,
+		collectedHeaders:  make(map[string]string),
+		authOptions:       []string{"none", "bearer", "api_key", "basic"},
+		shimOptions:       []string{"Yes", "No"},
+		confirmOptions:    []string{"No", "Yes"},
+		addHeadersOptions: []string{"No", "Yes"},
+		history:           []string{},
+	}
+
+	m.initializeTextInputs(opts)
+	m.initializeSpinner()
+
 	if opts.SpecSource != "" || len(opts.SpecSources) > 0 {
 		m.step = StepLoading
 	}
 
-	// Match auth index
 	if opts.AuthType != "" {
 		for i, opt := range m.authOptions {
 			if opt == opts.AuthType {
@@ -220,13 +225,81 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// renderTextInputStep renders a text input step with question and hint.
+func renderTextInputStep(s *strings.Builder, question, inputView string) {
+	s.WriteString(questionStyle.Render(question))
+	s.WriteString("\n")
+	s.WriteString(inputView)
+	s.WriteString("\n\n(Press Enter to continue)")
+}
+
+// renderChoiceStep renders a choice selection step.
+func (m Model) renderChoiceStep(s *strings.Builder, question string, choices []string, selectedIdx int) {
+	s.WriteString(questionStyle.Render(question))
+	s.WriteString("\n")
+	s.WriteString(m.renderChoice("", choices, selectedIdx))
+	s.WriteString("\n\n(Left/Right to select, Enter to confirm)")
+}
+
+// renderStepContent renders the content for the current step.
+func (m Model) renderStepContent(s *strings.Builder) {
+	switch m.step {
+	case StepSpecInput:
+		renderTextInputStep(s, "? OpenAPI Specification Source:", m.specInput.View())
+	case StepLoading:
+		fmt.Fprintf(s, "%s Loading specification...", m.spinner.View())
+	case StepDescription:
+		renderTextInputStep(s, "? Description:", m.descInput.View())
+	case StepBaseURL:
+		renderTextInputStep(s, "? Base URL:", m.baseUrlInput.View())
+	case StepAuthType:
+		m.renderChoiceStep(s, "? Authentication Type:", m.authOptions, m.authIndex)
+	case StepShim:
+		m.renderChoiceStep(s, "? Create Shim Executable:", m.shimOptions, m.shimIndex)
+	case StepAuthDetails:
+		m.renderAuthDetailsStep(s)
+	case StepAddHeadersConfirm:
+		s.WriteString(questionStyle.Render("? Add Custom HTTP Headers:"))
+		s.WriteString("\n")
+		s.WriteString(m.renderChoice("", m.addHeadersOptions, m.addHeadersIndex))
+		s.WriteString("\n\n")
+	case StepHeaderInput:
+		m.renderHeaderInputStep(s)
+	case StepOverwriteConfirm:
+		fmt.Fprintf(s, "App '%s' already exists.\n\n", m.appName)
+		s.WriteString(m.renderChoice("Overwrite?", m.confirmOptions, m.confirmIndex))
+		s.WriteString("\n\n")
+	}
+}
+
+// renderAuthDetailsStep renders the auth details step.
+func (m Model) renderAuthDetailsStep(s *strings.Builder) {
+	s.WriteString(questionStyle.Render(fmt.Sprintf("? Authentication Details (%s):", m.options.AuthType)))
+	s.WriteString("\n")
+	for i, input := range m.authInputs {
+		s.WriteString(m.renderInput(m.authInputLabels[i], input, m.focusIndex == i))
+		s.WriteString("\n")
+	}
+	s.WriteString(helpStyle.Render("(Tab/Shift+Tab to navigate, Enter to continue)"))
+}
+
+// renderHeaderInputStep renders the header input step.
+func (m Model) renderHeaderInputStep(s *strings.Builder) {
+	s.WriteString(questionStyle.Render("? Custom HTTP Headers:"))
+	s.WriteString("\n")
+	s.WriteString(m.renderInput("Header Name (Leave empty to finish)", m.headerNameInput, m.focusIndex == 0))
+	s.WriteString("\n")
+	s.WriteString(m.renderInput("Header Value", m.headerValueInput, m.focusIndex == 1))
+	s.WriteString("\n\n")
+	s.WriteString(helpStyle.Render("(Enter to add/next)"))
+}
+
 func (m Model) View() string {
 	if m.result != nil {
-		return "" // Quit
+		return ""
 	}
 
 	var s strings.Builder
-
 	s.WriteString(titleStyle.Render(fmt.Sprintf(" Installing %s ", m.appName)))
 	s.WriteString("\n\n")
 
@@ -235,7 +308,6 @@ func (m Model) View() string {
 		s.WriteString("\n\n")
 	}
 
-	// Render History
 	for _, item := range m.history {
 		s.WriteString(item)
 		s.WriteString("\n")
@@ -244,74 +316,7 @@ func (m Model) View() string {
 		s.WriteString("\n")
 	}
 
-	// Render Current Step
-	switch m.step {
-	case StepSpecInput:
-		s.WriteString(questionStyle.Render("? OpenAPI Specification Source:"))
-		s.WriteString("\n")
-		s.WriteString(m.specInput.View())
-		s.WriteString("\n\n(Press Enter to continue)")
-
-	case StepLoading:
-		s.WriteString(fmt.Sprintf("%s Loading specification...", m.spinner.View()))
-
-	case StepDescription:
-		s.WriteString(questionStyle.Render("? Description:"))
-		s.WriteString("\n")
-		s.WriteString(m.descInput.View())
-		s.WriteString("\n\n(Press Enter to continue)")
-
-	case StepBaseURL:
-		s.WriteString(questionStyle.Render("? Base URL:"))
-		s.WriteString("\n")
-		s.WriteString(m.baseUrlInput.View())
-		s.WriteString("\n\n(Press Enter to continue)")
-
-	case StepAuthType:
-		s.WriteString(questionStyle.Render("? Authentication Type:"))
-		s.WriteString("\n")
-		s.WriteString(m.renderChoice("", m.authOptions, m.authIndex, true))
-		s.WriteString("\n\n(Left/Right to select, Enter to confirm)")
-
-	case StepShim:
-		s.WriteString(questionStyle.Render("? Create Shim Executable:"))
-		s.WriteString("\n")
-		s.WriteString(m.renderChoice("", m.shimOptions, m.shimIndex, true))
-		s.WriteString("\n\n(Left/Right to select, Enter to confirm)")
-
-	case StepAuthDetails:
-		s.WriteString(questionStyle.Render(fmt.Sprintf("? Authentication Details (%s):", m.options.AuthType)))
-		s.WriteString("\n")
-
-		for i, input := range m.authInputs {
-			s.WriteString(m.renderInput(m.authInputLabels[i], input, m.focusIndex == i))
-			s.WriteString("\n")
-		}
-
-		s.WriteString(helpStyle.Render("(Tab/Shift+Tab to navigate, Enter to continue)"))
-
-	case StepAddHeadersConfirm:
-		s.WriteString(questionStyle.Render("? Add Custom HTTP Headers:"))
-		s.WriteString("\n")
-		s.WriteString(m.renderChoice("", m.addHeadersOptions, m.addHeadersIndex, true))
-		s.WriteString("\n\n")
-
-	case StepHeaderInput:
-		s.WriteString(questionStyle.Render("? Custom HTTP Headers:"))
-		s.WriteString("\n")
-
-		s.WriteString(m.renderInput("Header Name (Leave empty to finish)", m.headerNameInput, m.focusIndex == 0))
-		s.WriteString("\n")
-		s.WriteString(m.renderInput("Header Value", m.headerValueInput, m.focusIndex == 1))
-		s.WriteString("\n\n")
-		s.WriteString(helpStyle.Render("(Enter to add/next)"))
-
-	case StepOverwriteConfirm:
-		s.WriteString(fmt.Sprintf("App '%s' already exists.\n\n", m.appName))
-		s.WriteString(m.renderChoice("Overwrite?", m.confirmOptions, m.confirmIndex, true))
-		s.WriteString("\n\n")
-	}
-
+	m.renderStepContent(&s)
 	return s.String()
 }
 
@@ -532,58 +537,78 @@ func (m *Model) prepareAuthDetails() {
 	}
 }
 
-func (m Model) updateAuthDetails(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter", "up", "shift+tab", "down", "tab":
-			if msg.String() == "enter" {
-				if m.focusIndex == len(m.authInputs)-1 {
-					// Submit
-					m.options.AuthParams = make(map[string]string)
-					switch m.options.AuthType {
-					case "bearer":
-						m.options.AuthParams["token"] = m.authInputs[0].Value()
-					case "basic":
-						m.options.AuthParams["username"] = m.authInputs[0].Value()
-						m.options.AuthParams["password"] = m.authInputs[1].Value()
-					case "api_key":
-						m.options.AuthParams["key_name"] = m.authInputs[0].Value()
-						m.options.AuthParams["token"] = m.authInputs[1].Value()
-					}
+// collectAuthParams collects auth parameters based on auth type.
+func (m *Model) collectAuthParams() {
+	m.options.AuthParams = make(map[string]string)
+	switch m.options.AuthType {
+	case "bearer":
+		m.options.AuthParams["token"] = m.authInputs[0].Value()
+	case "basic":
+		m.options.AuthParams["username"] = m.authInputs[0].Value()
+		m.options.AuthParams["password"] = m.authInputs[1].Value()
+	case "api_key":
+		m.options.AuthParams["key_name"] = m.authInputs[0].Value()
+		m.options.AuthParams["token"] = m.authInputs[1].Value()
+	}
+}
 
-					m.addHistory("Auth Details", "Provided") // Don't show secrets in history effectively
-
-					m.step = StepShim
-					return m, nil
-				}
-				m.focusIndex++
-			} else if msg.String() == "up" || msg.String() == "shift+tab" {
-				m.focusIndex--
-				if m.focusIndex < 0 {
-					m.focusIndex = len(m.authInputs) - 1
-				}
-			} else {
-				m.focusIndex++
-				if m.focusIndex >= len(m.authInputs) {
-					m.focusIndex = 0
-				}
-			}
-
-			cmds := make([]tea.Cmd, len(m.authInputs))
-			for i := range m.authInputs {
-				if i == m.focusIndex {
-					cmds[i] = m.authInputs[i].Focus()
-				} else {
-					m.authInputs[i].Blur()
-				}
-			}
-			return m, tea.Batch(cmds...)
+// handleAuthNavigation handles navigation between auth input fields.
+func (m *Model) handleAuthNavigation(key string) {
+	switch key {
+	case "up", "shift+tab":
+		m.focusIndex--
+		if m.focusIndex < 0 {
+			m.focusIndex = len(m.authInputs) - 1
+		}
+	default: // down, tab
+		m.focusIndex++
+		if m.focusIndex >= len(m.authInputs) {
+			m.focusIndex = 0
 		}
 	}
+}
 
-	var cmd tea.Cmd
+// updateAuthInputFocus updates focus state for auth inputs.
+func (m *Model) updateAuthInputFocus() tea.Cmd {
+	cmds := make([]tea.Cmd, len(m.authInputs))
+	for i := range m.authInputs {
+		if i == m.focusIndex {
+			cmds[i] = m.authInputs[i].Focus()
+		} else {
+			m.authInputs[i].Blur()
+		}
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m Model) updateAuthDetails(msg tea.Msg) (tea.Model, tea.Cmd) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m.updateAuthInput(msg)
+	}
+
+	switch keyMsg.String() {
+	case "enter":
+		if m.focusIndex == len(m.authInputs)-1 {
+			m.collectAuthParams()
+			m.addHistory("Auth Details", "Provided")
+			m.step = StepShim
+			return m, nil
+		}
+		m.focusIndex++
+		return m, m.updateAuthInputFocus()
+	case "up", "shift+tab", "down", "tab":
+		m.handleAuthNavigation(keyMsg.String())
+		return m, m.updateAuthInputFocus()
+	default:
+		return m.updateAuthInput(msg)
+	}
+}
+
+// updateAuthInput updates the current auth input field.
+func (m Model) updateAuthInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.focusIndex >= 0 && m.focusIndex < len(m.authInputs) {
+		var cmd tea.Cmd
 		m.authInputs[m.focusIndex], cmd = m.authInputs[m.focusIndex].Update(msg)
 		return m, cmd
 	}
@@ -746,12 +771,9 @@ func (m Model) renderInput(label string, input textinput.Model, focused bool) st
 	return s.String()
 }
 
-func (m Model) renderChoice(label string, choices []string, selectedIdx int, focused bool) string {
+func (m Model) renderChoice(label string, choices []string, selectedIdx int) string {
 	var s strings.Builder
-	style := noStyle
-	if focused {
-		style = focusedStyle
-	}
+	style := focusedStyle
 	if label != "" {
 		s.WriteString(style.Render(label))
 		s.WriteString("\n")
@@ -762,7 +784,7 @@ func (m Model) renderChoice(label string, choices []string, selectedIdx int, foc
 			s.WriteString("  ")
 		}
 		if i == selectedIdx {
-			s.WriteString(fmt.Sprintf("[%s]", choice))
+			fmt.Fprintf(&s, "[%s]", choice)
 		} else {
 			s.WriteString(choice)
 		}

@@ -148,16 +148,10 @@ func (p *Provider) CompleteVerbsForResource(appName, resource, prefix string) []
 	return verbs
 }
 
-// CompleteFlags returns available flag names for a specific resource+verb combination.
-func (p *Provider) CompleteFlags(appName, resource, verb, prefix string) []string {
-	specDoc, err := p.loadSpec(appName)
-	if err != nil {
-		return nil
-	}
-
+// getOperationSpecForCommand finds the OpenAPI operation spec for a resource+verb.
+func (p *Provider) getOperationSpecForCommand(specDoc *openapi3.T, resource, verb string) *openapi3.Operation {
 	tree := p.mapper.BuildCommandTree(specDoc)
 
-	// Find the resource and operation
 	res, ok := tree.RootResources[resource]
 	if !ok {
 		return nil
@@ -168,34 +162,35 @@ func (p *Provider) CompleteFlags(appName, resource, verb, prefix string) []strin
 		return nil
 	}
 
-	// Get operation spec
 	pathItem := specDoc.Paths.Find(op.Path)
 	if pathItem == nil {
 		return nil
 	}
 
-	var opSpec *openapi3.Operation
-	switch op.Method {
-	case "GET":
-		opSpec = pathItem.Get
-	case "POST":
-		opSpec = pathItem.Post
-	case "PUT":
-		opSpec = pathItem.Put
-	case "PATCH":
-		opSpec = pathItem.Patch
-	case "DELETE":
-		opSpec = pathItem.Delete
-	}
+	return getOperationByMethod(pathItem, op.Method)
+}
 
-	if opSpec == nil {
+// getOperationByMethod returns the operation for the given HTTP method.
+func getOperationByMethod(pathItem *openapi3.PathItem, method string) *openapi3.Operation {
+	switch method {
+	case "GET":
+		return pathItem.Get
+	case "POST":
+		return pathItem.Post
+	case "PUT":
+		return pathItem.Put
+	case "PATCH":
+		return pathItem.Patch
+	case "DELETE":
+		return pathItem.Delete
+	default:
 		return nil
 	}
+}
 
-	// Collect flag names from parameters
+// collectParameterFlags collects flag names from operation parameters.
+func collectParameterFlags(opSpec *openapi3.Operation, prefix string) []string {
 	var flags []string
-
-	// Add parameters
 	for _, paramRef := range opSpec.Parameters {
 		if paramRef.Value != nil {
 			flagName := paramRef.Value.Name
@@ -204,24 +199,47 @@ func (p *Provider) CompleteFlags(appName, resource, verb, prefix string) []strin
 			}
 		}
 	}
+	return flags
+}
 
-	// Add request body properties if present
-	if opSpec.RequestBody != nil && opSpec.RequestBody.Value != nil {
-		for mediaType, content := range opSpec.RequestBody.Value.Content {
-			if strings.Contains(mediaType, "json") && content.Schema != nil && content.Schema.Value != nil {
-				schema := content.Schema.Value
-				if schema.Properties != nil {
-					for propName := range schema.Properties {
-						if prefix == "" || strings.HasPrefix(propName, prefix) {
-							flags = append(flags, "--"+propName)
-						}
+// collectBodyPropertyFlags collects flag names from request body properties.
+func collectBodyPropertyFlags(opSpec *openapi3.Operation, prefix string) []string {
+	var flags []string
+	if opSpec.RequestBody == nil || opSpec.RequestBody.Value == nil {
+		return flags
+	}
+
+	for mediaType, content := range opSpec.RequestBody.Value.Content {
+		if strings.Contains(mediaType, "json") && content.Schema != nil && content.Schema.Value != nil {
+			schema := content.Schema.Value
+			if schema.Properties != nil {
+				for propName := range schema.Properties {
+					if prefix == "" || strings.HasPrefix(propName, prefix) {
+						flags = append(flags, "--"+propName)
 					}
 				}
-				// Only use the first JSON media type
-				break
 			}
+			break
 		}
 	}
+	return flags
+}
+
+// CompleteFlags returns available flag names for a specific resource+verb combination.
+func (p *Provider) CompleteFlags(appName, resource, verb, prefix string) []string {
+	specDoc, err := p.loadSpec(appName)
+	if err != nil {
+		return nil
+	}
+
+	opSpec := p.getOperationSpecForCommand(specDoc, resource, verb)
+	if opSpec == nil {
+		return nil
+	}
+
+	var flags []string
+	flags = append(flags, collectParameterFlags(opSpec, prefix)...)
+	flags = append(flags, collectBodyPropertyFlags(opSpec, prefix)...)
 
 	// Add common output flags
 	commonFlags := []string{"--json", "--yaml", "--output", "--profile"}
@@ -235,116 +253,104 @@ func (p *Provider) CompleteFlags(appName, resource, verb, prefix string) []strin
 	return flags
 }
 
-// CompleteFlagValues returns possible values for a flag.
-func (p *Provider) CompleteFlagValues(appName, resource, verb, flagName string) []string {
-	specDoc, err := p.loadSpec(appName)
-	if err != nil {
-		return nil
-	}
-
-	tree := p.mapper.BuildCommandTree(specDoc)
-
-	// Find the resource and operation
-	res, ok := tree.RootResources[resource]
-	if !ok {
-		return nil
-	}
-
-	op, ok := res.Operations[verb]
-	if !ok {
-		return nil
-	}
-
-	// Get operation spec
-	pathItem := specDoc.Paths.Find(op.Path)
-	if pathItem == nil {
-		return nil
-	}
-
-	var opSpec *openapi3.Operation
-	switch op.Method {
-	case "GET":
-		opSpec = pathItem.Get
-	case "POST":
-		opSpec = pathItem.Post
-	case "PUT":
-		opSpec = pathItem.Put
-	case "PATCH":
-		opSpec = pathItem.Patch
-	case "DELETE":
-		opSpec = pathItem.Delete
-	}
-
-	if opSpec == nil {
-		return nil
-	}
-
-	// Remove -- or - prefix if present
-	flagName = strings.TrimPrefix(flagName, "--")
-	flagName = strings.TrimPrefix(flagName, "-")
-
-	// Special handling for common flags
+// completeCommonFlagValues handles completion for common flags.
+func (p *Provider) completeCommonFlagValues(appName, flagName string) ([]string, bool) {
 	switch flagName {
 	case "output", "o":
-		return []string{"table", "json", "yaml"}
+		return []string{"table", "json", "yaml"}, true
 	case "profile", "p":
-		// Get profiles for the app
 		appConfig, err := p.configMgr.GetAppConfig(appName)
 		if err != nil {
-			return nil
+			return nil, true
 		}
 		profiles := make([]string, 0, len(appConfig.Profiles))
 		for profileName := range appConfig.Profiles {
 			profiles = append(profiles, profileName)
 		}
 		sort.Strings(profiles)
-		return profiles
+		return profiles, true
 	}
+	return nil, false
+}
 
-	// Check parameters for enum values
+// extractEnumValues extracts string enum values from a slice.
+func extractEnumValues(enums []any) []string {
+	values := make([]string, 0, len(enums))
+	for _, enum := range enums {
+		if str, ok := enum.(string); ok {
+			values = append(values, str)
+		}
+	}
+	sort.Strings(values)
+	return values
+}
+
+// findParameterEnumValues finds enum values for a parameter.
+func findParameterEnumValues(opSpec *openapi3.Operation, flagName string) []string {
 	for _, paramRef := range opSpec.Parameters {
 		if paramRef.Value != nil && paramRef.Value.Name == flagName {
 			if paramRef.Value.Schema != nil && paramRef.Value.Schema.Value != nil {
-				schema := paramRef.Value.Schema.Value
-				if len(schema.Enum) > 0 {
-					values := make([]string, 0, len(schema.Enum))
-					for _, enum := range schema.Enum {
-						if str, ok := enum.(string); ok {
-							values = append(values, str)
-						}
-					}
-					sort.Strings(values)
-					return values
+				if len(paramRef.Value.Schema.Value.Enum) > 0 {
+					return extractEnumValues(paramRef.Value.Schema.Value.Enum)
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// findBodyPropertyEnumValues finds enum values for a body property.
+func findBodyPropertyEnumValues(opSpec *openapi3.Operation, flagName string) []string {
+	if opSpec.RequestBody == nil || opSpec.RequestBody.Value == nil {
+		return nil
+	}
+
+	for mediaType, content := range opSpec.RequestBody.Value.Content {
+		if !strings.Contains(mediaType, "json") || content.Schema == nil || content.Schema.Value == nil {
+			continue
+		}
+		schema := content.Schema.Value
+		if schema.Properties == nil {
+			break
+		}
+		if propSchema, ok := schema.Properties[flagName]; ok && propSchema.Value != nil {
+			if len(propSchema.Value.Enum) > 0 {
+				return extractEnumValues(propSchema.Value.Enum)
+			}
+		}
+		break
+	}
+	return nil
+}
+
+// CompleteFlagValues returns possible values for a flag.
+func (p *Provider) CompleteFlagValues(appName, resource, verb, flagName string) []string {
+	// Remove -- or - prefix if present
+	flagName = strings.TrimPrefix(flagName, "--")
+	flagName = strings.TrimPrefix(flagName, "-")
+
+	// Check common flags first
+	if values, handled := p.completeCommonFlagValues(appName, flagName); handled {
+		return values
+	}
+
+	specDoc, err := p.loadSpec(appName)
+	if err != nil {
+		return nil
+	}
+
+	opSpec := p.getOperationSpecForCommand(specDoc, resource, verb)
+	if opSpec == nil {
+		return nil
+	}
+
+	// Check parameters for enum values
+	if values := findParameterEnumValues(opSpec, flagName); values != nil {
+		return values
 	}
 
 	// Check request body schema for enum values
-	if opSpec.RequestBody != nil && opSpec.RequestBody.Value != nil {
-		for mediaType, content := range opSpec.RequestBody.Value.Content {
-			if strings.Contains(mediaType, "json") && content.Schema != nil && content.Schema.Value != nil {
-				schema := content.Schema.Value
-				if schema.Properties != nil {
-					if propSchema, ok := schema.Properties[flagName]; ok && propSchema.Value != nil {
-						if len(propSchema.Value.Enum) > 0 {
-							values := make([]string, 0, len(propSchema.Value.Enum))
-							for _, enum := range propSchema.Value.Enum {
-								if str, ok := enum.(string); ok {
-									values = append(values, str)
-								}
-							}
-							sort.Strings(values)
-							return values
-						}
-					}
-				}
-				break
-			}
-		}
-	}
-
-	return nil
+	return findBodyPropertyEnumValues(opSpec, flagName)
 }
 
 // loadSpec loads and caches the OpenAPI spec for an app.

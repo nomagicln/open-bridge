@@ -275,21 +275,8 @@ func (p *Parser) parseSwagger(ctx context.Context, data []byte) (*openapi3.T, er
 
 // parseSwaggerWithBaseURL parses Swagger 2.0 with a base URL.
 func (p *Parser) parseSwaggerWithBaseURL(ctx context.Context, data []byte) (*openapi3.T, error) {
-	var swagger openapi2.T
-	if err := json.Unmarshal(data, &swagger); err != nil {
-		return nil, fmt.Errorf("failed to parse Swagger 2.0 spec: %w", err)
-	}
-
-	doc, err := openapi2conv.ToV3(&swagger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert Swagger 2.0 to OpenAPI 3.0: %w", err)
-	}
-
-	if err := doc.Validate(ctx); err != nil {
-		return nil, fmt.Errorf("converted OpenAPI 3.0 validation failed: %w", err)
-	}
-
-	return doc, nil
+	// Base URL does not change Swagger 2.0 conversion behavior here.
+	return p.parseSwagger(ctx, data)
 }
 
 // ValidateSpec validates an OpenAPI specification.
@@ -299,6 +286,37 @@ func (p *Parser) ValidateSpec(spec *openapi3.T) error {
 	}
 	ctx := context.Background()
 	return spec.Validate(ctx)
+}
+
+// validateSpecInfo validates the info section and adds errors/warnings.
+func validateSpecInfo(spec *openapi3.T, result *ValidationResult) {
+	if spec.Info == nil {
+		result.Valid = false
+		result.Errors = append(result.Errors, ValidationError{
+			Path: "info", Message: "info object is required", Type: "required",
+		})
+		return
+	}
+
+	if spec.Info.Title == "" {
+		result.Warnings = append(result.Warnings, ValidationError{
+			Path: "info.title", Message: "title should not be empty", Type: "warning",
+		})
+	}
+	if spec.Info.Version == "" {
+		result.Warnings = append(result.Warnings, ValidationError{
+			Path: "info.version", Message: "version should not be empty", Type: "warning",
+		})
+	}
+}
+
+// validateSpecPaths validates the paths section.
+func validateSpecPaths(spec *openapi3.T, result *ValidationResult) {
+	if spec.Paths == nil || spec.Paths.Len() == 0 {
+		result.Warnings = append(result.Warnings, ValidationError{
+			Path: "paths", Message: "no paths defined", Type: "warning",
+		})
+	}
 }
 
 // ValidateSpecWithOptions provides detailed validation with options.
@@ -312,63 +330,26 @@ func (p *Parser) ValidateSpecWithOptions(spec *openapi3.T, opts ...ValidationOpt
 	if spec == nil {
 		result.Valid = false
 		result.Errors = append(result.Errors, ValidationError{
-			Path:    "",
-			Message: "specification is nil",
-			Type:    "fatal",
+			Path: "", Message: "specification is nil", Type: "fatal",
 		})
 		return result
 	}
 
-	// Apply options
 	config := &validationConfig{}
 	for _, opt := range opts {
 		opt(config)
 	}
 
-	// Basic validation
 	ctx := context.Background()
 	if err := spec.Validate(ctx); err != nil {
 		result.Valid = false
 		result.Errors = append(result.Errors, ValidationError{
-			Path:    "",
-			Message: err.Error(),
-			Type:    "schema",
+			Path: "", Message: err.Error(), Type: "schema",
 		})
 	}
 
-	// Check for required fields
-	if spec.Info == nil {
-		result.Valid = false
-		result.Errors = append(result.Errors, ValidationError{
-			Path:    "info",
-			Message: "info object is required",
-			Type:    "required",
-		})
-	} else {
-		if spec.Info.Title == "" {
-			result.Warnings = append(result.Warnings, ValidationError{
-				Path:    "info.title",
-				Message: "title should not be empty",
-				Type:    "warning",
-			})
-		}
-		if spec.Info.Version == "" {
-			result.Warnings = append(result.Warnings, ValidationError{
-				Path:    "info.version",
-				Message: "version should not be empty",
-				Type:    "warning",
-			})
-		}
-	}
-
-	// Check paths
-	if spec.Paths == nil || spec.Paths.Len() == 0 {
-		result.Warnings = append(result.Warnings, ValidationError{
-			Path:    "paths",
-			Message: "no paths defined",
-			Type:    "warning",
-		})
-	}
+	validateSpecInfo(spec, result)
+	validateSpecPaths(spec, result)
 
 	return result
 }
@@ -493,6 +474,33 @@ type CacheStats struct {
 	ExpiredEntries int
 }
 
+// countPathOperations counts the number of operations in a path item.
+func countPathOperations(pathItem *openapi3.PathItem) int {
+	count := 0
+	if pathItem.Get != nil {
+		count++
+	}
+	if pathItem.Post != nil {
+		count++
+	}
+	if pathItem.Put != nil {
+		count++
+	}
+	if pathItem.Patch != nil {
+		count++
+	}
+	if pathItem.Delete != nil {
+		count++
+	}
+	if pathItem.Head != nil {
+		count++
+	}
+	if pathItem.Options != nil {
+		count++
+	}
+	return count
+}
+
 // GetSpecInfo extracts metadata from a parsed specification.
 func GetSpecInfo(spec *openapi3.T, source string) *SpecInfo {
 	if spec == nil {
@@ -511,30 +519,8 @@ func GetSpecInfo(spec *openapi3.T, source string) *SpecInfo {
 
 	if spec.Paths != nil {
 		info.PathCount = spec.Paths.Len()
-
-		// Count operations
 		for _, pathItem := range spec.Paths.Map() {
-			if pathItem.Get != nil {
-				info.Operations++
-			}
-			if pathItem.Post != nil {
-				info.Operations++
-			}
-			if pathItem.Put != nil {
-				info.Operations++
-			}
-			if pathItem.Patch != nil {
-				info.Operations++
-			}
-			if pathItem.Delete != nil {
-				info.Operations++
-			}
-			if pathItem.Head != nil {
-				info.Operations++
-			}
-			if pathItem.Options != nil {
-				info.Operations++
-			}
+			info.Operations += countPathOperations(pathItem)
 		}
 	}
 

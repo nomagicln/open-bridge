@@ -231,22 +231,7 @@ func TestBuildBodyFromSchema_Arrays(t *testing.T) {
 	b := NewBuilder(nil)
 
 	// Define schema with array property
-	schema := &openapi3.Schema{
-		Type: &openapi3.Types{"object"},
-		Properties: map[string]*openapi3.SchemaRef{
-			"name": {
-				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
-			},
-			"tags": {
-				Value: &openapi3.Schema{
-					Type: &openapi3.Types{"array"},
-					Items: &openapi3.SchemaRef{
-						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
-					},
-				},
-			},
-		},
-	}
+	schema := objectSchemaWithStringArray("name", "tags")
 
 	tests := []struct {
 		name         string
@@ -353,13 +338,7 @@ func TestBuildRequestBody_Integration(t *testing.T) {
 func TestValidateParams_RequiredParameters(t *testing.T) {
 	b := NewBuilder(nil)
 
-	tests := []struct {
-		name     string
-		params   map[string]any
-		opParams openapi3.Parameters
-		wantErr  bool
-		errMsg   string
-	}{
+	tests := []validateParamsCase{
 		{
 			name: "all required params present",
 			params: map[string]any{
@@ -367,26 +346,8 @@ func TestValidateParams_RequiredParameters(t *testing.T) {
 				"name":   "John",
 			},
 			opParams: openapi3.Parameters{
-				&openapi3.ParameterRef{
-					Value: &openapi3.Parameter{
-						Name:     "userId",
-						In:       "path",
-						Required: true,
-						Schema: &openapi3.SchemaRef{
-							Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}},
-						},
-					},
-				},
-				&openapi3.ParameterRef{
-					Value: &openapi3.Parameter{
-						Name:     "name",
-						In:       "query",
-						Required: true,
-						Schema: &openapi3.SchemaRef{
-							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
-						},
-					},
-				},
+				paramRef("userId", "path", true, intSchema()),
+				paramRef("name", "query", true, stringSchema()),
 			},
 			wantErr: false,
 		},
@@ -396,16 +357,7 @@ func TestValidateParams_RequiredParameters(t *testing.T) {
 				"name": "John",
 			},
 			opParams: openapi3.Parameters{
-				&openapi3.ParameterRef{
-					Value: &openapi3.Parameter{
-						Name:     "userId",
-						In:       "path",
-						Required: true,
-						Schema: &openapi3.SchemaRef{
-							Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}},
-						},
-					},
-				},
+				paramRef("userId", "path", true, intSchema()),
 			},
 			wantErr: true,
 			errMsg:  "required parameter 'userId' is missing",
@@ -416,55 +368,20 @@ func TestValidateParams_RequiredParameters(t *testing.T) {
 				"userId": 123,
 			},
 			opParams: openapi3.Parameters{
-				&openapi3.ParameterRef{
-					Value: &openapi3.Parameter{
-						Name:     "userId",
-						In:       "path",
-						Required: true,
-						Schema: &openapi3.SchemaRef{
-							Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}},
-						},
-					},
-				},
-				&openapi3.ParameterRef{
-					Value: &openapi3.Parameter{
-						Name:     "filter",
-						In:       "query",
-						Required: false,
-						Schema: &openapi3.SchemaRef{
-							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
-						},
-					},
-				},
+				paramRef("userId", "path", true, intSchema()),
+				paramRef("filter", "query", false, stringSchema()),
 			},
 			wantErr: false,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := b.ValidateParams(tt.params, tt.opParams, nil)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidateParams() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if tt.wantErr && err != nil && err.Error() != tt.errMsg {
-				t.Errorf("ValidateParams() error message = %v, want %v", err.Error(), tt.errMsg)
-			}
-		})
-	}
+	runValidateParamsTests(t, b, tests)
 }
 
 func TestValidateParams_TypeValidation(t *testing.T) {
 	b := NewBuilder(nil)
 
-	tests := []struct {
-		name     string
-		params   map[string]any
-		opParams openapi3.Parameters
-		wantErr  bool
-		errMsg   string
-	}{
+	tests := []validateParamsCase{
 		{
 			name: "valid string parameter",
 			params: map[string]any{
@@ -502,7 +419,7 @@ func TestValidateParams_TypeValidation(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "parameter 'name' must be a string, got integer",
+			errMsg:  "parameter 'name' type mismatch: got integer, expected one of [string]",
 		},
 		{
 			name: "valid integer parameter",
@@ -541,7 +458,7 @@ func TestValidateParams_TypeValidation(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "parameter 'age' must be an integer, got string",
+			errMsg:  "parameter 'age' type mismatch: got string, expected one of [integer]",
 		},
 		{
 			name: "valid boolean parameter",
@@ -580,7 +497,7 @@ func TestValidateParams_TypeValidation(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "parameter 'active' must be a boolean, got string",
+			errMsg:  "parameter 'active' type mismatch: got string, expected one of [boolean]",
 		},
 		{
 			name: "valid array parameter",
@@ -660,22 +577,16 @@ func TestValidateParams_TypeValidation(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := b.ValidateParams(tt.params, tt.opParams, nil)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidateParams() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if tt.wantErr && err != nil && err.Error() != tt.errMsg {
-				t.Errorf("ValidateParams() error message = %v, want %v", err.Error(), tt.errMsg)
-			}
-		})
-	}
+	runValidateParamsTests(t, b, tests)
 }
 
 func TestValidateParams_EnumValidation(t *testing.T) {
 	b := NewBuilder(nil)
+
+	statusParam := paramRef("status", "query", true, &openapi3.Schema{
+		Type: &openapi3.Types{"string"},
+		Enum: []any{"active", "inactive", "pending"},
+	})
 
 	tests := []struct {
 		name     string
@@ -689,19 +600,7 @@ func TestValidateParams_EnumValidation(t *testing.T) {
 				"status": "active",
 			},
 			opParams: openapi3.Parameters{
-				&openapi3.ParameterRef{
-					Value: &openapi3.Parameter{
-						Name:     "status",
-						In:       "query",
-						Required: true,
-						Schema: &openapi3.SchemaRef{
-							Value: &openapi3.Schema{
-								Type: &openapi3.Types{"string"},
-								Enum: []any{"active", "inactive", "pending"},
-							},
-						},
-					},
-				},
+				statusParam,
 			},
 			wantErr: false,
 		},
@@ -711,19 +610,7 @@ func TestValidateParams_EnumValidation(t *testing.T) {
 				"status": "deleted",
 			},
 			opParams: openapi3.Parameters{
-				&openapi3.ParameterRef{
-					Value: &openapi3.Parameter{
-						Name:     "status",
-						In:       "query",
-						Required: true,
-						Schema: &openapi3.SchemaRef{
-							Value: &openapi3.Schema{
-								Type: &openapi3.Types{"string"},
-								Enum: []any{"active", "inactive", "pending"},
-							},
-						},
-					},
-				},
+				statusParam,
 			},
 			wantErr: true,
 		},
@@ -832,6 +719,105 @@ func TestGetValueType(t *testing.T) {
 			result := b.getValueType(tt.value)
 			if result != tt.expected {
 				t.Errorf("getValueType() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestValidateParameterType_UnionTypes tests OpenAPI 3.1 union type validation.
+// Union types like ["string", "integer"] should accept values matching ANY type in the array.
+func TestValidateParameterType_UnionTypes(t *testing.T) {
+	b := NewBuilder(nil)
+
+	// Helper to create a schema with multiple types (union type)
+	unionSchema := func(types ...string) *openapi3.SchemaRef {
+		typeSlice := openapi3.Types(types)
+		return &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type: &typeSlice,
+			},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		value   any
+		schema  *openapi3.SchemaRef
+		wantErr bool
+	}{
+		{
+			name:    "string value matches string|integer union",
+			value:   "hello",
+			schema:  unionSchema("string", "integer"),
+			wantErr: false,
+		},
+		{
+			name:    "integer value matches string|integer union",
+			value:   123,
+			schema:  unionSchema("string", "integer"),
+			wantErr: false,
+		},
+		{
+			name:    "integer value matches integer|string union (reversed order)",
+			value:   123,
+			schema:  unionSchema("integer", "string"),
+			wantErr: false,
+		},
+		{
+			name:    "float value matches number|string union",
+			value:   3.14,
+			schema:  unionSchema("number", "string"),
+			wantErr: false,
+		},
+		{
+			name:    "boolean value matches boolean|string union",
+			value:   true,
+			schema:  unionSchema("boolean", "string"),
+			wantErr: false,
+		},
+		{
+			name:    "array value matches array|object union",
+			value:   []any{1, 2, 3},
+			schema:  unionSchema("array", "object"),
+			wantErr: false,
+		},
+		{
+			name:    "object value matches array|object union",
+			value:   map[string]any{"key": "value"},
+			schema:  unionSchema("array", "object"),
+			wantErr: false,
+		},
+		{
+			name:    "boolean value does not match string|integer union",
+			value:   true,
+			schema:  unionSchema("string", "integer"),
+			wantErr: true,
+		},
+		{
+			name:    "object value does not match string|integer|boolean union",
+			value:   map[string]any{"key": "value"},
+			schema:  unionSchema("string", "integer", "boolean"),
+			wantErr: true,
+		},
+		{
+			name:    "single type string - valid",
+			value:   "hello",
+			schema:  unionSchema("string"),
+			wantErr: false,
+		},
+		{
+			name:    "single type string - invalid",
+			value:   123,
+			schema:  unionSchema("string"),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := b.validateParameterType("testParam", tt.value, tt.schema)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateParameterType() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}

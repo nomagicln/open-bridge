@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -110,7 +111,8 @@ func TestCreateProfileAlreadyExists(t *testing.T) {
 		t.Error("expected error for existing profile")
 	}
 
-	if _, ok := err.(*ProfileExistsError); !ok {
+	profileExistsError := &ProfileExistsError{}
+	if !errors.As(err, &profileExistsError) {
 		t.Errorf("expected ProfileExistsError, got %T", err)
 	}
 }
@@ -172,7 +174,8 @@ func TestUpdateProfileNotFound(t *testing.T) {
 		t.Error("expected error for nonexistent profile")
 	}
 
-	if _, ok := err.(*ProfileNotFoundError); !ok {
+	profileNotFoundError := &ProfileNotFoundError{}
+	if !errors.As(err, &profileNotFoundError) {
 		t.Errorf("expected ProfileNotFoundError, got %T", err)
 	}
 }
@@ -272,7 +275,8 @@ func TestRenameProfileToExisting(t *testing.T) {
 		t.Error("expected error when renaming to existing profile")
 	}
 
-	if _, ok := err.(*ProfileExistsError); !ok {
+	profileExistsError := &ProfileExistsError{}
+	if !errors.As(err, &profileExistsError) {
 		t.Errorf("expected ProfileExistsError, got %T", err)
 	}
 }

@@ -455,59 +455,75 @@ func (b *Builder) ValidateParams(params map[string]any, opParams openapi3.Parame
 	return nil
 }
 
+// typeMatchesAny checks if the actual type matches any of the expected schema types.
+// This implements OpenAPI 3.1 union type semantics where a value is valid if it
+// matches ANY type in the type array.
+func typeMatchesAny(actualType string, expectedTypes []string) bool {
+	for _, expectedType := range expectedTypes {
+		if typeMatches(actualType, expectedType) {
+			return true
+		}
+	}
+	return false
+}
+
+// typeMatches checks if the actual type matches the expected schema type.
+func typeMatches(actualType, expectedType string) bool {
+	switch expectedType {
+	case "string":
+		return actualType == "string"
+	case "integer":
+		// Allow both integer and number for integer schema (numbers without decimals)
+		return actualType == "integer" || actualType == "number"
+	case "number":
+		return actualType == "integer" || actualType == "number"
+	case "boolean":
+		return actualType == "boolean"
+	case "array":
+		return actualType == "array"
+	case "object":
+		return actualType == "object"
+	default:
+		// Unknown type - allow it (permissive for forward compatibility)
+		return true
+	}
+}
+
+// validateEnumValue validates that the value is one of the allowed enum values.
+func validateEnumValue(name string, value any, enums []any) error {
+	for _, enumVal := range enums {
+		if value == enumVal {
+			return nil
+		}
+	}
+	return fmt.Errorf("parameter '%s' must be one of %v, got %v", name, enums, value)
+}
+
 // validateParameterType validates a parameter value against its schema type.
+// For OpenAPI 3.1 union types (e.g., ["string", "integer"]), the value is valid
+// if it matches ANY of the types in the array.
 func (b *Builder) validateParameterType(name string, value any, schemaRef *openapi3.SchemaRef) error {
 	if schemaRef == nil || schemaRef.Value == nil {
-		return nil // No schema to validate against
+		return nil
 	}
 
 	schema := schemaRef.Value
 	if schema.Type == nil {
-		return nil // No type constraint
+		return nil
 	}
 
-	// Get the actual type of the value
 	actualType := b.getValueType(value)
+	schemaTypes := schema.Type.Slice()
 
-	// Check if the value type matches the schema type
-	if schema.Type.Is("string") {
-		if actualType != "string" {
-			return fmt.Errorf("parameter '%s' must be a string, got %s", name, actualType)
-		}
-	} else if schema.Type.Is("integer") {
-		if actualType != "integer" && actualType != "number" {
-			return fmt.Errorf("parameter '%s' must be an integer, got %s", name, actualType)
-		}
-	} else if schema.Type.Is("number") {
-		if actualType != "integer" && actualType != "number" {
-			return fmt.Errorf("parameter '%s' must be a number, got %s", name, actualType)
-		}
-	} else if schema.Type.Is("boolean") {
-		if actualType != "boolean" {
-			return fmt.Errorf("parameter '%s' must be a boolean, got %s", name, actualType)
-		}
-	} else if schema.Type.Is("array") {
-		if actualType != "array" {
-			return fmt.Errorf("parameter '%s' must be an array, got %s", name, actualType)
-		}
-	} else if schema.Type.Is("object") {
-		if actualType != "object" {
-			return fmt.Errorf("parameter '%s' must be an object, got %s", name, actualType)
-		}
+	// For union types, value is valid if it matches ANY type in the array
+	if !typeMatchesAny(actualType, schemaTypes) {
+		return fmt.Errorf("parameter '%s' type mismatch: got %s, expected one of %v",
+			name, actualType, schemaTypes)
 	}
 
 	// Validate enum values if present
 	if len(schema.Enum) > 0 {
-		found := false
-		for _, enumVal := range schema.Enum {
-			if value == enumVal {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("parameter '%s' must be one of %v, got %v", name, schema.Enum, value)
-		}
+		return validateEnumValue(name, value, schema.Enum)
 	}
 
 	return nil

@@ -3,6 +3,7 @@ package credential
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -165,6 +166,30 @@ func WithPassBackend(dir, cmd, prefix string) ManagerOption {
 	}
 }
 
+// buildKeyringConfig creates the keyring configuration from manager config.
+func buildKeyringConfig(cfg *managerConfig, fileDir string, passwordFn func(string) (string, error)) keyring.Config {
+	config := keyring.Config{
+		ServiceName:                    ServiceName,
+		KeychainTrustApplication:       true,
+		KeychainSynchronizable:         false,
+		KeychainAccessibleWhenUnlocked: true,
+		LibSecretCollectionName:        ServiceName,
+		KWalletAppID:                   ServiceName,
+		KWalletFolder:                  ServiceName,
+		PassDir:                        cfg.passDir,
+		PassCmd:                        cfg.passCmd,
+		PassPrefix:                     cfg.passPrefix,
+		FileDir:                        fileDir,
+		FilePasswordFunc:               passwordFn,
+	}
+
+	if len(cfg.allowedBackends) > 0 {
+		config.AllowedBackends = cfg.allowedBackends
+	}
+
+	return config
+}
+
 // NewManager creates a new credential manager.
 func NewManager(opts ...ManagerOption) (*Manager, error) {
 	cfg := &managerConfig{}
@@ -172,7 +197,6 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 		opt(cfg)
 	}
 
-	// Get the keyring file directory
 	fileDir := cfg.fileDir
 	if fileDir == "" {
 		var err error
@@ -182,57 +206,23 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 		}
 	}
 
-	// Get password function
 	passwordFn := cfg.filePasswordFn
 	if passwordFn == nil {
 		passwordFn = keyring.FixedStringPrompt(ServiceName)
 	}
 
-	// Configure keyring
-	config := keyring.Config{
-		ServiceName: ServiceName,
-
-		// macOS Keychain
-		KeychainTrustApplication:       true,
-		KeychainSynchronizable:         false,
-		KeychainAccessibleWhenUnlocked: true,
-
-		// Windows Credential Manager - no additional config needed
-
-		// Linux Secret Service (D-Bus)
-		LibSecretCollectionName: ServiceName,
-
-		// KDE Wallet
-		KWalletAppID:  ServiceName,
-		KWalletFolder: ServiceName,
-
-		// Pass
-		PassDir:    cfg.passDir,
-		PassCmd:    cfg.passCmd,
-		PassPrefix: cfg.passPrefix,
-
-		// File-based fallback (encrypted)
-		FileDir:          fileDir,
-		FilePasswordFunc: passwordFn,
-	}
-
-	// Set allowed backends if specified
-	if len(cfg.allowedBackends) > 0 {
-		config.AllowedBackends = cfg.allowedBackends
-	}
+	config := buildKeyringConfig(cfg, fileDir, passwordFn)
 
 	ring, err := keyring.Open(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open keyring: %w", err)
 	}
 
-	m := &Manager{
+	return &Manager{
 		ring:        ring,
-		backend:     detectBackend(ring),
+		backend:     detectBackend(),
 		initialized: true,
-	}
-
-	return m, nil
+	}, nil
 }
 
 // getDefaultKeyringDir returns the default directory for the file-based keyring.
@@ -271,7 +261,7 @@ func getDefaultKeyringDir() (string, error) {
 }
 
 // detectBackend attempts to detect which keyring backend is being used.
-func detectBackend(ring keyring.Keyring) BackendType {
+func detectBackend() BackendType {
 	// The keyring library doesn't expose which backend is in use,
 	// so we detect based on platform
 	switch runtime.GOOS {
@@ -350,7 +340,7 @@ func (m *Manager) GetCredential(appName, profileName string) (*Credential, error
 
 	item, err := m.ring.Get(key)
 	if err != nil {
-		if err == keyring.ErrKeyNotFound {
+		if errors.Is(err, keyring.ErrKeyNotFound) {
 			return nil, &CredentialNotFoundError{AppName: appName, ProfileName: profileName}
 		}
 		return nil, fmt.Errorf("failed to get credential: %w", err)
@@ -370,7 +360,7 @@ func (m *Manager) DeleteCredential(appName, profileName string) error {
 
 	err := m.ring.Remove(key)
 	if err != nil {
-		if err == keyring.ErrKeyNotFound {
+		if errors.Is(err, keyring.ErrKeyNotFound) {
 			return nil // Already deleted
 		}
 		return fmt.Errorf("failed to delete credential: %w", err)
@@ -385,7 +375,8 @@ func (m *Manager) UpdateCredential(appName, profileName string, updateFn func(*C
 	cred, err := m.GetCredential(appName, profileName)
 	if err != nil {
 		// Create new if not found
-		if _, ok := err.(*CredentialNotFoundError); ok {
+		credentialNotFoundError := &CredentialNotFoundError{}
+		if errors.As(err, &credentialNotFoundError) {
 			cred = &Credential{}
 		} else {
 			return err

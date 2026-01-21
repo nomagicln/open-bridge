@@ -271,27 +271,6 @@ func TestShimExecutionSimulation(t *testing.T) {
 			t.Error("Windows shim should contain '@echo off'")
 		}
 	default:
-		// Unix shims are symlinks - verify the symlink properties
-		info, err := os.Lstat(shimPath)
-		if err != nil {
-			t.Fatalf("failed to lstat shim: %v", err)
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			t.Error("Unix shim should be a symbolic link")
-		}
-
-		// Verify symlink target
-		target, err := os.Readlink(shimPath)
-		if err != nil {
-			t.Fatalf("failed to readlink shim: %v", err)
-		}
-		if target == "" {
-			t.Error("Unix shim symlink target should not be empty")
-		}
-
-		// Verify the shim file name matches the app name
-		if filepath.Base(shimPath) != "testapp" {
-			t.Errorf("shim file name should be 'testapp', got: %s", filepath.Base(shimPath))
-		}
+		assertUnixShimSymlink(t, shimPath, "testapp")
 	}
 }

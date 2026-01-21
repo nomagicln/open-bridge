@@ -6,29 +6,11 @@ import (
 	"github.com/leanovate/gopter/gen"
 )
 
-// DefaultTestParameters returns standard test parameters for property tests.
-func DefaultTestParameters() *gopter.TestParameters {
-	return gopter.DefaultTestParameters()
-}
-
-// FastTestParameters returns test parameters with fewer iterations for faster testing.
-func FastTestParameters() *gopter.TestParameters {
-	params := gopter.DefaultTestParameters()
-	params.MinSuccessfulTests = 20
-	return params
-}
-
-// ExtensiveTestParameters returns test parameters with more iterations for thorough testing.
-func ExtensiveTestParameters() *gopter.TestParameters {
+// TestParameters returns the standard test parameters for property tests.
+// Default: 1000 iterations for a good balance between coverage and speed.
+func TestParameters() *gopter.TestParameters {
 	params := gopter.DefaultTestParameters()
 	params.MinSuccessfulTests = 1000
-	return params
-}
-
-// StandardTestParameters returns test parameters with 100 iterations as specified in Task 16.3.
-func StandardTestParameters() *gopter.TestParameters {
-	params := gopter.DefaultTestParameters()
-	params.MinSuccessfulTests = 100
 	return params
 }
 

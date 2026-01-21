@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -208,7 +209,8 @@ func TestDeleteAppConfig(t *testing.T) {
 	}
 
 	// Check error type
-	if _, ok := err.(*AppNotFoundError); !ok {
+	appNotFoundError := &AppNotFoundError{}
+	if !errors.As(err, &appNotFoundError) {
 		t.Errorf("expected AppNotFoundError, got %T", err)
 	}
 }
@@ -225,7 +227,8 @@ func TestDeleteAppConfigNotFound(t *testing.T) {
 		t.Error("expected error for nonexistent app")
 	}
 
-	if _, ok := err.(*AppNotFoundError); !ok {
+	appNotFoundError := &AppNotFoundError{}
+	if !errors.As(err, &appNotFoundError) {
 		t.Errorf("expected AppNotFoundError, got %T", err)
 	}
 }
@@ -333,13 +336,7 @@ func TestGetAppConfigNotFound(t *testing.T) {
 	}
 
 	_, err = m.GetAppConfig("nonexistent")
-	if err == nil {
-		t.Error("expected error for nonexistent app")
-	}
-
-	if _, ok := err.(*AppNotFoundError); !ok {
-		t.Errorf("expected AppNotFoundError, got %T", err)
-	}
+	assertNonexistentAppError(t, err)
 }
 
 func TestExportProfile(t *testing.T) {
@@ -395,7 +392,8 @@ func TestExportProfileNotFound(t *testing.T) {
 		t.Error("expected error for nonexistent profile")
 	}
 
-	if _, ok := err.(*ProfileNotFoundError); !ok {
+	profileNotFoundError := &ProfileNotFoundError{}
+	if !errors.As(err, &profileNotFoundError) {
 		t.Errorf("expected ProfileNotFoundError, got %T", err)
 	}
 }

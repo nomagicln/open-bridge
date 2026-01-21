@@ -572,10 +572,7 @@ profiles:
 }
 
 func TestIsCredentialHeader(t *testing.T) {
-	tests := []struct {
-		header       string
-		isCredential bool
-	}{
+	tests := []credentialTestCase{
 		{"Authorization", true},
 		{"X-API-Key", true},
 		{"X-Auth-Token", true},
@@ -585,21 +582,11 @@ func TestIsCredentialHeader(t *testing.T) {
 		{"X-Secret-Header", true},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.header, func(t *testing.T) {
-			result := isCredentialHeader(tt.header)
-			if result != tt.isCredential {
-				t.Errorf("isCredentialHeader(%q) = %v, expected %v", tt.header, result, tt.isCredential)
-			}
-		})
-	}
+	runCredentialDetectorTests(t, "isCredentialHeader", tests, isCredentialHeader)
 }
 
 func TestIsCredentialParam(t *testing.T) {
-	tests := []struct {
-		param        string
-		isCredential bool
-	}{
+	tests := []credentialTestCase{
 		{"api_key", true},
 		{"token", true},
 		{"access_token", true},
@@ -609,14 +596,7 @@ func TestIsCredentialParam(t *testing.T) {
 		{"secret", true},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.param, func(t *testing.T) {
-			result := isCredentialParam(tt.param)
-			if result != tt.isCredential {
-				t.Errorf("isCredentialParam(%q) = %v, expected %v", tt.param, result, tt.isCredential)
-			}
-		})
-	}
+	runCredentialDetectorTests(t, "isCredentialParam", tests, isCredentialParam)
 }
 
 func TestExportWithTimeout(t *testing.T) {

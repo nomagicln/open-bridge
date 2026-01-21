@@ -50,70 +50,62 @@ type Operation struct {
 	Aliases     []string
 }
 
-// BuildCommandTree builds a command tree from an OpenAPI specification.
-func (m *Mapper) BuildCommandTree(spec *openapi3.T) *CommandTree {
-	tree := &CommandTree{
-		RootResources: make(map[string]*Resource),
-	}
-
-	// Map to keep track of all resources by unique key
-	allResources := make(map[string]*Resource)
-
-	// Sort paths to ensure deterministic behavior
+// getSortedPaths returns the sorted paths from the spec for deterministic behavior.
+func getSortedPaths(spec *openapi3.T) []string {
 	paths := make([]string, 0, len(spec.Paths.Map()))
 	for path := range spec.Paths.Map() {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
+	return paths
+}
 
-	for _, path := range paths {
+// getPathOperations returns a map of method to operation for the given path item.
+func getPathOperations(pathItem *openapi3.PathItem) map[string]*openapi3.Operation {
+	return map[string]*openapi3.Operation{
+		"GET":    pathItem.Get,
+		"POST":   pathItem.Post,
+		"PUT":    pathItem.Put,
+		"PATCH":  pathItem.Patch,
+		"DELETE": pathItem.Delete,
+	}
+}
+
+// processOperation processes a single operation and adds it to the tree.
+func (m *Mapper) processOperation(tree *CommandTree, allResources map[string]*Resource, path, method string, op *openapi3.Operation) {
+	extractResult := m.extractor.Extract(path, op)
+	verbMapping := m.verbMapper.MapVerb(method, path, op)
+	resource := m.getOrCreateResource(tree, allResources, extractResult.Resource, extractResult.ParentResource)
+	finalVerb := resource.verbSet.Add(verbMapping)
+
+	resource.Operations[finalVerb] = &Operation{
+		Name:        finalVerb,
+		Method:      method,
+		Path:        path,
+		OperationID: op.OperationID,
+		Summary:     op.Summary,
+		Description: op.Description,
+		Resource:    extractResult.Resource,
+	}
+}
+
+// BuildCommandTree builds a command tree from an OpenAPI specification.
+func (m *Mapper) BuildCommandTree(spec *openapi3.T) *CommandTree {
+	tree := &CommandTree{RootResources: make(map[string]*Resource)}
+	allResources := make(map[string]*Resource)
+	methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
+
+	for _, path := range getSortedPaths(spec) {
 		pathItem := spec.Paths.Find(path)
 		if pathItem == nil {
 			continue
 		}
 
-		operations := map[string]*openapi3.Operation{
-			"GET":    pathItem.Get,
-			"POST":   pathItem.Post,
-			"PUT":    pathItem.Put,
-			"PATCH":  pathItem.Patch,
-			"DELETE": pathItem.Delete,
-		}
-
-		// Sort methods for deterministic behavior
-		methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
-
+		operations := getPathOperations(pathItem)
 		for _, method := range methods {
-			op := operations[method]
-			if op == nil {
-				continue
+			if op := operations[method]; op != nil {
+				m.processOperation(tree, allResources, path, method, op)
 			}
-
-			// 1. Extract Resource
-			extractResult := m.extractor.Extract(path, op)
-			resourceName := extractResult.Resource
-			parentName := extractResult.ParentResource
-
-			// 2. Map Verb
-			verbMapping := m.verbMapper.MapVerb(method, path, op)
-
-			// 3. Find or Create Resource
-			resource := m.getOrCreateResource(tree, allResources, resourceName, parentName)
-
-			// 4. Add Operation
-			finalVerb := resource.verbSet.Add(verbMapping)
-
-			operation := &Operation{
-				Name:        finalVerb,
-				Method:      method,
-				Path:        path,
-				OperationID: op.OperationID,
-				Summary:     op.Summary,
-				Description: op.Description,
-				Resource:    resourceName,
-			}
-
-			resource.Operations[finalVerb] = operation
 		}
 	}
 

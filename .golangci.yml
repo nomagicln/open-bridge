@@ -1,0 +1,83 @@
+version: "2"
+
+run:
+  timeout: 3m
+  tests: true
+
+output:
+  sort-order:
+    - linter
+    - severity
+    - file
+  show-stats: true
+
+issues: {}
+
+linters:
+  default: none
+  enable:
+    # complexity / maintainability
+    - gocyclo
+    - gocognit
+    - maintidx
+    - dupl
+    - funlen
+    # error handling
+    - errcheck
+    - errorlint
+    # correctness
+    - staticcheck
+    - govet
+    # unused code detection
+    - unparam
+    - unused
+    # readability / consistency
+    - misspell
+  disable:
+    # too noisy for map/any-heavy CLI parsing
+    - forcetypeassert
+    # numeric literals in CLI flags and protocol hints
+    - mnd
+    # enable later after baseline cleanup
+    - gosec
+
+  settings:
+    gocyclo:
+      min-complexity: 25
+    gocognit:
+      min-complexity: 25
+    maintidx:
+      under: 15
+    dupl:
+      threshold: 70
+    funlen:
+      lines: 50
+      statements: 40
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - gocognit
+          - funlen
+          - unparam
+      - path: cmd/ob/main\.go
+        linters:
+          - gocyclo
+        text: "newInstallCmd"
+      - path: pkg/cli/handler\.go
+        linters:
+          - gocyclo
+        text: "ExecuteCommand"
+      - path: pkg/completion/completion\.go
+        linters:
+          - gocyclo
+        text: "CompleteFlagValues"
+      - path: pkg/config/install\.go
+        linters:
+          - gocyclo
+        text: "InstallApp"
+
+formatters:
+  enable:
+    - goimports

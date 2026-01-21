@@ -87,7 +87,10 @@ func init() {
 
 func main() {
 	if err := Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		// Don't print errors that have already been printed (e.g., formatted CLI errors)
+		if !cli.IsPrintedError(err) && err.Error() != "" {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		os.Exit(1)
 	}
 }
@@ -113,8 +116,9 @@ to two distinct interfaces:
   - An MCP server for AI agents
 
 One Spec, Dual Interface.`,
-		Version:      fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, date),
-		SilenceUsage: true,
+		Version:       fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, date),
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		// Handle unknown subcommands as app names
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -150,17 +154,198 @@ One Spec, Dual Interface.`,
 	return rootCmd.Execute()
 }
 
+// prepareInteractiveInstall handles the interactive TUI installation flow.
+func prepareInteractiveInstall(appName string, opts config.InstallOptions) (config.InstallOptions, error) {
+	appExists := configMgr.AppExists(appName)
+
+	// Load existing config to use as defaults if app exists
+	if appExists {
+		existingConfig, err := configMgr.GetAppConfig(appName)
+		if err == nil {
+			opts = mergeExistingConfig(opts, existingConfig)
+		}
+	}
+
+	m := installTui.NewModel(appName, opts, appExists)
+	p := tea.NewProgram(m)
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return opts, fmt.Errorf("wizard failed: %w", err)
+	}
+
+	model, ok := finalModel.(installTui.Model)
+	if !ok {
+		return opts, fmt.Errorf("unexpected TUI model type: %T", finalModel)
+	}
+	if model.Result() == nil {
+		return opts, fmt.Errorf("installation aborted")
+	}
+
+	result := *model.Result()
+	result.Interactive = false
+	return result, nil
+}
+
+// mergeExistingConfig merges existing app config into install options if options are empty.
+func mergeExistingConfig(opts config.InstallOptions, existing *config.AppConfig) config.InstallOptions {
+	if opts.SpecSource == "" && len(opts.SpecSources) == 0 {
+		opts.SpecSource = existing.SpecSource
+		opts.SpecSources = existing.SpecSources
+	}
+	if opts.Description == "" {
+		opts.Description = existing.Description
+	}
+	if profile, ok := existing.Profiles[existing.DefaultProfile]; ok {
+		if opts.BaseURL == "" {
+			opts.BaseURL = profile.BaseURL
+		}
+		if opts.AuthType == "" {
+			opts.AuthType = profile.Auth.Type
+		}
+	}
+	return opts
+}
+
+// storeInstallCredentials stores credentials after installation.
+func storeInstallCredentials(appName string, opts config.InstallOptions) {
+	if len(opts.AuthParams) == 0 {
+		return
+	}
+
+	cred := createCredentialFromParams(opts.AuthType, opts.AuthParams)
+	if cred == nil {
+		return
+	}
+
+	// Handle API key name update
+	if opts.AuthType == "api_key" {
+		updateAPIKeyName(appName, opts.AuthParams)
+	}
+
+	if credMgr != nil {
+		if err := credMgr.StoreCredential(appName, "default", cred); err != nil {
+			fmt.Printf("Warning: failed to store credentials: %v\n", err)
+		} else {
+			fmt.Printf("  Credentials stored securely in %s\n", credMgr.Backend())
+		}
+	}
+}
+
+// createCredentialFromParams creates a credential from auth parameters.
+func createCredentialFromParams(authType string, params map[string]string) *credential.Credential {
+	switch authType {
+	case "bearer":
+		if token := params["token"]; token != "" {
+			return credential.NewBearerCredential(token)
+		}
+	case "api_key":
+		if token := params["token"]; token != "" {
+			return credential.NewAPIKeyCredential(token)
+		}
+	case "basic":
+		user, pass := params["username"], params["password"]
+		if user != "" || pass != "" {
+			return credential.NewBasicCredential(user, pass)
+		}
+	}
+	return nil
+}
+
+// updateAPIKeyName updates the API key name in config if provided.
+func updateAPIKeyName(appName string, params map[string]string) {
+	keyName, ok := params["key_name"]
+	if !ok || keyName == "" {
+		return
+	}
+
+	appConfig, err := configMgr.GetAppConfig(appName)
+	if err != nil {
+		return
+	}
+
+	profile, ok := appConfig.Profiles["default"]
+	if !ok {
+		return
+	}
+
+	profile.Auth.KeyName = keyName
+	appConfig.Profiles["default"] = profile
+	if err := configMgr.SaveAppConfig(appConfig); err != nil {
+		fmt.Printf("Warning: failed to save API key name: %v\n", err)
+	}
+}
+
+// printInstallResult prints the installation result.
+func printInstallResult(appName string, result *config.InstallResult) {
+	fmt.Printf("✓ Successfully installed app '%s'\n", result.AppName)
+	fmt.Printf("  Config: %s\n", result.ConfigPath)
+	if result.ShimPath != "" {
+		fmt.Printf("  Shim: %s\n", result.ShimPath)
+	}
+	if result.SpecInfo != nil {
+		fmt.Printf("  API: %s (v%s)\n", result.SpecInfo.Title, result.SpecInfo.Version)
+		fmt.Printf("  Operations: %d\n", result.SpecInfo.Operations)
+	}
+
+	fmt.Printf("\nUsage:\n")
+	if result.ShimPath != "" {
+		fmt.Printf("  %s <verb> <resource> [flags]\n", appName)
+	} else {
+		fmt.Printf("  ob %s <verb> <resource> [flags]\n", appName)
+	}
+	fmt.Printf("  ob %s --help\n", appName)
+}
+
+// installCmdFlags holds the flag values for the install command.
+type installCmdFlags struct {
+	specSource  string
+	baseURL     string
+	description string
+	authType    string
+	createShim  bool
+	force       bool
+	interactive bool
+}
+
+// runInstallCmd executes the install command logic.
+func runInstallCmd(appName string, flags *installCmdFlags) error {
+	opts := config.InstallOptions{
+		SpecSource:  flags.specSource,
+		BaseURL:     flags.baseURL,
+		Description: flags.description,
+		AuthType:    flags.authType,
+		CreateShim:  flags.createShim,
+		Force:       flags.force,
+		Interactive: flags.interactive,
+		Reader:      os.Stdin,
+		Writer:      os.Stdout,
+	}
+
+	if flags.interactive {
+		var err error
+		opts, err = prepareInteractiveInstall(appName, opts)
+		if err != nil {
+			return err
+		}
+	} else if flags.specSource == "" {
+		return fmt.Errorf("--spec flag is required (or use -i for interactive mode)")
+	}
+
+	result, err := configMgr.InstallApp(appName, opts)
+	if err != nil {
+		return fmt.Errorf("installation failed: %w", err)
+	}
+
+	storeInstallCredentials(appName, opts)
+	printInstallResult(appName, result)
+
+	return nil
+}
+
 // newInstallCmd creates the install subcommand
 func newInstallCmd() *cobra.Command {
-	var (
-		specSource  string
-		baseURL     string
-		description string
-		authType    string
-		createShim  bool
-		force       bool
-		interactive bool
-	)
+	flags := &installCmdFlags{createShim: true}
 
 	cmd := &cobra.Command{
 		Use:   "install <app-name>",
@@ -173,157 +358,18 @@ Example:
   ob install petstore --spec https://petstore.swagger.io/v2/swagger.json
   ob install myapi -i  # Interactive mode`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			appName := args[0]
-
-			opts := config.InstallOptions{
-				SpecSource:  specSource,
-				BaseURL:     baseURL,
-				Description: description,
-				AuthType:    authType,
-				CreateShim:  createShim,
-				Force:       force,
-				Interactive: interactive,
-				Reader:      os.Stdin,
-				Writer:      os.Stdout,
-			}
-
-			// If interactive mode, run TUI wizard
-			if interactive {
-				// Initialize model with any CLI args provided
-				// Pass AppExists check
-				appExists := configMgr.AppExists(appName)
-
-				// Load existing config to use as defaults if app exists
-				if appExists {
-					existingConfig, err := configMgr.GetAppConfig(appName)
-					if err == nil {
-						// Merge existing config into options if options are empty
-						if opts.SpecSource == "" && len(opts.SpecSources) == 0 {
-							opts.SpecSource = existingConfig.SpecSource
-							opts.SpecSources = existingConfig.SpecSources
-						}
-						if opts.Description == "" {
-							opts.Description = existingConfig.Description
-						}
-						if profile, ok := existingConfig.Profiles[existingConfig.DefaultProfile]; ok {
-							if opts.BaseURL == "" {
-								opts.BaseURL = profile.BaseURL
-							}
-							if opts.AuthType == "" {
-								opts.AuthType = profile.Auth.Type
-							}
-						}
-					}
-				}
-
-				m := installTui.NewModel(appName, opts, appExists)
-				p := tea.NewProgram(m)
-
-				// Run TUI
-				finalModel, err := p.Run()
-				if err != nil {
-					return fmt.Errorf("wizard failed: %w", err)
-				}
-
-				// Check result
-				model := finalModel.(installTui.Model)
-				if model.Result() == nil {
-					// User aborted
-					return fmt.Errorf("installation aborted")
-				}
-
-				// Use configured options
-				opts = *model.Result()
-
-				// Disable interactive flag for core logic since we gathered everything
-				opts.Interactive = false
-			} else {
-				// Non-interactive check: spec is required
-				if specSource == "" {
-					return fmt.Errorf("--spec flag is required (or use -i for interactive mode)")
-				}
-			}
-
-			result, err := configMgr.InstallApp(appName, opts)
-			if err != nil {
-				return fmt.Errorf("installation failed: %w", err)
-			}
-
-			// Store credentials if provided
-			if len(opts.AuthParams) > 0 {
-				var cred *credential.Credential
-				switch opts.AuthType {
-				case "bearer":
-					if token, ok := opts.AuthParams["token"]; ok && token != "" {
-						cred = credential.NewBearerCredential(token)
-					}
-				case "api_key":
-					if token, ok := opts.AuthParams["token"]; ok && token != "" {
-						cred = credential.NewAPIKeyCredential(token)
-					}
-					// Update KeyName in config if provided
-					if keyName, ok := opts.AuthParams["key_name"]; ok && keyName != "" {
-						appConfig, err := configMgr.GetAppConfig(appName)
-						if err == nil {
-							// Update default profile
-							if profile, ok := appConfig.Profiles["default"]; ok {
-								profile.Auth.KeyName = keyName
-								appConfig.Profiles["default"] = profile
-								if err := configMgr.SaveAppConfig(appConfig); err != nil {
-									fmt.Printf("Warning: failed to save API key name: %v\n", err)
-								}
-							}
-						}
-					}
-				case "basic":
-					user := opts.AuthParams["username"]
-					pass := opts.AuthParams["password"]
-					if user != "" || pass != "" {
-						cred = credential.NewBasicCredential(user, pass)
-					}
-				}
-
-				if cred != nil && credMgr != nil {
-					// Default profile is always "default" for new install
-					if err := credMgr.StoreCredential(result.AppName, "default", cred); err != nil {
-						fmt.Printf("Warning: failed to store credentials: %v\n", err)
-					} else {
-						fmt.Printf("  Credentials stored securely in %s\n", credMgr.Backend())
-					}
-				}
-			}
-
-			// Print success message
-			fmt.Printf("✓ Successfully installed app '%s'\n", result.AppName)
-			fmt.Printf("  Config: %s\n", result.ConfigPath)
-			if result.ShimPath != "" {
-				fmt.Printf("  Shim: %s\n", result.ShimPath)
-			}
-			if result.SpecInfo != nil {
-				fmt.Printf("  API: %s (v%s)\n", result.SpecInfo.Title, result.SpecInfo.Version)
-				fmt.Printf("  Operations: %d\n", result.SpecInfo.Operations)
-			}
-
-			fmt.Printf("\nUsage:\n")
-			if result.ShimPath != "" {
-				fmt.Printf("  %s <verb> <resource> [flags]\n", appName)
-			} else {
-				fmt.Printf("  ob %s <verb> <resource> [flags]\n", appName)
-			}
-			fmt.Printf("  ob %s --help\n", appName)
-
-			return nil
+		RunE: func(_ *cobra.Command, args []string) error {
+			return runInstallCmd(args[0], flags)
 		},
 	}
 
-	cmd.Flags().StringVarP(&specSource, "spec", "s", "", "Path or URL to the OpenAPI specification")
-	cmd.Flags().StringVar(&baseURL, "base-url", "", "Base URL for API requests (overrides spec)")
-	cmd.Flags().StringVar(&description, "description", "", "Description of the application")
-	cmd.Flags().StringVar(&authType, "auth", "", "Authentication type: none, bearer, api_key, basic")
-	cmd.Flags().BoolVar(&createShim, "shim", true, "Create command shortcut (shim)")
-	cmd.Flags().BoolVarP(&force, "force", "f", false, "Overwrite existing app configuration")
-	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Interactive installation mode")
+	cmd.Flags().StringVarP(&flags.specSource, "spec", "s", "", "Path or URL to the OpenAPI specification")
+	cmd.Flags().StringVar(&flags.baseURL, "base-url", "", "Base URL for API requests (overrides spec)")
+	cmd.Flags().StringVar(&flags.description, "description", "", "Description of the application")
+	cmd.Flags().StringVar(&flags.authType, "auth", "", "Authentication type: none, bearer, api_key, basic")
+	cmd.Flags().BoolVar(&flags.createShim, "shim", true, "Create command shortcut (shim)")
+	cmd.Flags().BoolVarP(&flags.force, "force", "f", false, "Overwrite existing app configuration")
+	cmd.Flags().BoolVarP(&flags.interactive, "interactive", "i", false, "Interactive installation mode")
 
 	return cmd
 }
@@ -376,6 +422,65 @@ Example:
 	return cmd
 }
 
+// printAppDetails prints detailed information for a single app.
+func printAppDetails(info *config.InstalledAppInfo) {
+	fmt.Printf("App: %s\n", info.Name)
+	if info.Description != "" {
+		fmt.Printf("  Description: %s\n", info.Description)
+	}
+	fmt.Printf("  Spec: %s\n", info.SpecSource)
+	fmt.Printf("  Profiles: %d (%s)\n", info.ProfileCount, strings.Join(info.Profiles, ", "))
+	fmt.Printf("  Default Profile: %s\n", info.DefaultProfile)
+	fmt.Printf("  Shim Installed: %v\n", info.ShimExists)
+	if info.SpecInfo != nil {
+		fmt.Printf("  API Version: %s\n", info.SpecInfo.Version)
+		fmt.Printf("  Operations: %d\n", info.SpecInfo.Operations)
+	}
+}
+
+// printAppsDetailed prints detailed view of all apps.
+func printAppsDetailed(apps []string) {
+	for i, appName := range apps {
+		info, err := configMgr.GetInstalledAppInfo(appName)
+		if err != nil {
+			fmt.Printf("Error loading app '%s': %v\n", appName, err)
+			continue
+		}
+		if i > 0 {
+			fmt.Println()
+		}
+		printAppDetails(info)
+	}
+}
+
+// printAppsTable prints table view of all apps.
+func printAppsTable(apps []string) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "NAME\tDESCRIPTION\tPROFILES\tSHIM")
+	_, _ = fmt.Fprintln(w, "----\t-----------\t--------\t----")
+
+	for _, appName := range apps {
+		info, err := configMgr.GetInstalledAppInfo(appName)
+		if err != nil {
+			_, _ = fmt.Fprintf(w, "%s\t<error>\t-\t-\n", appName)
+			continue
+		}
+
+		desc := info.Description
+		if len(desc) > 40 {
+			desc = desc[:37] + "..."
+		}
+
+		shimStatus := "No"
+		if info.ShimExists {
+			shimStatus = "Yes"
+		}
+
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", info.Name, desc, info.ProfileCount, shimStatus)
+	}
+	_ = w.Flush()
+}
+
 // newListCmd creates the list subcommand
 func newListCmd() *cobra.Command {
 	var showDetails bool
@@ -403,56 +508,9 @@ Example:
 			}
 
 			if showDetails {
-				// Detailed view
-				for i, appName := range apps {
-					info, err := configMgr.GetInstalledAppInfo(appName)
-					if err != nil {
-						fmt.Printf("Error loading app '%s': %v\n", appName, err)
-						continue
-					}
-
-					if i > 0 {
-						fmt.Println()
-					}
-					fmt.Printf("App: %s\n", info.Name)
-					if info.Description != "" {
-						fmt.Printf("  Description: %s\n", info.Description)
-					}
-					fmt.Printf("  Spec: %s\n", info.SpecSource)
-					fmt.Printf("  Profiles: %d (%s)\n", info.ProfileCount, strings.Join(info.Profiles, ", "))
-					fmt.Printf("  Default Profile: %s\n", info.DefaultProfile)
-					fmt.Printf("  Shim Installed: %v\n", info.ShimExists)
-					if info.SpecInfo != nil {
-						fmt.Printf("  API Version: %s\n", info.SpecInfo.Version)
-						fmt.Printf("  Operations: %d\n", info.SpecInfo.Operations)
-					}
-				}
+				printAppsDetailed(apps)
 			} else {
-				// Table view
-				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-				_, _ = fmt.Fprintln(w, "NAME\tDESCRIPTION\tPROFILES\tSHIM")
-				_, _ = fmt.Fprintln(w, "----\t-----------\t--------\t----")
-
-				for _, appName := range apps {
-					info, err := configMgr.GetInstalledAppInfo(appName)
-					if err != nil {
-						_, _ = fmt.Fprintf(w, "%s\t<error>\t-\t-\n", appName)
-						continue
-					}
-
-					desc := info.Description
-					if len(desc) > 40 {
-						desc = desc[:37] + "..."
-					}
-
-					shimStatus := "No"
-					if info.ShimExists {
-						shimStatus = "Yes"
-					}
-
-					_, _ = fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", info.Name, desc, info.ProfileCount, shimStatus)
-				}
-				_ = w.Flush()
+				printAppsTable(apps)
 			}
 
 			return nil
@@ -523,76 +581,69 @@ Example:
 	return cmd
 }
 
+// mcpServerOptions holds parsed MCP server options.
+type mcpServerOptions struct {
+	profileName string
+	transport   string
+	port        string
+}
+
+// parseMCPServerArgs parses MCP server arguments.
+func parseMCPServerArgs(args []string, defaultProfile string) mcpServerOptions {
+	opts := mcpServerOptions{
+		transport: "stdio",
+		port:      "8080",
+	}
+
+	for i, arg := range args {
+		opts.profileName = parseArgValue(arg, args, i, "--profile", "-p", opts.profileName)
+		opts.transport = parseArgValue(arg, args, i, "--transport", "", opts.transport)
+		opts.port = parseArgValue(arg, args, i, "--port", "", opts.port)
+	}
+
+	if opts.profileName == "" {
+		opts.profileName = defaultProfile
+	}
+	return opts
+}
+
+// parseArgValue parses a flag value from args.
+func parseArgValue(arg string, args []string, i int, longFlag, shortFlag, current string) string {
+	if arg == longFlag || (shortFlag != "" && arg == shortFlag) {
+		if i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	if strings.HasPrefix(arg, longFlag+"=") {
+		return strings.TrimPrefix(arg, longFlag+"=")
+	}
+	return current
+}
+
 // startMCPServer starts the MCP server for an app
 func startMCPServer(appConfig *config.AppConfig, args []string) error {
-	// Load spec
 	specDoc, err := specParser.LoadSpec(appConfig.SpecSource)
 	if err != nil {
 		return fmt.Errorf("failed to load spec: %w", err)
 	}
 
-	// Parse flags
-	profileName := ""
-	transport := "stdio"
-	port := "8080"
+	opts := parseMCPServerArgs(args, appConfig.DefaultProfile)
 
-	for i, arg := range args {
-		// Profile
-		if arg == "--profile" || arg == "-p" {
-			if i+1 < len(args) {
-				profileName = args[i+1]
-			}
-		}
-		if strings.HasPrefix(arg, "--profile=") {
-			profileName = strings.TrimPrefix(arg, "--profile=")
-		}
-
-		// Transport
-		if arg == "--transport" {
-			if i+1 < len(args) {
-				transport = args[i+1]
-			}
-		}
-		if strings.HasPrefix(arg, "--transport=") {
-			transport = strings.TrimPrefix(arg, "--transport=")
-		}
-
-		// Port
-		if arg == "--port" {
-			if i+1 < len(args) {
-				port = args[i+1]
-			}
-		}
-		if strings.HasPrefix(arg, "--port=") {
-			port = strings.TrimPrefix(arg, "--port=")
-		}
-	}
-
-	if profileName == "" {
-		profileName = appConfig.DefaultProfile
-	}
-
-	// Configure handler
 	mcpHandler.SetSpec(specDoc)
-	mcpHandler.SetAppConfig(appConfig, profileName)
+	mcpHandler.SetAppConfig(appConfig, opts.profileName)
 
-	// Retrieve profile for safety config
-	profile, ok := appConfig.GetProfile(profileName)
+	profile, ok := appConfig.GetProfile(opts.profileName)
 	if !ok {
-		return fmt.Errorf("profile '%s' not found", profileName)
+		return fmt.Errorf("profile '%s' not found", opts.profileName)
 	}
 
-	// Create server using factory
 	factory := mcp.NewServerFactory(appConfig.Name, version)
 	server := factory.CreateServer()
-
-	// Register tools
 	mcpHandler.Register(server, &profile.SafetyConfig)
 
-	// Run server
-	fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s) via %s...\n", appConfig.Name, profileName, transport)
+	fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s) via %s...\n", appConfig.Name, opts.profileName, opts.transport)
 
-	return factory.RunServer(context.Background(), server, transport, port)
+	return factory.RunServer(context.Background(), server, opts.transport, opts.port)
 }
 
 // completeAppNames provides completion for installed app names

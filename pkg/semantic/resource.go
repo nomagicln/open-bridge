@@ -57,75 +57,78 @@ type ExtractResult struct {
 	ActionHint string
 }
 
-// Extract extracts resource information from an API path and operation.
-func (e *ResourceExtractor) Extract(path string, operation *openapi3.Operation) *ExtractResult {
-	result := &ExtractResult{}
-
-	// Check for x-cli-resource override first
-	if operation != nil {
-		if ext, ok := operation.Extensions["x-cli-resource"]; ok {
-			if resource, ok := ext.(string); ok {
-				result.Resource = resource
-				return result
-			}
-			// Handle JSON encoded extension (the library sometimes returns map)
-			if m, ok := ext.(map[string]any); ok {
-				if name, ok := m["name"].(string); ok {
-					result.Resource = name
-				}
-				if parent, ok := m["parent"].(string); ok {
-					result.ParentResource = parent
-					result.IsNested = true
-				}
-			}
-			if result.Resource != "" {
-				return result
-			}
-		}
+// extractFromExtension attempts to extract resource info from x-cli-resource extension.
+// Returns true if extraction was successful.
+func (e *ResourceExtractor) extractFromExtension(operation *openapi3.Operation, result *ExtractResult) bool {
+	if operation == nil {
+		return false
 	}
 
-	// Parse path segments
-	segments := e.parsePathSegments(path)
+	ext, ok := operation.Extensions["x-cli-resource"]
+	if !ok {
+		return false
+	}
 
-	// Extract path parameters
-	result.PathParams = e.extractPathParams(segments)
+	if resource, ok := ext.(string); ok {
+		result.Resource = resource
+		return true
+	}
 
-	// Find resource segments (non-parameter, non-ignored segments)
-	resourceSegments := e.findResourceSegments(segments)
+	if m, ok := ext.(map[string]any); ok {
+		if name, ok := m["name"].(string); ok {
+			result.Resource = name
+		}
+		if parent, ok := m["parent"].(string); ok {
+			result.ParentResource = parent
+			result.IsNested = true
+		}
+		return result.Resource != ""
+	}
 
+	return false
+}
+
+// extractResourceFromSegments extracts resource info from path segments.
+func (e *ResourceExtractor) extractResourceFromSegments(resourceSegments []string, result *ExtractResult) {
 	if len(resourceSegments) == 0 {
 		result.Resource = "resource"
-		return result
+		return
 	}
 
-	// Check if the last segment is an action pattern (e.g., findByStatus, searchByName)
-	// If so, the actual resource is the previous segment
 	lastIdx := len(resourceSegments) - 1
 	lastSegment := resourceSegments[lastIdx]
 
 	if len(resourceSegments) > 1 && e.isActionSegment(lastSegment) {
-		// The last segment is an action, use the previous segment as the resource
 		result.Resource = NormalizeName(resourceSegments[lastIdx-1])
 		result.OriginalSegment = resourceSegments[lastIdx-1]
-		// Store the action hint for verb mapping (could be used later)
 		result.ActionHint = lastSegment
-
-		// Check for further nesting
 		if len(resourceSegments) > 2 {
 			result.ParentResource = NormalizeName(resourceSegments[lastIdx-2])
 			result.IsNested = true
 		}
 	} else {
-		// Normal case: last segment is the resource
 		result.Resource = NormalizeName(lastSegment)
 		result.OriginalSegment = lastSegment
-
-		// If there's more than one resource segment, we have a nested resource
 		if len(resourceSegments) > 1 {
 			result.ParentResource = NormalizeName(resourceSegments[lastIdx-1])
 			result.IsNested = true
 		}
 	}
+}
+
+// Extract extracts resource information from an API path and operation.
+func (e *ResourceExtractor) Extract(path string, operation *openapi3.Operation) *ExtractResult {
+	result := &ExtractResult{}
+
+	if e.extractFromExtension(operation, result) {
+		return result
+	}
+
+	segments := e.parsePathSegments(path)
+	result.PathParams = e.extractPathParams(segments)
+	resourceSegments := e.findResourceSegments(segments)
+
+	e.extractResourceFromSegments(resourceSegments, result)
 
 	return result
 }

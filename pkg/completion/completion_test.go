@@ -39,6 +39,22 @@ func writeTestSpec(t *testing.T) string {
 	return specPath
 }
 
+func setupProviderWithApp(t *testing.T) *Provider {
+	t.Helper()
+
+	configMgr, specParser, mapper := setupTestEnv(t)
+	provider := NewProvider(configMgr, specParser, mapper)
+
+	testSpec := writeTestSpec(t)
+	_, err := configMgr.InstallApp("testapp", config.InstallOptions{
+		SpecSource: testSpec,
+		BaseURL:    "https://api.test.com",
+	})
+	require.NoError(t, err)
+
+	return provider
+}
+
 func TestCompleteAppNames(t *testing.T) {
 	// Setup
 	configMgr, specParser, mapper := setupTestEnv(t)
@@ -78,68 +94,50 @@ func TestCompleteAppNames(t *testing.T) {
 	})
 }
 
-func TestCompleteVerbs(t *testing.T) {
-	// Setup
-	configMgr, specParser, mapper := setupTestEnv(t)
+func TestCompleteVerbsAndResources(t *testing.T) {
+	provider := setupProviderWithApp(t)
 
-	provider := NewProvider(configMgr, specParser, mapper)
+	type testCase struct {
+		name         string
+		listFn       func(prefix string) []string
+		mustContain  string
+		prefix       string
+		prefixLetter byte
+	}
 
-	// Install test app
-	testSpec := writeTestSpec(t)
-	_, err := configMgr.InstallApp("testapp", config.InstallOptions{
-		SpecSource: testSpec,
-		BaseURL:    "https://api.test.com",
-	})
-	require.NoError(t, err)
+	cases := []testCase{
+		{
+			name:         "verbs",
+			listFn:       func(prefix string) []string { return provider.CompleteVerbs("testapp", prefix) },
+			mustContain:  "list",
+			prefix:       "l",
+			prefixLetter: 'l',
+		},
+		{
+			name:         "resources",
+			listFn:       func(prefix string) []string { return provider.CompleteResources("testapp", prefix) },
+			mustContain:  "users",
+			prefix:       "u",
+			prefixLetter: 'u',
+		},
+	}
 
-	// Test completion
-	t.Run("List all verbs", func(t *testing.T) {
-		verbs := provider.CompleteVerbs("testapp", "")
-		assert.NotEmpty(t, verbs)
-		// Should contain common verbs like list, get, create
-		assert.Contains(t, verbs, "list")
-	})
+	for _, tc := range cases {
+		tc := tc
+		t.Run("List_"+tc.name, func(t *testing.T) {
+			items := tc.listFn("")
+			assert.NotEmpty(t, items)
+			assert.Contains(t, items, tc.mustContain)
+		})
 
-	t.Run("Filter verbs by prefix", func(t *testing.T) {
-		verbs := provider.CompleteVerbs("testapp", "l")
-		assert.NotEmpty(t, verbs)
-		// All returned verbs should start with 'l'
-		for _, verb := range verbs {
-			assert.True(t, len(verb) > 0 && verb[0] == 'l')
-		}
-	})
-}
-
-func TestCompleteResources(t *testing.T) {
-	// Setup
-	configMgr, specParser, mapper := setupTestEnv(t)
-
-	provider := NewProvider(configMgr, specParser, mapper)
-
-	// Install test app
-	testSpec := writeTestSpec(t)
-	_, err := configMgr.InstallApp("testapp", config.InstallOptions{
-		SpecSource: testSpec,
-		BaseURL:    "https://api.test.com",
-	})
-	require.NoError(t, err)
-
-	// Test completion
-	t.Run("List all resources", func(t *testing.T) {
-		resources := provider.CompleteResources("testapp", "")
-		assert.NotEmpty(t, resources)
-		// Should contain 'users' resource from test spec
-		assert.Contains(t, resources, "users")
-	})
-
-	t.Run("Filter resources by prefix", func(t *testing.T) {
-		resources := provider.CompleteResources("testapp", "u")
-		assert.NotEmpty(t, resources)
-		// All returned resources should start with 'u'
-		for _, resource := range resources {
-			assert.True(t, len(resource) > 0 && resource[0] == 'u')
-		}
-	})
+		t.Run("Filter_"+tc.name, func(t *testing.T) {
+			items := tc.listFn(tc.prefix)
+			assert.NotEmpty(t, items)
+			for _, item := range items {
+				assert.True(t, len(item) > 0 && item[0] == tc.prefixLetter)
+			}
+		})
+	}
 }
 
 func TestCompleteResourcesForVerb(t *testing.T) {
