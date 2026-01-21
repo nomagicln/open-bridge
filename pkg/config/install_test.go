@@ -71,8 +71,13 @@ paths:
 		t.Errorf("expected description 'Test API application', got '%s'", config.Description)
 	}
 
-	if config.SpecSource != specPath {
-		t.Errorf("expected spec source '%s', got '%s'", specPath, config.SpecSource)
+	absSpecPath, err := filepath.Abs(specPath)
+	if err != nil {
+		t.Fatalf("filepath.Abs failed: %v", err)
+	}
+
+	if config.SpecSource != absSpecPath {
+		t.Errorf("expected spec source '%s', got '%s'", absSpecPath, config.SpecSource)
 	}
 
 	// Verify default profile was created with base URL from spec
@@ -241,7 +246,10 @@ paths: {}
 		t.Errorf("expected app name 'testapi', got '%s'", result.AppName)
 	}
 
-	config, _ := m.GetAppConfig("testapi")
+	config, err := m.GetAppConfig("testapi")
+	if err != nil {
+		t.Fatalf("GetAppConfig failed: %v", err)
+	}
 
 	// Description should be from explicit option
 	if config.Description != "Custom Description" {
@@ -296,8 +304,13 @@ paths: {}
 		t.Fatalf("promptForMissingInfo failed: %v", err)
 	}
 
-	if opts.SpecSource != specPath {
-		t.Errorf("expected spec source '%s', got '%s'", specPath, opts.SpecSource)
+	absSpecPath, err := filepath.Abs(specPath)
+	if err != nil {
+		t.Fatalf("filepath.Abs failed: %v", err)
+	}
+
+	if opts.SpecSource != absSpecPath {
+		t.Errorf("expected spec source '%s', got '%s'", absSpecPath, opts.SpecSource)
 	}
 
 	// Description and AuthType should remain as pre-set since they were already provided
