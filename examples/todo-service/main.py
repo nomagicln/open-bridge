@@ -414,12 +414,24 @@ def list_todos(
     if has_subtasks is not None:
         result = [t for t in result if bool(t.subtasks) == has_subtasks]
     if is_overdue is not None:
-        result = [
-            t
-            for t in result
-            if (t.due_date and t.due_date < now and t.status != Status.COMPLETED)
-            == is_overdue
-        ]
+        if is_overdue:
+            # Overdue: has a due date, is past due, and not completed
+            result = [
+                t
+                for t in result
+                if t.due_date is not None
+                and t.due_date < now
+                and t.status != Status.COMPLETED
+            ]
+        else:
+            # Not overdue (but with a due date): either due in future or completed.
+            # Excludes items without a due date from this filter.
+            result = [
+                t
+                for t in result
+                if t.due_date is not None
+                and not (t.due_date < now and t.status != Status.COMPLETED)
+            ]
 
     # Sort
     # Use a far-future date as fallback for items without due_date (safer than datetime.max)
