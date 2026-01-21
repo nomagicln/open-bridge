@@ -241,11 +241,12 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 }
 
 // normalizeSpecSource resolves local spec paths to absolute paths and preserves HTTP URLs.
+// It does not validate that the file exists; loading the spec handles that validation.
 func normalizeSpecSource(source string) (string, error) {
 	if source == "" {
 		return "", nil
 	}
-	if isHTTPURL(source) {
+	if isWebURL(source) {
 		return source, nil
 	}
 	absPath, err := filepath.Abs(source)
@@ -268,7 +269,8 @@ func normalizeSpecSources(sources []string) ([]string, error) {
 	return normalized, nil
 }
 
-func isHTTPURL(source string) bool {
+// isWebURL checks for HTTP(S) URLs.
+func isWebURL(source string) bool {
 	parsed, err := url.Parse(source)
 	if err != nil {
 		return false
