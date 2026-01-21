@@ -31,11 +31,16 @@
 
 ## 提交前检查（强制）
 
-**每次提交代码前必须执行：**
+**在执行 `make fmt-fix` 和 `make lint-fix` 前，必须先安装必要工具：**
 
 ```bash
 go install golang.org/x/tools/cmd/goimports@latest
 make install-lint
+```
+
+**每次提交代码前必须执行：**
+
+```bash
 make fmt-fix    # 格式化代码（含 interface{} → any 转换）
 make lint-fix   # 自动修复 lint 问题
 make test       # 运行全部测试（含 race 检测）
