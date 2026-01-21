@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,16 +130,31 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 	// Load and validate the spec
 	parser := spec.NewParser()
 	specSource := opts.SpecSource
-	if specSource == "" && len(opts.SpecSources) > 0 {
-		specSource = opts.SpecSources[0]
+	specSources := opts.SpecSources
+	var err error
+	if specSource != "" {
+		specSource, err = normalizeSpecSource(specSource)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(specSources) > 0 {
+		specSources, err = normalizeSpecSources(specSources)
+		if err != nil {
+			return nil, err
+		}
+	}
+	primarySource := specSource
+	if primarySource == "" && len(specSources) > 0 {
+		primarySource = specSources[0]
 	}
 
-	specDoc, err := parser.LoadSpec(specSource)
+	specDoc, err := parser.LoadSpec(primarySource)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load spec: %w", err)
 	}
 
-	specInfo := spec.GetSpecInfo(specDoc, specSource)
+	specInfo := spec.GetSpecInfo(specDoc, primarySource)
 
 	// Determine base URL
 	baseURL := opts.BaseURL
@@ -166,8 +182,8 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 	now := time.Now()
 	config := &AppConfig{
 		Name:           appName,
-		SpecSource:     opts.SpecSource,
-		SpecSources:    opts.SpecSources,
+		SpecSource:     specSource,
+		SpecSources:    specSources,
 		Description:    opts.Description,
 		DefaultProfile: "default",
 		Version:        "1.0",
@@ -224,6 +240,44 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 	return result, nil
 }
 
+// normalizeSpecSource resolves local spec paths to absolute paths and preserves HTTP URLs.
+// It does not validate that the file exists; loading the spec fails later if the path is invalid.
+func normalizeSpecSource(source string) (string, error) {
+	if source == "" {
+		return "", nil
+	}
+	if isWebURL(source) {
+		return source, nil
+	}
+	absPath, err := filepath.Abs(source)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve spec path: %w", err)
+	}
+	return absPath, nil
+}
+
+// normalizeSpecSources resolves local spec paths to absolute paths and preserves HTTP URLs.
+func normalizeSpecSources(sources []string) ([]string, error) {
+	normalized := make([]string, 0, len(sources))
+	for _, source := range sources {
+		value, err := normalizeSpecSource(source)
+		if err != nil {
+			return nil, err
+		}
+		normalized = append(normalized, value)
+	}
+	return normalized, nil
+}
+
+// isWebURL checks for HTTP/HTTPS URLs only.
+func isWebURL(source string) bool {
+	parsed, err := url.Parse(source)
+	if err != nil {
+		return false
+	}
+	return parsed.Scheme == "http" || parsed.Scheme == "https"
+}
+
 // promptForMissingInfo prompts the user for missing installation information.
 func (m *Manager) promptForMissingInfo(opts InstallOptions) (InstallOptions, error) {
 	reader := opts.Reader
@@ -239,6 +293,22 @@ func (m *Manager) promptForMissingInfo(opts InstallOptions) (InstallOptions, err
 			return opts, fmt.Errorf("spec source is required")
 		}
 		opts.SpecSource = source
+	}
+
+	if opts.SpecSource != "" {
+		source, err := normalizeSpecSource(opts.SpecSource)
+		if err != nil {
+			return opts, err
+		}
+		opts.SpecSource = source
+	}
+
+	if len(opts.SpecSources) > 0 {
+		sources, err := normalizeSpecSources(opts.SpecSources)
+		if err != nil {
+			return opts, err
+		}
+		opts.SpecSources = sources
 	}
 
 	// Prompt for description if not provided
@@ -327,7 +397,7 @@ func (m *Manager) CreateShim(appName, shimDir string) (string, error) {
 		// Create batch file on Windows
 		shimPath = filepath.Join(shimDir, appName+".cmd")
 		shimContent = fmt.Sprintf(`@echo off
-"%s" %s %%%%*
+"%s" run %s %%*
 `, obPath, appName)
 
 	default:
@@ -607,10 +677,18 @@ func (m *Manager) UpdateApp(appName string, opts InstallOptions) error {
 
 	// Update spec source if provided
 	if opts.SpecSource != "" {
-		config.SpecSource = opts.SpecSource
+		normalized, err := normalizeSpecSource(opts.SpecSource)
+		if err != nil {
+			return err
+		}
+		config.SpecSource = normalized
 	}
 	if len(opts.SpecSources) > 0 {
-		config.SpecSources = opts.SpecSources
+		normalized, err := normalizeSpecSources(opts.SpecSources)
+		if err != nil {
+			return err
+		}
+		config.SpecSources = normalized
 	}
 
 	// Update description if provided
