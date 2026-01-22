@@ -286,17 +286,29 @@ func (m *Manager) IsInitialized() bool {
 }
 
 // buildKey constructs the keyring key from app and profile names.
+// Uses double underscore as separator for cross-platform compatibility
+// (Windows doesn't allow colons in filenames when using file backend).
 func buildKey(appName, profileName string) string {
-	return fmt.Sprintf("%s:%s:%s", KeyringPrefix, appName, profileName)
+	return fmt.Sprintf("%s__%s__%s", KeyringPrefix, appName, profileName)
 }
 
 // parseKey extracts app and profile names from a keyring key.
+// Supports both old format (with colons) and new format (with double underscores)
+// for backward compatibility.
 func parseKey(key string) (appName, profileName string, ok bool) {
-	parts := strings.SplitN(key, ":", 3)
-	if len(parts) != 3 || parts[0] != KeyringPrefix {
-		return "", "", false
+	// Try new format first (double underscore)
+	parts := strings.SplitN(key, "__", 3)
+	if len(parts) == 3 && parts[0] == KeyringPrefix {
+		return parts[1], parts[2], true
 	}
-	return parts[1], parts[2], true
+
+	// Fall back to old format (colon) for backward compatibility
+	parts = strings.SplitN(key, ":", 3)
+	if len(parts) == 3 && parts[0] == KeyringPrefix {
+		return parts[1], parts[2], true
+	}
+
+	return "", "", false
 }
 
 // StoreCredential stores a credential in the keyring.

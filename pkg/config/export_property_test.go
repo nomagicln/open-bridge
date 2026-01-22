@@ -134,8 +134,10 @@ func TestPropertyProfileImportValidation(t *testing.T) {
 				return true
 			}
 
-			// Import it back (should succeed for valid data)
-			err = m.ImportProfileWithOptions(appName, data, ImportOptions{})
+			// Import it back with a new profile name (should succeed for valid data)
+			err = m.ImportProfileWithOptions(appName, data, ImportOptions{
+				TargetProfileName: profileName,
+			})
 
 			// Clean up
 			_ = m.UninstallApp(appName, false)

@@ -176,7 +176,7 @@ func TestCredentialGetAuthValue(t *testing.T) {
 
 func TestBuildKey(t *testing.T) {
 	key := buildKey("myapp", "prod")
-	expected := "ob:myapp:prod"
+	expected := "ob__myapp__prod"
 
 	if key != expected {
 		t.Errorf("expected key %s, got %s", expected, key)
@@ -190,10 +190,16 @@ func TestParseKey(t *testing.T) {
 		wantProfile string
 		wantOK      bool
 	}{
+		// New format (double underscore) - Windows compatible
+		{"ob__myapp__prod", "myapp", "prod", true},
+		{"ob__app__profile", "app", "profile", true},
+		// Old format (colon) - backward compatibility
 		{"ob:myapp:prod", "myapp", "prod", true},
 		{"ob:app:profile", "app", "profile", true},
+		// Invalid formats
 		{"invalid:key", "", "", false},
 		{"ob:only", "", "", false},
+		{"ob__only", "", "", false},
 		{"", "", "", false},
 	}
 
