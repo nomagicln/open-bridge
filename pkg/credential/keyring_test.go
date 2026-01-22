@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/99designs/keyring"
 	"github.com/stretchr/testify/require"
 )
 
@@ -175,7 +176,7 @@ func TestCredentialGetAuthValue(t *testing.T) {
 
 func TestBuildKey(t *testing.T) {
 	key := buildKey("myapp", "prod")
-	expected := "ob:myapp:prod"
+	expected := "ob__myapp__prod"
 
 	if key != expected {
 		t.Errorf("expected key %s, got %s", expected, key)
@@ -189,10 +190,16 @@ func TestParseKey(t *testing.T) {
 		wantProfile string
 		wantOK      bool
 	}{
+		// New format (double underscore) - Windows compatible
+		{"ob__myapp__prod", "myapp", "prod", true},
+		{"ob__app__profile", "app", "profile", true},
+		// Old format (colon) - backward compatibility
 		{"ob:myapp:prod", "myapp", "prod", true},
 		{"ob:app:profile", "app", "profile", true},
+		// Invalid formats
 		{"invalid:key", "", "", false},
 		{"ob:only", "", "", false},
+		{"ob__only", "", "", false},
 		{"", "", "", false},
 	}
 
@@ -521,4 +528,118 @@ func isCI() bool {
 		}
 	}
 	return false
+}
+
+func TestGetDefaultKeyringDir(t *testing.T) {
+	// Test that getDefaultKeyringDir returns a valid path without errors
+	dir, err := getDefaultKeyringDir()
+	require.NoError(t, err)
+	require.NotEmpty(t, dir)
+
+	// Verify it's an absolute path
+	if !isAbsPath(dir) {
+		t.Errorf("expected absolute path, got: %s", dir)
+	}
+}
+
+// isAbsPath checks if a path is absolute (cross-platform)
+func isAbsPath(path string) bool {
+	if len(path) == 0 {
+		return false
+	}
+	// Unix absolute paths start with /
+	if path[0] == '/' {
+		return true
+	}
+	// Windows absolute paths can start with C:\ or similar
+	if len(path) >= 2 && path[1] == ':' {
+		return true
+	}
+	return false
+}
+
+func TestDetectBackend(t *testing.T) {
+	backend := detectBackend()
+
+	// Verify backend is valid based on platform
+	switch runtime.GOOS {
+	case "darwin":
+		if backend != BackendKeychain {
+			t.Errorf("expected BackendKeychain on darwin, got %s", backend)
+		}
+	case "windows":
+		if backend != BackendWinCred {
+			t.Errorf("expected BackendWinCred on windows, got %s", backend)
+		}
+	case "linux":
+		if backend != BackendSecretService {
+			t.Errorf("expected BackendSecretService on linux, got %s", backend)
+		}
+	default:
+		if backend != BackendFile {
+			t.Errorf("expected BackendFile on unknown platform, got %s", backend)
+		}
+	}
+}
+
+func TestWithAllowedBackends(t *testing.T) {
+	cfg := &managerConfig{}
+
+	opt := WithAllowedBackends(keyring.KeychainBackend, keyring.FileBackend)
+	opt(cfg)
+
+	require.Len(t, cfg.allowedBackends, 2)
+}
+
+func TestWithFileBackend(t *testing.T) {
+	cfg := &managerConfig{}
+
+	passwordFn := func(s string) (string, error) { return "password", nil }
+	opt := WithFileBackend("/tmp/test", passwordFn)
+	opt(cfg)
+
+	require.Equal(t, "/tmp/test", cfg.fileDir)
+	require.NotNil(t, cfg.filePasswordFn)
+}
+
+func TestWithPassBackend(t *testing.T) {
+	cfg := &managerConfig{}
+
+	opt := WithPassBackend("/tmp/pass", "pass", "ob")
+	opt(cfg)
+
+	require.Equal(t, "/tmp/pass", cfg.passDir)
+	require.Equal(t, "pass", cfg.passCmd)
+	require.Equal(t, "ob", cfg.passPrefix)
+}
+
+func TestBuildKeyringConfig(t *testing.T) {
+	cfg := &managerConfig{
+		passDir:    "/tmp/pass",
+		passCmd:    "pass",
+		passPrefix: "ob",
+	}
+
+	passwordFn := func(s string) (string, error) { return "test", nil }
+
+	result := buildKeyringConfig(cfg, "/tmp/keyring", passwordFn)
+
+	require.Equal(t, ServiceName, result.ServiceName)
+	require.Equal(t, "/tmp/pass", result.PassDir)
+	require.Equal(t, "pass", result.PassCmd)
+	require.Equal(t, "ob", result.PassPrefix)
+	require.Equal(t, "/tmp/keyring", result.FileDir)
+	require.NotNil(t, result.FilePasswordFunc)
+}
+
+func TestBuildKeyringConfigWithAllowedBackends(t *testing.T) {
+	cfg := &managerConfig{
+		allowedBackends: []keyring.BackendType{keyring.FileBackend, keyring.KeychainBackend},
+	}
+
+	passwordFn := func(s string) (string, error) { return "test", nil }
+
+	result := buildKeyringConfig(cfg, "/tmp/keyring", passwordFn)
+
+	require.Len(t, result.AllowedBackends, 2)
 }

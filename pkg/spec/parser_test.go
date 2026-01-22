@@ -571,3 +571,834 @@ func TestLoadSpecWithContextCanceled(t *testing.T) {
 		t.Error("expected error for canceled context")
 	}
 }
+
+// =============================================================================
+// Complex OpenAPI 3.x Tests
+// =============================================================================
+
+func TestLoadComplexOpenAPI3Spec(t *testing.T) {
+	// Load the complex OpenAPI 3.x spec from testdata
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "complex_openapi3.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load complex OpenAPI 3.x spec: %v", err)
+	}
+
+	// Verify basic info
+	if spec.Info.Title != "Complex API for Testing" {
+		t.Errorf("expected title 'Complex API for Testing', got '%s'", spec.Info.Title)
+	}
+
+	if spec.Info.Version != "1.0.0" {
+		t.Errorf("expected version '1.0.0', got '%s'", spec.Info.Version)
+	}
+}
+
+func TestComplexOpenAPI3MultipleServers(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "complex_openapi3.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify multiple servers
+	if len(spec.Servers) != 3 {
+		t.Errorf("expected 3 servers, got %d", len(spec.Servers))
+	}
+
+	expectedServers := []struct {
+		url         string
+		description string
+	}{
+		{"https://api.example.com/v1", "Production server"},
+		{"https://staging.example.com/v1", "Staging server"},
+		{"http://localhost:8080/v1", "Local development"},
+	}
+
+	for i, expected := range expectedServers {
+		if i >= len(spec.Servers) {
+			break
+		}
+		if spec.Servers[i].URL != expected.url {
+			t.Errorf("server[%d] URL: expected '%s', got '%s'", i, expected.url, spec.Servers[i].URL)
+		}
+		if spec.Servers[i].Description != expected.description {
+			t.Errorf("server[%d] description: expected '%s', got '%s'", i, expected.description, spec.Servers[i].Description)
+		}
+	}
+}
+
+func TestComplexOpenAPI3AllOfSchema(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "complex_openapi3.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify Pet schema uses allOf
+	petSchema := spec.Components.Schemas["Pet"]
+	if petSchema == nil {
+		t.Fatal("Pet schema not found")
+	}
+
+	if len(petSchema.Value.AllOf) == 0 {
+		t.Error("Pet schema should have allOf composition")
+	}
+
+	// Verify Owner schema also uses allOf with nested $ref
+	ownerSchema := spec.Components.Schemas["Owner"]
+	if ownerSchema == nil {
+		t.Fatal("Owner schema not found")
+	}
+
+	if len(ownerSchema.Value.AllOf) == 0 {
+		t.Error("Owner schema should have allOf composition")
+	}
+}
+
+func TestComplexOpenAPI3OneOfSchema(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "complex_openapi3.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify Animal schema uses oneOf with discriminator
+	animalSchema := spec.Components.Schemas["Animal"]
+	if animalSchema == nil {
+		t.Fatal("Animal schema not found")
+	}
+
+	if len(animalSchema.Value.OneOf) == 0 {
+		t.Error("Animal schema should have oneOf composition")
+	}
+
+	// Verify discriminator
+	if animalSchema.Value.Discriminator == nil {
+		t.Error("Animal schema should have discriminator")
+	} else {
+		if animalSchema.Value.Discriminator.PropertyName != "animalType" {
+			t.Errorf("expected discriminator property 'animalType', got '%s'",
+				animalSchema.Value.Discriminator.PropertyName)
+		}
+
+		if len(animalSchema.Value.Discriminator.Mapping) != 3 {
+			t.Errorf("expected 3 discriminator mappings, got %d",
+				len(animalSchema.Value.Discriminator.Mapping))
+		}
+	}
+}
+
+func TestComplexOpenAPI3AnyOfSchema(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "complex_openapi3.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify Vehicle schema uses anyOf
+	vehicleSchema := spec.Components.Schemas["Vehicle"]
+	if vehicleSchema == nil {
+		t.Fatal("Vehicle schema not found")
+	}
+
+	if len(vehicleSchema.Value.AnyOf) == 0 {
+		t.Error("Vehicle schema should have anyOf composition")
+	}
+
+	// Should have 3 vehicle types
+	if len(vehicleSchema.Value.AnyOf) != 3 {
+		t.Errorf("expected 3 anyOf schemas, got %d", len(vehicleSchema.Value.AnyOf))
+	}
+}
+
+func TestComplexOpenAPI3SecuritySchemes(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "complex_openapi3.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify security schemes exist
+	if spec.Components.SecuritySchemes == nil {
+		t.Fatal("SecuritySchemes not found")
+	}
+
+	expectedSchemes := []string{
+		"bearerAuth",
+		"basicAuth",
+		"apiKeyHeader",
+		"apiKeyQuery",
+		"apiKeyCookie",
+		"oauth2",
+	}
+
+	for _, name := range expectedSchemes {
+		scheme := spec.Components.SecuritySchemes[name]
+		if scheme == nil {
+			t.Errorf("security scheme '%s' not found", name)
+			continue
+		}
+
+		switch name {
+		case "bearerAuth":
+			if scheme.Value.Type != "http" || scheme.Value.Scheme != "bearer" {
+				t.Errorf("bearerAuth: expected type=http, scheme=bearer")
+			}
+		case "basicAuth":
+			if scheme.Value.Type != "http" || scheme.Value.Scheme != "basic" {
+				t.Errorf("basicAuth: expected type=http, scheme=basic")
+			}
+		case "apiKeyHeader":
+			if scheme.Value.Type != "apiKey" || scheme.Value.In != "header" {
+				t.Errorf("apiKeyHeader: expected type=apiKey, in=header")
+			}
+		case "apiKeyQuery":
+			if scheme.Value.Type != "apiKey" || scheme.Value.In != "query" {
+				t.Errorf("apiKeyQuery: expected type=apiKey, in=query")
+			}
+		case "apiKeyCookie":
+			if scheme.Value.Type != "apiKey" || scheme.Value.In != "cookie" {
+				t.Errorf("apiKeyCookie: expected type=apiKey, in=cookie")
+			}
+		case "oauth2":
+			if scheme.Value.Type != "oauth2" {
+				t.Errorf("oauth2: expected type=oauth2")
+			}
+			if scheme.Value.Flows == nil {
+				t.Error("oauth2: flows should not be nil")
+			}
+		default:
+			t.Errorf("unexpected security scheme: %s", name)
+		}
+	}
+}
+
+func TestComplexOpenAPI3ParameterLocations(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "complex_openapi3.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Check GET /pets parameters
+	petsPath := spec.Paths.Find("/pets")
+	if petsPath == nil {
+		t.Fatal("/pets path not found")
+	}
+
+	getOp := petsPath.Get
+	if getOp == nil {
+		t.Fatal("GET /pets operation not found")
+	}
+
+	// Verify we have query, header, and cookie parameters
+	paramLocations := make(map[string]bool)
+	for _, param := range getOp.Parameters {
+		paramLocations[param.Value.In] = true
+	}
+
+	expectedLocations := []string{"query", "header", "cookie"}
+	for _, loc := range expectedLocations {
+		if !paramLocations[loc] {
+			t.Errorf("expected parameter in '%s' location", loc)
+		}
+	}
+
+	// Check path parameter in /pets/{petId}
+	petByIdPath := spec.Paths.Find("/pets/{petId}")
+	if petByIdPath == nil {
+		t.Fatal("/pets/{petId} path not found")
+	}
+
+	// Path-level parameters
+	hasPathParam := false
+	for _, param := range petByIdPath.Parameters {
+		if param.Value.In == "path" && param.Value.Name == "petId" {
+			hasPathParam = true
+			if !param.Value.Required {
+				t.Error("path parameter should be required")
+			}
+		}
+	}
+	if !hasPathParam {
+		t.Error("expected path parameter 'petId'")
+	}
+}
+
+func TestComplexOpenAPI3MultipleContentTypes(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "complex_openapi3.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Check POST /pets requestBody
+	petsPath := spec.Paths.Find("/pets")
+	if petsPath == nil {
+		t.Fatal("/pets path not found")
+	}
+
+	postOp := petsPath.Post
+	if postOp == nil || postOp.RequestBody == nil {
+		t.Fatal("POST /pets operation or requestBody not found")
+	}
+
+	content := postOp.RequestBody.Value.Content
+	expectedContentTypes := []string{
+		"application/json",
+		"application/x-www-form-urlencoded",
+		"multipart/form-data",
+	}
+
+	for _, ct := range expectedContentTypes {
+		if content[ct] == nil {
+			t.Errorf("expected content type '%s' in requestBody", ct)
+		}
+	}
+}
+
+func TestComplexOpenAPI3ResponseHeaders(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "complex_openapi3.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Check GET /pets response headers
+	petsPath := spec.Paths.Find("/pets")
+	if petsPath == nil {
+		t.Fatal("/pets path not found")
+	}
+
+	getOp := petsPath.Get
+	if getOp == nil {
+		t.Fatal("GET /pets operation not found")
+	}
+
+	resp200 := getOp.Responses.Status(200)
+	if resp200 == nil {
+		t.Fatal("200 response not found")
+	}
+
+	expectedHeaders := []string{"X-Total-Count", "X-Rate-Limit-Remaining"}
+	for _, h := range expectedHeaders {
+		if resp200.Value.Headers[h] == nil {
+			t.Errorf("expected response header '%s'", h)
+		}
+	}
+}
+
+func TestComplexOpenAPI3NestedRefs(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "complex_openapi3.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify nested $ref chain: Pet -> Owner -> Address
+	petSchema := spec.Components.Schemas["Pet"]
+	if petSchema == nil {
+		t.Fatal("Pet schema not found")
+	}
+
+	ownerSchema := spec.Components.Schemas["Owner"]
+	if ownerSchema == nil {
+		t.Fatal("Owner schema not found")
+	}
+
+	addressSchema := spec.Components.Schemas["Address"]
+	if addressSchema == nil {
+		t.Fatal("Address schema not found")
+	}
+
+	// Address should have expected properties
+	addressProps := addressSchema.Value.Properties
+	expectedProps := []string{"street", "city", "country", "postalCode"}
+	for _, prop := range expectedProps {
+		if addressProps[prop] == nil {
+			t.Errorf("Address schema missing property '%s'", prop)
+		}
+	}
+}
+
+func TestComplexOpenAPI3SharedResponses(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "complex_openapi3.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify shared responses in components
+	if spec.Components.Responses == nil {
+		t.Fatal("Components.Responses not found")
+	}
+
+	expectedResponses := []string{"BadRequest", "Unauthorized", "NotFound", "InternalError"}
+	for _, name := range expectedResponses {
+		if spec.Components.Responses[name] == nil {
+			t.Errorf("shared response '%s' not found", name)
+		}
+	}
+}
+
+// =============================================================================
+// Swagger 2.0 (OpenAPI 2.x) Tests
+// =============================================================================
+
+func TestLoadSwagger20Spec(t *testing.T) {
+	// Load the Swagger 2.0 spec from testdata
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load Swagger 2.0 spec: %v", err)
+	}
+
+	// Verify basic info (should be preserved after conversion)
+	if spec.Info.Title != "Swagger 2.0 Pet Store" {
+		t.Errorf("expected title 'Swagger 2.0 Pet Store', got '%s'", spec.Info.Title)
+	}
+
+	if spec.Info.Version != "1.0.0" {
+		t.Errorf("expected version '1.0.0', got '%s'", spec.Info.Version)
+	}
+
+	if spec.Info.Description == "" {
+		t.Error("description should not be empty after conversion")
+	}
+}
+
+func TestSwagger20ServerConversion(t *testing.T) {
+	// Swagger 2.0 host + basePath + schemes should be converted to servers
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// After conversion, servers should be populated from host/basePath/schemes
+	if len(spec.Servers) == 0 {
+		t.Error("expected at least one server after conversion from Swagger 2.0")
+	}
+
+	// The first server should contain the host and basePath
+	if len(spec.Servers) > 0 {
+		serverURL := spec.Servers[0].URL
+		// Should contain the host "api.petstore.example.com" and basePath "/v1"
+		if serverURL == "" {
+			t.Error("server URL should not be empty")
+		}
+	}
+}
+
+func TestSwagger20DefinitionsConversion(t *testing.T) {
+	// Swagger 2.0 definitions should be converted to components/schemas
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify schemas exist in components
+	if spec.Components == nil || spec.Components.Schemas == nil {
+		t.Fatal("Components.Schemas not found after conversion")
+	}
+
+	expectedSchemas := []string{"Pet", "NewPet", "UpdatePet", "Category", "Tag", "Order", "User", "Error"}
+	for _, name := range expectedSchemas {
+		if spec.Components.Schemas[name] == nil {
+			t.Errorf("schema '%s' not found after conversion", name)
+		}
+	}
+}
+
+func TestSwagger20SecurityDefinitionsConversion(t *testing.T) {
+	// Swagger 2.0 securityDefinitions should be converted to components/securitySchemes
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	if spec.Components == nil || spec.Components.SecuritySchemes == nil {
+		t.Fatal("Components.SecuritySchemes not found after conversion")
+	}
+
+	// Check api_key conversion
+	apiKey := spec.Components.SecuritySchemes["api_key"]
+	if apiKey == nil {
+		t.Error("api_key security scheme not found")
+	} else {
+		if apiKey.Value.Type != "apiKey" {
+			t.Errorf("expected api_key type 'apiKey', got '%s'", apiKey.Value.Type)
+		}
+		if apiKey.Value.In != "header" {
+			t.Errorf("expected api_key in 'header', got '%s'", apiKey.Value.In)
+		}
+	}
+
+	// Check basic_auth conversion
+	basicAuth := spec.Components.SecuritySchemes["basic_auth"]
+	if basicAuth == nil {
+		t.Error("basic_auth security scheme not found")
+	} else {
+		if basicAuth.Value.Type != "http" {
+			t.Errorf("expected basic_auth type 'http', got '%s'", basicAuth.Value.Type)
+		}
+		if basicAuth.Value.Scheme != "basic" {
+			t.Errorf("expected basic_auth scheme 'basic', got '%s'", basicAuth.Value.Scheme)
+		}
+	}
+
+	// Check oauth2 conversion
+	oauth2 := spec.Components.SecuritySchemes["oauth2"]
+	if oauth2 == nil {
+		t.Error("oauth2 security scheme not found")
+	} else {
+		if oauth2.Value.Type != "oauth2" {
+			t.Errorf("expected oauth2 type 'oauth2', got '%s'", oauth2.Value.Type)
+		}
+		if oauth2.Value.Flows == nil {
+			t.Error("oauth2 flows should not be nil")
+		}
+	}
+}
+
+func TestSwagger20PathsConversion(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify paths are preserved
+	expectedPaths := []string{
+		"/pets",
+		"/pets/{petId}",
+		"/pets/{petId}/photo",
+		"/store/orders",
+		"/store/orders/{orderId}",
+		"/users",
+		"/users/{username}",
+	}
+
+	for _, path := range expectedPaths {
+		if spec.Paths.Find(path) == nil {
+			t.Errorf("path '%s' not found after conversion", path)
+		}
+	}
+}
+
+func TestSwagger20OperationsConversion(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Check /pets operations
+	petsPath := spec.Paths.Find("/pets")
+	if petsPath == nil {
+		t.Fatal("/pets path not found")
+	}
+
+	if petsPath.Get == nil {
+		t.Error("GET /pets operation not found")
+	} else {
+		if petsPath.Get.OperationID != "listPets" {
+			t.Errorf("expected operationId 'listPets', got '%s'", petsPath.Get.OperationID)
+		}
+	}
+
+	if petsPath.Post == nil {
+		t.Error("POST /pets operation not found")
+	} else {
+		if petsPath.Post.OperationID != "createPet" {
+			t.Errorf("expected operationId 'createPet', got '%s'", petsPath.Post.OperationID)
+		}
+	}
+
+	// Check /pets/{petId} operations
+	petByIdPath := spec.Paths.Find("/pets/{petId}")
+	if petByIdPath == nil {
+		t.Fatal("/pets/{petId} path not found")
+	}
+
+	if petByIdPath.Get == nil {
+		t.Error("GET /pets/{petId} operation not found")
+	}
+	if petByIdPath.Put == nil {
+		t.Error("PUT /pets/{petId} operation not found")
+	}
+	if petByIdPath.Delete == nil {
+		t.Error("DELETE /pets/{petId} operation not found")
+	}
+}
+
+func TestSwagger20BodyParameterConversion(t *testing.T) {
+	// Swagger 2.0 body parameters should be converted to requestBody
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Check POST /pets has requestBody
+	petsPath := spec.Paths.Find("/pets")
+	if petsPath == nil {
+		t.Fatal("/pets path not found")
+	}
+
+	postOp := petsPath.Post
+	if postOp == nil {
+		t.Fatal("POST /pets operation not found")
+	}
+
+	if postOp.RequestBody == nil {
+		t.Error("POST /pets should have requestBody after conversion")
+	} else {
+		// Should have content
+		if len(postOp.RequestBody.Value.Content) == 0 {
+			t.Error("requestBody should have content")
+		}
+	}
+}
+
+func TestSwagger20FormDataConversion(t *testing.T) {
+	// Swagger 2.0 formData parameters should be converted to requestBody
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Check POST /pets/{petId}/photo (file upload)
+	photoPath := spec.Paths.Find("/pets/{petId}/photo")
+	if photoPath == nil {
+		t.Fatal("/pets/{petId}/photo path not found")
+	}
+
+	postOp := photoPath.Post
+	if postOp == nil {
+		t.Fatal("POST /pets/{petId}/photo operation not found")
+	}
+
+	if postOp.RequestBody == nil {
+		t.Error("file upload endpoint should have requestBody after conversion")
+	} else {
+		// Should have multipart/form-data content
+		if postOp.RequestBody.Value.Content["multipart/form-data"] == nil {
+			t.Error("file upload should have multipart/form-data content type")
+		}
+	}
+}
+
+func TestSwagger20ResponseConversion(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Check GET /pets response
+	petsPath := spec.Paths.Find("/pets")
+	if petsPath == nil {
+		t.Fatal("/pets path not found")
+	}
+
+	getOp := petsPath.Get
+	if getOp == nil {
+		t.Fatal("GET /pets operation not found")
+	}
+
+	resp200 := getOp.Responses.Status(200)
+	if resp200 == nil {
+		t.Fatal("200 response not found")
+	}
+
+	// Should have content after conversion
+	if len(resp200.Value.Content) == 0 {
+		t.Error("response should have content after conversion")
+	}
+
+	// Should have response headers
+	if resp200.Value.Headers == nil {
+		t.Error("response headers should be preserved")
+	} else if resp200.Value.Headers["X-Total-Count"] == nil {
+		t.Error("X-Total-Count header should be preserved")
+	}
+}
+
+func TestSwagger20ParameterConversion(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Check GET /pets parameters
+	petsPath := spec.Paths.Find("/pets")
+	if petsPath == nil {
+		t.Fatal("/pets path not found")
+	}
+
+	getOp := petsPath.Get
+	if getOp == nil {
+		t.Fatal("GET /pets operation not found")
+	}
+
+	// Should have query and header parameters (body parameter should become requestBody)
+	paramNames := make(map[string]string)
+	for _, param := range getOp.Parameters {
+		paramNames[param.Value.Name] = param.Value.In
+	}
+
+	// Verify query parameters
+	if loc, ok := paramNames["limit"]; !ok || loc != "query" {
+		t.Error("'limit' query parameter not found")
+	}
+	if loc, ok := paramNames["status"]; !ok || loc != "query" {
+		t.Error("'status' query parameter not found")
+	}
+
+	// Verify header parameter
+	if loc, ok := paramNames["X-Request-ID"]; !ok || loc != "header" {
+		t.Error("'X-Request-ID' header parameter not found")
+	}
+}
+
+func TestSwagger20SchemaPropertiesPreserved(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Check Pet schema properties are preserved
+	petSchema := spec.Components.Schemas["Pet"]
+	if petSchema == nil {
+		t.Fatal("Pet schema not found")
+	}
+
+	// Check required fields
+	requiredFound := make(map[string]bool)
+	for _, req := range petSchema.Value.Required {
+		requiredFound[req] = true
+	}
+
+	expectedRequired := []string{"id", "name"}
+	for _, req := range expectedRequired {
+		if !requiredFound[req] {
+			t.Errorf("Pet schema should have '%s' as required field", req)
+		}
+	}
+
+	// Check properties
+	expectedProps := []string{"id", "name", "category", "status", "tags", "createdAt"}
+	for _, prop := range expectedProps {
+		if petSchema.Value.Properties[prop] == nil {
+			t.Errorf("Pet schema missing property '%s'", prop)
+		}
+	}
+
+	// Check enum values are preserved
+	statusProp := petSchema.Value.Properties["status"]
+	if statusProp != nil && statusProp.Value.Enum != nil {
+		if len(statusProp.Value.Enum) != 3 {
+			t.Errorf("expected 3 enum values for status, got %d", len(statusProp.Value.Enum))
+		}
+	}
+}
+
+func TestSwagger20NestedRefsConversion(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify nested $refs are preserved: Pet -> Category, Pet -> Tag
+	petSchema := spec.Components.Schemas["Pet"]
+	if petSchema == nil {
+		t.Fatal("Pet schema not found")
+	}
+
+	// Category reference
+	categoryProp := petSchema.Value.Properties["category"]
+	if categoryProp == nil {
+		t.Error("Pet.category property not found")
+	}
+
+	// Tags reference (array of Tag)
+	tagsProp := petSchema.Value.Properties["tags"]
+	if tagsProp == nil {
+		t.Error("Pet.tags property not found")
+	}
+
+	// Verify Category schema exists
+	categorySchema := spec.Components.Schemas["Category"]
+	if categorySchema == nil {
+		t.Error("Category schema not found")
+	}
+
+	// Verify Tag schema exists
+	tagSchema := spec.Components.Schemas["Tag"]
+	if tagSchema == nil {
+		t.Error("Tag schema not found")
+	}
+}
+
+func TestSwagger20SpecInfo(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	info := GetSpecInfo(spec, specPath)
+	if info == nil {
+		t.Fatal("GetSpecInfo returned nil")
+	}
+
+	if info.Title != "Swagger 2.0 Pet Store" {
+		t.Errorf("expected title 'Swagger 2.0 Pet Store', got '%s'", info.Title)
+	}
+
+	if info.Version != "1.0.0" {
+		t.Errorf("expected version '1.0.0', got '%s'", info.Version)
+	}
+
+	// Should have multiple paths
+	if info.PathCount < 7 {
+		t.Errorf("expected at least 7 paths, got %d", info.PathCount)
+	}
+
+	// Should have multiple operations
+	if info.Operations < 10 {
+		t.Errorf("expected at least 10 operations, got %d", info.Operations)
+	}
+}

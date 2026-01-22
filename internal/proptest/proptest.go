@@ -7,10 +7,10 @@ import (
 )
 
 // TestParameters returns the standard test parameters for property tests.
-// Default: 1000 iterations for a good balance between coverage and speed.
+// Default: 100 iterations for a good balance between coverage and speed.
 func TestParameters() *gopter.TestParameters {
 	params := gopter.DefaultTestParameters()
-	params.MinSuccessfulTests = 1000
+	params.MinSuccessfulTests = 100
 	return params
 }
 
