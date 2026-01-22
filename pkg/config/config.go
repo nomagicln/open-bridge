@@ -188,6 +188,15 @@ type SafetyConfig struct {
 
 	// DangerousOperationPatterns are regex patterns for dangerous operations.
 	DangerousOperationPatterns []string `yaml:"dangerous_operation_patterns,omitempty"`
+
+	// ProgressiveDisclosure enables progressive tool disclosure mode.
+	// When enabled, only meta-tools (SearchTools, LoadTool, InvokeTool) are exposed
+	// instead of all API operations, reducing context usage for large APIs.
+	ProgressiveDisclosure bool `yaml:"progressive_disclosure,omitempty"`
+
+	// SearchEngine specifies the search engine type for progressive disclosure.
+	// Valid values: "sql" (default), "predicate", "vector".
+	SearchEngine string `yaml:"search_engine,omitempty"`
 }
 
 // RetryConfig represents retry configuration.

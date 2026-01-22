@@ -90,21 +90,7 @@ func parseToolArguments(req *mcp.CallToolRequest) (map[string]any, error) {
 
 // getActiveProfile returns the active profile name and configuration.
 func (h *Handler) getActiveProfile() (string, *config.Profile, error) {
-	if h.appConfig == nil {
-		return "", nil, fmt.Errorf("app configuration not set")
-	}
-
-	profileName := h.profileName
-	if profileName == "" {
-		profileName = h.appConfig.DefaultProfile
-	}
-
-	profile, ok := h.appConfig.GetProfile(profileName)
-	if !ok {
-		return "", nil, fmt.Errorf("profile '%s' not found", profileName)
-	}
-
-	return profileName, profile, nil
+	return getActiveProfile(h.appConfig, h.profileName)
 }
 
 // buildAndExecuteRequest builds and executes the HTTP request.
@@ -198,39 +184,9 @@ func (h *Handler) MapToolToOperation(toolName string) (*openapi3.Operation, stri
 	return nil, "", "", fmt.Errorf("operation not found for tool: %s", toolName)
 }
 
-// formatMCPResult formats an API response into MCP result format.
+// FormatMCPResult formats an API response into MCP result format.
 func (h *Handler) FormatMCPResult(statusCode int, bodyBytes []byte) *mcp.CallToolResult {
-	// Check for error status codes
-	isError := statusCode >= 400
-
-	// Try to parse as JSON
-	var bodyJSON any
-	if err := json.Unmarshal(bodyBytes, &bodyJSON); err != nil {
-		// Not JSON, return as text
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{
-					Text: string(bodyBytes),
-				},
-			},
-			IsError: isError,
-		}
-	}
-
-	// Format JSON response
-	prettyJSON, err := json.MarshalIndent(bodyJSON, "", "  ")
-	if err != nil {
-		prettyJSON = bodyBytes
-	}
-
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			&mcp.TextContent{
-				Text: string(prettyJSON),
-			},
-		},
-		IsError: isError,
-	}
+	return formatMCPResult(statusCode, bodyBytes)
 }
 
 // buildMCPTools converts OpenAPI operations to MCP tool definitions.
@@ -267,54 +223,9 @@ func (h *Handler) BuildMCPTools(spec *openapi3.T, safetyConfig *config.SafetyCon
 }
 
 // convertOperationToTool converts an OpenAPI operation to an MCP tool.
+// Delegates to the shared convertOperationToMCPTool function.
 func (h *Handler) convertOperationToTool(method, path string, op *openapi3.Operation) mcp.Tool {
-	// Use operationId as tool name, fallback to method+path
-	name := op.OperationID
-	if name == "" {
-		name = fmt.Sprintf("%s_%s", method, path)
-	}
-
-	// Build input schema from parameters and request body
-	inputSchema := map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
-		"required":   []string{},
-	}
-
-	properties := inputSchema["properties"].(map[string]any)
-	required := inputSchema["required"].([]string)
-
-	// Add parameters
-	for _, paramRef := range op.Parameters {
-		param := paramRef.Value
-		propSchema := map[string]any{
-			"type":        "string", // Default type
-			"description": param.Description,
-		}
-
-		if param.Schema != nil && param.Schema.Value != nil {
-			if param.Schema.Value.Type != nil {
-				types := *param.Schema.Value.Type
-				if len(types) > 0 {
-					propSchema["type"] = types[0]
-				}
-			}
-		}
-
-		properties[param.Name] = propSchema
-
-		if param.Required {
-			required = append(required, param.Name)
-		}
-	}
-
-	inputSchema["required"] = required
-
-	return mcp.Tool{
-		Name:        name,
-		Description: op.Summary,
-		InputSchema: inputSchema,
-	}
+	return convertOperationToMCPTool(method, path, op)
 }
 
 // isToolAllowed checks if a tool is allowed based on safety configuration.
