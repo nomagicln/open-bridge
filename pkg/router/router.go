@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/nomagicln/open-bridge/pkg/cli"
@@ -84,12 +85,7 @@ func (r *Router) detectAppName() string {
 
 // IsMCPMode checks if we should run in MCP server mode.
 func (r *Router) IsMCPMode(args []string) bool {
-	for _, arg := range args {
-		if arg == "--mcp" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(args, "--mcp")
 }
 
 // detectProfile detects the profile name from arguments.
@@ -100,8 +96,8 @@ func (r *Router) detectProfile(args []string) string {
 				return args[i+1]
 			}
 		}
-		if strings.HasPrefix(arg, "--profile=") {
-			return strings.TrimPrefix(arg, "--profile=")
+		if after, ok := strings.CutPrefix(arg, "--profile="); ok {
+			return after
 		}
 	}
 	return ""
@@ -134,8 +130,8 @@ func (r *Router) startMCPServer(appConfig *config.AppConfig, args []string) erro
 				transport = args[i+1]
 			}
 		}
-		if strings.HasPrefix(arg, "--transport=") {
-			transport = strings.TrimPrefix(arg, "--transport=")
+		if after, ok := strings.CutPrefix(arg, "--transport="); ok {
+			transport = after
 		}
 
 		// Port
@@ -144,8 +140,8 @@ func (r *Router) startMCPServer(appConfig *config.AppConfig, args []string) erro
 				port = args[i+1]
 			}
 		}
-		if strings.HasPrefix(arg, "--port=") {
-			port = strings.TrimPrefix(arg, "--port=")
+		if after, ok := strings.CutPrefix(arg, "--port="); ok {
+			port = after
 		}
 	}
 

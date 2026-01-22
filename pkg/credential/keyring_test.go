@@ -251,6 +251,10 @@ func TestGetPlatformInfo(t *testing.T) {
 		if info.RecommendedBackend != BackendSecretService {
 			t.Errorf("expected recommended backend %s, got %s", BackendSecretService, info.RecommendedBackend)
 		}
+
+	default:
+		// Other platforms - just verify basic info is populated
+		t.Logf("Unsupported platform %s, skipping platform-specific checks", runtime.GOOS)
 	}
 
 	// All platforms should have fallback available

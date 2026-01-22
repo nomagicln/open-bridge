@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -135,17 +136,13 @@ func (pm *ProfileManager) UpdateProfile(name string, opts ProfileOptions) error 
 		if profile.Headers == nil {
 			profile.Headers = make(map[string]string)
 		}
-		for k, v := range opts.Headers {
-			profile.Headers[k] = v
-		}
+		maps.Copy(profile.Headers, opts.Headers)
 	}
 	if opts.QueryParams != nil {
 		if profile.QueryParams == nil {
 			profile.QueryParams = make(map[string]string)
 		}
-		for k, v := range opts.QueryParams {
-			profile.QueryParams[k] = v
-		}
+		maps.Copy(profile.QueryParams, opts.QueryParams)
 	}
 	if opts.Timeout > 0 {
 		profile.Timeout = Duration{Duration: opts.Timeout}
@@ -243,15 +240,11 @@ func (pm *ProfileManager) CopyProfile(sourceName, destName string) error {
 	// Copy maps
 	if source.Headers != nil {
 		dest.Headers = make(map[string]string)
-		for k, v := range source.Headers {
-			dest.Headers[k] = v
-		}
+		maps.Copy(dest.Headers, source.Headers)
 	}
 	if source.QueryParams != nil {
 		dest.QueryParams = make(map[string]string)
-		for k, v := range source.QueryParams {
-			dest.QueryParams[k] = v
-		}
+		maps.Copy(dest.QueryParams, source.QueryParams)
 	}
 
 	pm.config.Profiles[destName] = dest

@@ -78,18 +78,17 @@ func TestPropertyCredentialRoundTrip(t *testing.T) {
 			}
 
 			// Verify values match based on type
-			valid := false
+			var valid bool
 			switch credType {
-			case CredentialTypeBearer:
-				valid = retrieved.Token == cred.Token
-			case CredentialTypeAPIKey:
-				valid = retrieved.Token == cred.Token
 			case CredentialTypeBasic:
 				valid = retrieved.Username == cred.Username && retrieved.Password == cred.Password
 			case CredentialTypeOAuth2:
 				valid = retrieved.AccessToken == cred.AccessToken &&
 					retrieved.RefreshToken == cred.RefreshToken &&
 					retrieved.TokenType == cred.TokenType
+			default:
+				// Bearer, APIKey, and unknown types - compare token field
+				valid = retrieved.Token == cred.Token
 			}
 
 			// Clean up after test

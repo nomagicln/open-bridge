@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -248,6 +249,8 @@ func createCredentialFromParams(authType string, params map[string]string) *cred
 		if user != "" || pass != "" {
 			return credential.NewBasicCredential(user, pass)
 		}
+	default:
+		// "none" or unknown auth type - no credential needed
 	}
 	return nil
 }
@@ -560,13 +563,7 @@ Example:
 			}
 
 			// Check for MCP mode
-			isMCPMode := false
-			for _, arg := range args[1:] {
-				if arg == "--mcp" {
-					isMCPMode = true
-					break
-				}
-			}
+			isMCPMode := slices.Contains(args[1:], "--mcp")
 
 			if isMCPMode {
 				// Start MCP server
@@ -614,8 +611,8 @@ func parseArgValue(arg string, args []string, i int, longFlag, shortFlag, curren
 			return args[i+1]
 		}
 	}
-	if strings.HasPrefix(arg, longFlag+"=") {
-		return strings.TrimPrefix(arg, longFlag+"=")
+	if after, ok := strings.CutPrefix(arg, longFlag+"="); ok {
+		return after
 	}
 	return current
 }

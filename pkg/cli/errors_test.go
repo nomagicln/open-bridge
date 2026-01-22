@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -245,13 +246,7 @@ func TestErrorFormatter_SuggestSimilarApps(t *testing.T) {
 
 			// Check if expected apps are in result
 			for _, expected := range tt.expected {
-				found := false
-				for _, r := range result {
-					if r == expected {
-						found = true
-						break
-					}
-				}
+				found := slices.Contains(result, expected)
 				if !found {
 					t.Errorf("Expected suggestion '%s' not found in result: %v", expected, result)
 				}

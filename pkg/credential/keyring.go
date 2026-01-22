@@ -57,11 +57,11 @@ type Credential struct {
 	AccessToken  string    `json:"access_token,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	TokenType    string    `json:"token_type,omitempty"`
-	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at,omitzero"`
 
 	// Metadata
-	CreatedAt time.Time `json:"created_at,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitzero"`
+	UpdatedAt time.Time `json:"updated_at,omitzero"`
 }
 
 // IsExpired checks if the credential has expired (for OAuth2).
@@ -84,15 +84,12 @@ func (c *Credential) NeedsRefresh() bool {
 // GetAuthValue returns the appropriate auth value based on credential type.
 func (c *Credential) GetAuthValue() string {
 	switch c.Type {
-	case CredentialTypeBearer:
-		return c.Token
-	case CredentialTypeAPIKey:
-		return c.Token
 	case CredentialTypeBasic:
 		return c.Username + ":" + c.Password
 	case CredentialTypeOAuth2:
 		return c.AccessToken
 	default:
+		// Bearer, APIKey, and other types use Token field
 		return c.Token
 	}
 }
@@ -376,11 +373,10 @@ func (m *Manager) UpdateCredential(appName, profileName string, updateFn func(*C
 	if err != nil {
 		// Create new if not found
 		credentialNotFoundError := &CredentialNotFoundError{}
-		if errors.As(err, &credentialNotFoundError) {
-			cred = &Credential{}
-		} else {
+		if !errors.As(err, &credentialNotFoundError) {
 			return err
 		}
+		cred = &Credential{}
 	}
 
 	// Apply update function

@@ -191,10 +191,8 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c":
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
 	}
@@ -269,6 +267,8 @@ func (m Model) renderStepContent(s *strings.Builder) {
 		fmt.Fprintf(s, "App '%s' already exists.\n\n", m.appName)
 		s.WriteString(m.renderChoice("Overwrite?", m.confirmOptions, m.confirmIndex))
 		s.WriteString("\n\n")
+	default:
+		// StepDone or unknown step - nothing to render
 	}
 }
 
@@ -327,21 +327,17 @@ func (m *Model) addHistory(label, value string) {
 }
 
 func (m Model) updateSpecInput(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyEnter:
-			val := m.specInput.Value()
-			if val == "" {
-				m.err = fmt.Errorf("spec source cannot be empty")
-				return m, nil
-			}
-			m.options.SpecSource = val
-			m.err = nil
-			m.addHistory("Spec Source", val)
-			m.step = StepLoading
-			return m, tea.Batch(m.spinner.Tick, m.loadSpecCmd())
+	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
+		val := m.specInput.Value()
+		if val == "" {
+			m.err = fmt.Errorf("spec source cannot be empty")
+			return m, nil
 		}
+		m.options.SpecSource = val
+		m.err = nil
+		m.addHistory("Spec Source", val)
+		m.step = StepLoading
+		return m, tea.Batch(m.spinner.Tick, m.loadSpecCmd())
 	}
 
 	var cmd tea.Cmd
@@ -385,19 +381,16 @@ func (m Model) updateLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateDescription(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.Type == tea.KeyEnter {
-			val := m.descInput.Value()
-			if val == "" && m.defaultDescription != "" {
-				val = m.defaultDescription
-			}
-			m.options.Description = val
-			m.addHistory("Description", val)
-			m.step = StepBaseURL
-			m.baseUrlInput.Focus()
-			return m, textinput.Blink
+	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
+		val := m.descInput.Value()
+		if val == "" && m.defaultDescription != "" {
+			val = m.defaultDescription
 		}
+		m.options.Description = val
+		m.addHistory("Description", val)
+		m.step = StepBaseURL
+		m.baseUrlInput.Focus()
+		return m, textinput.Blink
 	}
 	var cmd tea.Cmd
 	m.descInput, cmd = m.descInput.Update(msg)
@@ -405,27 +398,24 @@ func (m Model) updateDescription(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateBaseURL(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.Type == tea.KeyEnter {
-			val := m.baseUrlInput.Value()
-			if val == "" && m.defaultBaseURL != "" {
-				val = m.defaultBaseURL
-			}
+	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
+		val := m.baseUrlInput.Value()
+		if val == "" && m.defaultBaseURL != "" {
+			val = m.defaultBaseURL
+		}
 
-			// Validate URL
-			u, err := url.Parse(val)
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-				m.err = fmt.Errorf("invalid Base URL: must start with http:// or https:// and have a host")
-				return m, nil
-			}
-
-			m.options.BaseURL = val
-			m.err = nil
-			m.addHistory("Base URL", val)
-			m.step = StepAuthType
+		// Validate URL
+		u, err := url.Parse(val)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			m.err = fmt.Errorf("invalid Base URL: must start with http:// or https:// and have a host")
 			return m, nil
 		}
+
+		m.options.BaseURL = val
+		m.err = nil
+		m.addHistory("Base URL", val)
+		m.step = StepAuthType
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.baseUrlInput, cmd = m.baseUrlInput.Update(msg)
@@ -433,44 +423,52 @@ func (m Model) updateBaseURL(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateAuthType(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "left", "h":
-			m.authIndex--
-			if m.authIndex < 0 {
-				m.authIndex = len(m.authOptions) - 1
-			}
-		case "right", "l":
-			m.authIndex++
-			if m.authIndex >= len(m.authOptions) {
-				m.authIndex = 0
-			}
-		case "enter":
-			val := m.authOptions[m.authIndex]
-			m.options.AuthType = val
-			m.addHistory("Auth Type", val)
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
 
-			if val != "none" {
-				m.prepareAuthDetails()
-				if len(m.authInputs) > 0 {
-					m.step = StepAuthDetails
-					m.focusIndex = 0
-					return m, textinput.Blink
-				}
-			}
-
-			m.step = StepShim
-			return m, nil
+	switch keyMsg.String() {
+	case "left", "h":
+		m.authIndex--
+		if m.authIndex < 0 {
+			m.authIndex = len(m.authOptions) - 1
 		}
+	case "right", "l":
+		m.authIndex++
+		if m.authIndex >= len(m.authOptions) {
+			m.authIndex = 0
+		}
+	case "enter":
+		return m.handleAuthTypeEnter()
+	default:
+		// Ignore other keys
 	}
 	return m, nil
 }
 
+// handleAuthTypeEnter handles the enter key press in auth type selection.
+func (m Model) handleAuthTypeEnter() (tea.Model, tea.Cmd) {
+	val := m.authOptions[m.authIndex]
+	m.options.AuthType = val
+	m.addHistory("Auth Type", val)
+
+	if val != "none" {
+		m.prepareAuthDetails()
+		if len(m.authInputs) > 0 {
+			m.step = StepAuthDetails
+			m.focusIndex = 0
+			return m, textinput.Blink
+		}
+	}
+
+	m.step = StepShim
+	return m, nil
+}
+
 func (m Model) updateShim(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
 		case "left", "h":
 			m.shimIndex--
 			if m.shimIndex < 0 {
@@ -488,6 +486,8 @@ func (m Model) updateShim(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.step = StepAddHeadersConfirm
 			m.addHeadersIndex = 0
 			return m, nil
+		default:
+			// Ignore other keys
 		}
 	}
 	return m, nil
@@ -534,6 +534,9 @@ func (m *Model) prepareAuthDetails() {
 		tiValue.EchoMode = textinput.EchoPassword
 		m.authInputs = append(m.authInputs, tiValue)
 		m.authInputLabels = append(m.authInputLabels, "Key Value")
+
+	default:
+		// "none" or unknown auth type - no inputs needed
 	}
 }
 
@@ -549,6 +552,8 @@ func (m *Model) collectAuthParams() {
 	case "api_key":
 		m.options.AuthParams["key_name"] = m.authInputs[0].Value()
 		m.options.AuthParams["token"] = m.authInputs[1].Value()
+	default:
+		// "none" or unknown auth type - no params to collect
 	}
 }
 
@@ -616,9 +621,8 @@ func (m Model) updateAuthInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateAddHeadersConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
 		case "left", "h":
 			m.addHeadersIndex = 0
 		case "right", "l":
@@ -635,66 +639,77 @@ func (m Model) updateAddHeadersConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.addHistory("Add Custom Headers", "No")
 				return m.checkOverwriteOrFinish()
 			}
+		default:
+			// Ignore other keys
 		}
 	}
 	return m, nil
 }
 
 func (m Model) updateHeaderInput(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Navigation logic
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter":
-			if m.focusIndex == 0 {
-				// Name input
-				if m.headerNameInput.Value() == "" {
-					// Empty name -> Done
-					return m.checkOverwriteOrFinish()
-				}
-				// Go to value
-				m.focusIndex = 1
-				m.headerNameInput.Blur()
-				return m, m.headerValueInput.Focus()
-			} else {
-				// Value input
-				// Add pair
-				key := strings.TrimSpace(m.headerNameInput.Value())
-				val := strings.TrimSpace(m.headerValueInput.Value())
-				if key != "" {
-					m.collectedHeaders[key] = val
-					m.addHistory("Header", fmt.Sprintf("%s: %s", key, val))
-				}
-
-				// Reset for next
-				m.headerNameInput.SetValue("")
-				m.headerValueInput.SetValue("")
-				m.focusIndex = 0
-				m.headerValueInput.Blur()
-				return m, m.headerNameInput.Focus()
-			}
-
-		case "tab", "shift+tab":
-			if m.focusIndex == 0 {
-				m.focusIndex = 1
-				m.headerNameInput.Blur()
-				return m, m.headerValueInput.Focus()
-			} else {
-				m.focusIndex = 0
-				m.headerValueInput.Blur()
-				return m, m.headerNameInput.Focus()
-			}
-		}
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m.updateHeaderInputFields(msg)
 	}
 
+	switch keyMsg.String() {
+	case "enter":
+		return m.handleHeaderInputEnter()
+	case "tab", "shift+tab":
+		return m.toggleHeaderInputFocus()
+	default:
+		return m.updateHeaderInputFields(msg)
+	}
+}
+
+// handleHeaderInputEnter handles enter key in header input step.
+func (m Model) handleHeaderInputEnter() (tea.Model, tea.Cmd) {
+	if m.focusIndex == 0 {
+		// Name input - check if empty (done) or go to value
+		if m.headerNameInput.Value() == "" {
+			return m.checkOverwriteOrFinish()
+		}
+		m.focusIndex = 1
+		m.headerNameInput.Blur()
+		return m, m.headerValueInput.Focus()
+	}
+
+	// Value input - add the header pair and reset for next
+	key := strings.TrimSpace(m.headerNameInput.Value())
+	val := strings.TrimSpace(m.headerValueInput.Value())
+	if key != "" {
+		m.collectedHeaders[key] = val
+		m.addHistory("Header", fmt.Sprintf("%s: %s", key, val))
+	}
+
+	m.headerNameInput.SetValue("")
+	m.headerValueInput.SetValue("")
+	m.focusIndex = 0
+	m.headerValueInput.Blur()
+	return m, m.headerNameInput.Focus()
+}
+
+// toggleHeaderInputFocus toggles focus between header name and value inputs.
+func (m Model) toggleHeaderInputFocus() (tea.Model, tea.Cmd) {
+	if m.focusIndex == 0 {
+		m.focusIndex = 1
+		m.headerNameInput.Blur()
+		return m, m.headerValueInput.Focus()
+	}
+	m.focusIndex = 0
+	m.headerValueInput.Blur()
+	return m, m.headerNameInput.Focus()
+}
+
+// updateHeaderInputFields updates the header input fields.
+func (m Model) updateHeaderInputFields(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if m.focusIndex == 0 {
 		m.headerNameInput, cmd = m.headerNameInput.Update(msg)
-		return m, cmd
 	} else {
 		m.headerValueInput, cmd = m.headerValueInput.Update(msg)
-		return m, cmd
 	}
+	return m, cmd
 }
 
 func (m Model) checkOverwriteOrFinish() (Model, tea.Cmd) {
@@ -709,9 +724,8 @@ func (m Model) checkOverwriteOrFinish() (Model, tea.Cmd) {
 }
 
 func (m Model) updateOverwriteConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
 		case "left", "h":
 			m.confirmIndex = 0
 		case "right", "l":
@@ -727,6 +741,8 @@ func (m Model) updateOverwriteConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.err = fmt.Errorf("installation aborted by user")
 				return m, tea.Quit
 			}
+		default:
+			// Ignore other keys
 		}
 	}
 	return m, nil
