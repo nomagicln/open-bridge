@@ -7,6 +7,7 @@ import (
 
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/credential"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -362,11 +363,11 @@ func TestParseArgValue(t *testing.T) {
 	}
 }
 
-func TestNewInstallCmd(t *testing.T) {
-	cmd := newInstallCmd()
+// testCmdWithSingleArg tests a command that requires a single argument
+func testCmdWithSingleArg(t *testing.T, cmd *cobra.Command, expectedUse, expectedShort string) {
 	require.NotNil(t, cmd)
-	assert.Equal(t, "install <app-name>", cmd.Use)
-	assert.Equal(t, "Install an API as a CLI application", cmd.Short)
+	assert.Equal(t, expectedUse, cmd.Use)
+	assert.Equal(t, expectedShort, cmd.Short)
 	assert.NotEmpty(t, cmd.Long)
 	assert.NotNil(t, cmd.Args)
 	// Test that Args function works correctly
@@ -376,18 +377,14 @@ func TestNewInstallCmd(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestNewInstallCmd(t *testing.T) {
+	cmd := newInstallCmd()
+	testCmdWithSingleArg(t, cmd, "install <app-name>", "Install an API as a CLI application")
+}
+
 func TestNewUninstallCmd(t *testing.T) {
 	cmd := newUninstallCmd()
-	require.NotNil(t, cmd)
-	assert.Equal(t, "uninstall <app-name>", cmd.Use)
-	assert.Equal(t, "Uninstall an API application", cmd.Short)
-	assert.NotEmpty(t, cmd.Long)
-	assert.NotNil(t, cmd.Args)
-	// Test that Args function works correctly
-	err := cmd.Args(cmd, []string{"testapp"})
-	assert.NoError(t, err)
-	err = cmd.Args(cmd, []string{})
-	assert.Error(t, err)
+	testCmdWithSingleArg(t, cmd, "uninstall <app-name>", "Uninstall an API application")
 }
 
 func TestNewListCmd(t *testing.T) {
