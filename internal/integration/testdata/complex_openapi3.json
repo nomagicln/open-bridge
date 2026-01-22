@@ -1,0 +1,705 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Complex API for Testing",
+    "description": "A complex OpenAPI 3.x spec for testing schema composition, security schemes, and various parameter types",
+    "version": "1.0.0",
+    "contact": {
+      "name": "API Support",
+      "email": "support@example.com"
+    },
+    "license": {
+      "name": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.example.com/v1",
+      "description": "Production server"
+    },
+    {
+      "url": "https://staging.example.com/v1",
+      "description": "Staging server"
+    },
+    {
+      "url": "http://localhost:8080/v1",
+      "description": "Local development"
+    }
+  ],
+  "paths": {
+    "/pets": {
+      "get": {
+        "operationId": "listPets",
+        "summary": "List all pets with various parameter types",
+        "tags": ["pets"],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of items to return",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of items to skip",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter by status",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["available", "pending", "sold"]
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "X-Request-ID",
+            "in": "header",
+            "description": "Unique request identifier",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "cookie",
+            "description": "Session identifier",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A list of pets",
+            "headers": {
+              "X-Total-Count": {
+                "description": "Total number of pets",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-Rate-Limit-Remaining": {
+                "description": "Remaining rate limit",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Pet"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyHeader": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createPet",
+        "summary": "Create a new pet",
+        "tags": ["pets"],
+        "requestBody": {
+          "description": "Pet to create",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePetRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePetRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "photo": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                },
+                "required": ["name"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Pet created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Pet"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+            "oauth2": ["pets:write"]
+          }
+        ]
+      }
+    },
+    "/pets/{petId}": {
+      "parameters": [
+        {
+          "name": "petId",
+          "in": "path",
+          "required": true,
+          "description": "The pet ID",
+          "schema": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getPetById",
+        "summary": "Get a pet by ID",
+        "tags": ["pets"],
+        "responses": {
+          "200": {
+            "description": "Pet details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Pet"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "put": {
+        "operationId": "updatePet",
+        "summary": "Update a pet",
+        "tags": ["pets"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pet updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Pet"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deletePet",
+        "summary": "Delete a pet",
+        "tags": ["pets"],
+        "responses": {
+          "204": {
+            "description": "Pet deleted"
+          }
+        }
+      }
+    },
+    "/animals": {
+      "get": {
+        "operationId": "listAnimals",
+        "summary": "List animals using oneOf schema",
+        "tags": ["animals"],
+        "responses": {
+          "200": {
+            "description": "A list of animals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Animal"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vehicles": {
+      "get": {
+        "operationId": "listVehicles",
+        "summary": "List vehicles using anyOf schema",
+        "tags": ["vehicles"],
+        "responses": {
+          "200": {
+            "description": "A list of vehicles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Vehicle"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Pet": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/BaseEntity"
+          },
+          {
+            "type": "object",
+            "required": ["name", "species"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "species": {
+                "type": "string",
+                "enum": ["dog", "cat", "bird", "fish", "other"]
+              },
+              "status": {
+                "type": "string",
+                "enum": ["available", "pending", "sold"],
+                "default": "available"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Tag"
+                }
+              },
+              "owner": {
+                "$ref": "#/components/schemas/Owner"
+              }
+            }
+          }
+        ]
+      },
+      "BaseEntity": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "readOnly": true
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "readOnly": true
+          }
+        }
+      },
+      "Tag": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "Owner": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/BaseEntity"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string",
+                "format": "email"
+              },
+              "address": {
+                "$ref": "#/components/schemas/Address"
+              }
+            }
+          }
+        ]
+      },
+      "Address": {
+        "type": "object",
+        "properties": {
+          "street": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "postalCode": {
+            "type": "string"
+          }
+        }
+      },
+      "CreatePetRequest": {
+        "type": "object",
+        "required": ["name", "species"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "species": {
+            "type": "string",
+            "enum": ["dog", "cat", "bird", "fish", "other"]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "UpdatePetRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "status": {
+            "type": "string",
+            "enum": ["available", "pending", "sold"]
+          }
+        }
+      },
+      "Animal": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Dog"
+          },
+          {
+            "$ref": "#/components/schemas/Cat"
+          },
+          {
+            "$ref": "#/components/schemas/Bird"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "animalType",
+          "mapping": {
+            "dog": "#/components/schemas/Dog",
+            "cat": "#/components/schemas/Cat",
+            "bird": "#/components/schemas/Bird"
+          }
+        }
+      },
+      "Dog": {
+        "type": "object",
+        "required": ["animalType", "breed"],
+        "properties": {
+          "animalType": {
+            "type": "string",
+            "enum": ["dog"]
+          },
+          "breed": {
+            "type": "string"
+          },
+          "barkVolume": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
+          }
+        }
+      },
+      "Cat": {
+        "type": "object",
+        "required": ["animalType", "color"],
+        "properties": {
+          "animalType": {
+            "type": "string",
+            "enum": ["cat"]
+          },
+          "color": {
+            "type": "string"
+          },
+          "indoor": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Bird": {
+        "type": "object",
+        "required": ["animalType", "wingspan"],
+        "properties": {
+          "animalType": {
+            "type": "string",
+            "enum": ["bird"]
+          },
+          "wingspan": {
+            "type": "number",
+            "format": "float"
+          },
+          "canFly": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "Vehicle": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/Car"
+          },
+          {
+            "$ref": "#/components/schemas/Motorcycle"
+          },
+          {
+            "$ref": "#/components/schemas/Bicycle"
+          }
+        ]
+      },
+      "Car": {
+        "type": "object",
+        "required": ["wheels", "doors"],
+        "properties": {
+          "wheels": {
+            "type": "integer",
+            "enum": [4]
+          },
+          "doors": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 5
+          },
+          "electric": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Motorcycle": {
+        "type": "object",
+        "required": ["wheels", "engineCC"],
+        "properties": {
+          "wheels": {
+            "type": "integer",
+            "enum": [2]
+          },
+          "engineCC": {
+            "type": "integer"
+          }
+        }
+      },
+      "Bicycle": {
+        "type": "object",
+        "required": ["wheels", "type"],
+        "properties": {
+          "wheels": {
+            "type": "integer",
+            "enum": [2]
+          },
+          "type": {
+            "type": "string",
+            "enum": ["road", "mountain", "hybrid"]
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Unauthorized",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
+      "basicAuth": {
+        "type": "http",
+        "scheme": "basic"
+      },
+      "apiKeyHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      },
+      "apiKeyQuery": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "api_key"
+      },
+      "apiKeyCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "api_key"
+      },
+      "oauth2": {
+        "type": "oauth2",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://auth.example.com/oauth/authorize",
+            "tokenUrl": "https://auth.example.com/oauth/token",
+            "scopes": {
+              "pets:read": "Read access to pets",
+              "pets:write": "Write access to pets",
+              "admin": "Admin access"
+            }
+          },
+          "clientCredentials": {
+            "tokenUrl": "https://auth.example.com/oauth/token",
+            "scopes": {
+              "pets:read": "Read access to pets",
+              "pets:write": "Write access to pets"
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "pets",
+      "description": "Pet operations"
+    },
+    {
+      "name": "animals",
+      "description": "Animal operations with polymorphism"
+    },
+    {
+      "name": "vehicles",
+      "description": "Vehicle operations with anyOf"
+    }
+  ]
+}

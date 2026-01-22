@@ -2,9 +2,164 @@ package credential
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestNewSecurePrompter(t *testing.T) {
+	p := NewSecurePrompter()
+	require.NotNil(t, p)
+	assert.Equal(t, os.Stdin, p.reader)
+	assert.Equal(t, os.Stderr, p.writer)
+}
+
+func TestPromptCredential(t *testing.T) {
+	t.Run("bearer token", func(t *testing.T) {
+		reader := strings.NewReader("my-bearer-token\n")
+		var output bytes.Buffer
+		p := NewSecurePrompterWithIO(reader, &output)
+		cred, err := p.PromptCredential("bearer")
+		require.NoError(t, err)
+		require.NotNil(t, cred)
+		assert.Equal(t, CredentialTypeBearer, cred.Type)
+	})
+
+	t.Run("api key", func(t *testing.T) {
+		reader := strings.NewReader("my-api-key\n")
+		var output bytes.Buffer
+		p := NewSecurePrompterWithIO(reader, &output)
+		cred, err := p.PromptCredential("api_key")
+		require.NoError(t, err)
+		require.NotNil(t, cred)
+		assert.Equal(t, CredentialTypeAPIKey, cred.Type)
+	})
+
+	t.Run("unsupported auth type", func(t *testing.T) {
+		reader := strings.NewReader("")
+		var output bytes.Buffer
+		p := NewSecurePrompterWithIO(reader, &output)
+		_, err := p.PromptCredential("oauth2")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported auth type")
+	})
+
+	t.Run("unknown auth type", func(t *testing.T) {
+		reader := strings.NewReader("")
+		var output bytes.Buffer
+		p := NewSecurePrompterWithIO(reader, &output)
+		_, err := p.PromptCredential("unknown")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported auth type")
+	})
+}
+
+func TestPromptTokenMethods(t *testing.T) {
+	tests := []struct {
+		name           string
+		method         string
+		input          string
+		wantErr        bool
+		errMsg         string
+		expectedType   CredentialType
+		expectedToken  string
+		expectedPrompt string
+	}{
+		{
+			name:           "valid bearer token",
+			method:         "bearer",
+			input:          "my-secret-token\n",
+			wantErr:        false,
+			expectedType:   CredentialTypeBearer,
+			expectedToken:  "my-secret-token",
+			expectedPrompt: "Enter bearer token:",
+		},
+		{
+			name:    "empty bearer token",
+			method:  "bearer",
+			input:   "\n",
+			wantErr: true,
+			errMsg:  "token cannot be empty",
+		},
+		{
+			name:           "valid api key",
+			method:         "api_key",
+			input:          "sk-1234567890\n",
+			wantErr:        false,
+			expectedType:   CredentialTypeAPIKey,
+			expectedToken:  "sk-1234567890",
+			expectedPrompt: "Enter API key:",
+		},
+		{
+			name:    "empty api key",
+			method:  "api_key",
+			input:   "\n",
+			wantErr: true,
+			errMsg:  "API key cannot be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader := strings.NewReader(tt.input)
+			var output bytes.Buffer
+			p := NewSecurePrompterWithIO(reader, &output)
+
+			var cred *Credential
+			var err error
+			switch tt.method {
+			case "bearer":
+				cred, err = p.PromptBearerToken()
+			case "api_key":
+				cred, err = p.PromptAPIKey()
+			default:
+				t.Fatalf("unknown method: %s", tt.method)
+			}
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedType, cred.Type)
+			assert.Equal(t, tt.expectedToken, cred.Token)
+			assert.Contains(t, output.String(), tt.expectedPrompt)
+		})
+	}
+}
+
+func TestPromptBasicAuth(t *testing.T) {
+	// Note: PromptBasicAuth requires two sequential reads (username + password).
+	// Due to bufio.Scanner creating new instances per read, testing multi-line
+	// input is unreliable with strings.Reader. We test error cases instead.
+
+	t.Run("empty username", func(t *testing.T) {
+		reader := strings.NewReader("\n")
+		var output bytes.Buffer
+		p := NewSecurePrompterWithIO(reader, &output)
+		_, err := p.PromptBasicAuth()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "username cannot be empty")
+	})
+}
+
+func TestPromptToken(t *testing.T) {
+	reader := strings.NewReader("my-secret\n")
+	var output bytes.Buffer
+
+	p := NewSecurePrompterWithIO(reader, &output)
+	token, err := p.PromptToken("Enter secret: ")
+
+	require.NoError(t, err)
+	assert.Equal(t, "my-secret", token)
+	assert.Contains(t, output.String(), "Enter secret:")
+}
 
 func TestSecurePrompterPromptString(t *testing.T) {
 	input := "test input\n"
@@ -474,4 +629,234 @@ func TestSecurePrompterNonTerminal(t *testing.T) {
 	if result != "secret-value" {
 		t.Errorf("expected 'secret-value', got '%s'", result)
 	}
+}
+
+func TestValidateNonEmpty(t *testing.T) {
+	v := NewCredentialValidator()
+
+	tests := []struct {
+		name     string
+		cred     *Credential
+		expected bool
+	}{
+		{
+			name:     "valid bearer credential",
+			cred:     NewBearerCredential("token"),
+			expected: true,
+		},
+		{
+			name:     "empty bearer token",
+			cred:     &Credential{Type: CredentialTypeBearer, Token: ""},
+			expected: false,
+		},
+		{
+			name:     "nil credential",
+			cred:     nil,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := v.ValidateNonEmpty(tt.cred)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestValidateOAuth2Credential(t *testing.T) {
+	v := NewCredentialValidator()
+
+	t.Run("valid oauth2", func(t *testing.T) {
+		cred := NewOAuth2Credential("access-token", "refresh-token", "Bearer", time.Now().Add(time.Hour))
+		err := v.Validate(cred)
+		assert.NoError(t, err)
+	})
+
+	t.Run("empty access token", func(t *testing.T) {
+		cred := &Credential{Type: CredentialTypeOAuth2, AccessToken: ""}
+		err := v.Validate(cred)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "access token cannot be empty")
+	})
+}
+
+func TestKeyringErrorUnwrap(t *testing.T) {
+	cause := &CredentialNotFoundError{AppName: "myapp", ProfileName: "default"}
+	kerr := &KeyringError{
+		Operation: "get",
+		AppName:   "myapp",
+		Profile:   "default",
+		Cause:     cause,
+	}
+
+	unwrapped := kerr.Unwrap()
+	assert.Equal(t, cause, unwrapped)
+}
+
+func TestRedactCredentialOAuth2(t *testing.T) {
+	expiresAt := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	cred := NewOAuth2Credential("access-token-12345678", "refresh-token-12345678", "Bearer", expiresAt)
+	cred.CreatedAt = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	cred.UpdatedAt = time.Date(2024, 1, 10, 0, 0, 0, 0, time.UTC)
+
+	result := RedactCredential(cred)
+
+	assert.Equal(t, "oauth2", result["type"])
+
+	// Access token should be redacted
+	accessToken, ok := result["access_token"].(string)
+	require.True(t, ok)
+	assert.Contains(t, accessToken, "...")
+	assert.NotEqual(t, "access-token-12345678", accessToken)
+
+	// Refresh token should be redacted
+	refreshToken, ok := result["refresh_token"].(string)
+	require.True(t, ok)
+	assert.Contains(t, refreshToken, "...")
+
+	// Timestamps should be present
+	assert.Contains(t, result, "expires_at")
+	assert.Contains(t, result, "created_at")
+	assert.Contains(t, result, "updated_at")
+}
+
+func TestRedactCredentialAPIKey(t *testing.T) {
+	cred := NewAPIKeyCredential("sk-1234567890abcdef")
+	result := RedactCredential(cred)
+
+	assert.Equal(t, "api_key", result["type"])
+
+	apiKey, ok := result["api_key"].(string)
+	require.True(t, ok)
+	assert.Contains(t, apiKey, "...")
+	assert.NotEqual(t, "sk-1234567890abcdef", apiKey)
+}
+
+func TestRedactCredentialUnknownType(t *testing.T) {
+	cred := &Credential{
+		Type:  "custom",
+		Token: "custom-token-12345678",
+	}
+	result := RedactCredential(cred)
+
+	assert.Equal(t, "custom", result["type"])
+
+	token, ok := result["token"].(string)
+	require.True(t, ok)
+	assert.Contains(t, token, "...")
+}
+
+func TestGetFd(t *testing.T) {
+	t.Run("with os.File", func(t *testing.T) {
+		fd := GetFd(os.Stdin)
+		assert.GreaterOrEqual(t, fd, 0)
+	})
+
+	t.Run("with non-file reader", func(t *testing.T) {
+		reader := strings.NewReader("test")
+		fd := GetFd(reader)
+		assert.Equal(t, -1, fd)
+	})
+}
+
+func TestIsTerminal(t *testing.T) {
+	t.Run("with non-file reader", func(t *testing.T) {
+		reader := strings.NewReader("test")
+		result := IsTerminal(reader)
+		assert.False(t, result)
+	})
+
+	// Note: Testing with actual terminal is environment-dependent
+	// In CI, os.Stdin might not be a terminal
+}
+
+func TestMaskInput(t *testing.T) {
+	t.Run("non-terminal input", func(t *testing.T) {
+		reader := strings.NewReader("my-secret-input\n")
+		var output bytes.Buffer
+
+		result, err := MaskInput(reader, &output)
+		require.NoError(t, err)
+		assert.Equal(t, "my-secret-input", result)
+	})
+
+	t.Run("empty input EOF", func(t *testing.T) {
+		reader := strings.NewReader("")
+		var output bytes.Buffer
+
+		_, err := MaskInput(reader, &output)
+		assert.Error(t, err)
+	})
+}
+
+func TestSecureZeroString(t *testing.T) {
+	t.Run("non-empty string", func(t *testing.T) {
+		s := "secret"
+		SecureZeroString(&s)
+		assert.Equal(t, "", s)
+	})
+
+	t.Run("empty string", func(t *testing.T) {
+		s := ""
+		SecureZeroString(&s)
+		assert.Equal(t, "", s)
+	})
+
+	t.Run("nil pointer", func(t *testing.T) {
+		// Should not panic
+		SecureZeroString(nil)
+	})
+}
+
+func TestClearEnvironmentCredentials(t *testing.T) {
+	// Set test environment variables
+	t.Setenv("TEST_CLEAR_TOKEN", "token-value")
+	t.Setenv("TEST_CLEAR_USER", "user-value")
+	t.Setenv("TEST_CLEAR_PASS", "pass-value")
+
+	source := NewEnvironmentCredentialSource("TEST_CLEAR_TOKEN", "TEST_CLEAR_USER", "TEST_CLEAR_PASS")
+
+	// Verify they're set
+	assert.NotEmpty(t, os.Getenv("TEST_CLEAR_TOKEN"))
+	assert.NotEmpty(t, os.Getenv("TEST_CLEAR_USER"))
+	assert.NotEmpty(t, os.Getenv("TEST_CLEAR_PASS"))
+
+	// Clear them
+	source.ClearEnvironmentCredentials()
+
+	// Verify they're cleared
+	assert.Empty(t, os.Getenv("TEST_CLEAR_TOKEN"))
+	assert.Empty(t, os.Getenv("TEST_CLEAR_USER"))
+	assert.Empty(t, os.Getenv("TEST_CLEAR_PASS"))
+}
+
+func TestEnvironmentCredentialSourceUnsupportedType(t *testing.T) {
+	source := NewEnvironmentCredentialSource("TOKEN", "USER", "PASS")
+	_, err := source.GetCredential("oauth2")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported auth type")
+}
+
+func TestEnvironmentCredentialSourceMissingBasicCredentials(t *testing.T) {
+	// Only set username, not password
+	t.Setenv("TEST_BASIC_USER", "myuser")
+	// Ensure password is not set
+	_ = os.Unsetenv("TEST_BASIC_PASS")
+
+	source := NewEnvironmentCredentialSource("", "TEST_BASIC_USER", "TEST_BASIC_PASS")
+	_, err := source.GetCredential("basic")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be set")
+}
+
+func TestPromptConfirmError(t *testing.T) {
+	// Test with empty reader that will cause EOF
+	reader := strings.NewReader("")
+	var output bytes.Buffer
+
+	p := NewSecurePrompterWithIO(reader, &output)
+	_, err := p.PromptConfirm("Continue?", false)
+
+	assert.Error(t, err)
 }

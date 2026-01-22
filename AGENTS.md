@@ -28,6 +28,20 @@
 | Property | `foo_property_test.go` | Randomized input testing with `gopter` |
 | Helpers | `test_helpers.go` | Shared test utilities within a package |
 
+#### File Naming Rules (Mandatory)
+
+1. **Strict Name Matching**: Test file names **MUST** exactly match their source file names
+   - `errors.go` → `errors_test.go`, `errors_integration_test.go`, `errors_property_test.go`
+   - `install.go` → `install_test.go`, `install_integration_test.go`
+   - ❌ `error_test.go` for `errors.go` is **WRONG**
+   - ❌ `shim_integration_test.go` for `install.go` is **WRONG**
+
+2. **No Orphan Test Files**: Every test file must have a corresponding source file
+   - ❌ `spec_source_test.go` is invalid if `spec_source.go` does not exist
+   - ✅ Move such tests to the correct file (e.g., merge into `install_test.go`)
+
+3. **Function Placement**: Test functions must be placed in the test file corresponding to the source file where the function under test is defined
+
 #### Principles
 
 - **Colocation**: All tests (unit/integration/property) must correspond to their source file for maintainability
@@ -83,7 +97,20 @@ func TestExample(t *testing.T) {
 
 Read `.golangci.yml` to understand the coding standards.
 
-### 2. Before Committing
+### 2. Before Writing Tests
+
+Verify the test file name matches the source file:
+
+```bash
+# Example: If you're testing functions in install.go
+# ✅ Correct: install_test.go, install_integration_test.go
+# ❌ Wrong: shim_test.go, spec_source_test.go
+
+# List source files to confirm naming
+ls pkg/<package>/*.go | grep -v _test.go
+```
+
+### 3. Before Committing
 
 Run the following commands and ensure all checks pass:
 
@@ -91,7 +118,14 @@ Run the following commands and ensure all checks pass:
 make fmt-fix && make lint-fix && make test
 ```
 
-### 3. Commit Messages
+Additionally, verify test file naming compliance:
+
+```bash
+# Ensure no orphan test files exist (test files without corresponding source files)
+# For each *_test.go file, the base name should match a *.go source file
+```
+
+### 4. Commit Messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
@@ -107,7 +141,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 **Scope**: `spec` | `config` | `credential` | `semantic` | `request` | `cli` | `mcp` | `tui`
 
-### 4. Code Readability
+### 5. Code Readability
 
 - Add comments to explain **why**, not what
 - Complex logic must include comments describing the intent

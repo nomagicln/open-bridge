@@ -2,12 +2,610 @@ package request
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/nomagicln/open-bridge/pkg/config"
+	"github.com/nomagicln/open-bridge/pkg/credential"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestSubstitutePathParams(t *testing.T) {
+	b := NewBuilder(nil)
+
+	tests := []struct {
+		name     string
+		path     string
+		params   map[string]any
+		opParams openapi3.Parameters
+		expected string
+	}{
+		{
+			name:   "single path parameter",
+			path:   "/users/{userId}",
+			params: map[string]any{"userId": 123},
+			opParams: openapi3.Parameters{
+				paramRef("userId", "path", true, intSchema()),
+			},
+			expected: "/users/123",
+		},
+		{
+			name:   "multiple path parameters",
+			path:   "/users/{userId}/posts/{postId}",
+			params: map[string]any{"userId": 123, "postId": 456},
+			opParams: openapi3.Parameters{
+				paramRef("userId", "path", true, intSchema()),
+				paramRef("postId", "path", true, intSchema()),
+			},
+			expected: "/users/123/posts/456",
+		},
+		{
+			name:   "string path parameter",
+			path:   "/users/{username}",
+			params: map[string]any{"username": "john"},
+			opParams: openapi3.Parameters{
+				paramRef("username", "path", true, stringSchema()),
+			},
+			expected: "/users/john",
+		},
+		{
+			name:   "ignores query parameters",
+			path:   "/users/{userId}",
+			params: map[string]any{"userId": 123, "filter": "active"},
+			opParams: openapi3.Parameters{
+				paramRef("userId", "path", true, intSchema()),
+				paramRef("filter", "query", false, stringSchema()),
+			},
+			expected: "/users/123",
+		},
+		{
+			name:     "no path parameters",
+			path:     "/users",
+			params:   map[string]any{"filter": "active"},
+			opParams: openapi3.Parameters{},
+			expected: "/users",
+		},
+		{
+			name:   "missing path parameter value",
+			path:   "/users/{userId}",
+			params: map[string]any{},
+			opParams: openapi3.Parameters{
+				paramRef("userId", "path", true, intSchema()),
+			},
+			expected: "/users/{userId}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := b.substitutePathParams(tt.path, tt.params, tt.opParams)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestBuildQueryString(t *testing.T) {
+	b := NewBuilder(nil)
+
+	tests := []struct {
+		name     string
+		params   map[string]any
+		opParams openapi3.Parameters
+		expected string
+	}{
+		{
+			name:   "single query parameter",
+			params: map[string]any{"filter": "active"},
+			opParams: openapi3.Parameters{
+				paramRef("filter", "query", false, stringSchema()),
+			},
+			expected: "filter=active",
+		},
+		{
+			name:   "multiple query parameters",
+			params: map[string]any{"filter": "active", "limit": 10},
+			opParams: openapi3.Parameters{
+				paramRef("filter", "query", false, stringSchema()),
+				paramRef("limit", "query", false, intSchema()),
+			},
+			// URL encoding may reorder parameters; check both cases
+			expected: "", // Will be checked specially
+		},
+		{
+			name:   "ignores path parameters",
+			params: map[string]any{"userId": 123, "filter": "active"},
+			opParams: openapi3.Parameters{
+				paramRef("userId", "path", true, intSchema()),
+				paramRef("filter", "query", false, stringSchema()),
+			},
+			expected: "filter=active",
+		},
+		{
+			name:   "ignores header parameters",
+			params: map[string]any{"X-Api-Key": "secret", "filter": "active"},
+			opParams: openapi3.Parameters{
+				paramRef("X-Api-Key", "header", false, stringSchema()),
+				paramRef("filter", "query", false, stringSchema()),
+			},
+			expected: "filter=active",
+		},
+		{
+			name:     "no query parameters",
+			params:   map[string]any{"userId": 123},
+			opParams: openapi3.Parameters{},
+			expected: "",
+		},
+		{
+			name:   "missing query parameter value",
+			params: map[string]any{},
+			opParams: openapi3.Parameters{
+				paramRef("filter", "query", false, stringSchema()),
+			},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := b.buildQueryString(tt.params, tt.opParams)
+			if tt.name == "multiple query parameters" {
+				// Check that both parameters are present
+				assert.Contains(t, result, "filter=active")
+				assert.Contains(t, result, "limit=10")
+			} else {
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestInjectAuth_NilCredManager(t *testing.T) {
+	b := NewBuilder(nil)
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+	require.NoError(t, err)
+
+	authConfig := &config.AuthConfig{
+		Type: "bearer",
+	}
+
+	err = b.InjectAuth(req, "myapp", "default", authConfig)
+	assert.NoError(t, err)
+
+	// No Authorization header should be set when credMgr is nil
+	assert.Empty(t, req.Header.Get("Authorization"))
+}
+
+func TestInjectAuth_BearerToken(t *testing.T) {
+	b, cleanup := setupBuilderWithCredentials(t, "testapp", "default", &credential.Credential{
+		Type:  credential.CredentialTypeBearer,
+		Token: "my-bearer-token",
+	})
+	defer cleanup()
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+	require.NoError(t, err)
+
+	authConfig := &config.AuthConfig{
+		Type: "bearer",
+	}
+
+	err = b.InjectAuth(req, "testapp", "default", authConfig)
+	assert.NoError(t, err)
+	assert.Equal(t, "Bearer my-bearer-token", req.Header.Get("Authorization"))
+}
+
+func TestInjectAuth_APIKeyHeader(t *testing.T) {
+	b, cleanup := setupBuilderWithCredentials(t, "testapp", "default", &credential.Credential{
+		Type:  credential.CredentialTypeAPIKey,
+		Token: "my-api-key",
+	})
+	defer cleanup()
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+	require.NoError(t, err)
+
+	authConfig := &config.AuthConfig{
+		Type:     "api_key",
+		Location: "header",
+		KeyName:  "X-API-Key",
+	}
+
+	err = b.InjectAuth(req, "testapp", "default", authConfig)
+	assert.NoError(t, err)
+	assert.Equal(t, "my-api-key", req.Header.Get("X-API-Key"))
+}
+
+func TestInjectAuth_APIKeyQuery(t *testing.T) {
+	b, cleanup := setupBuilderWithCredentials(t, "testapp", "default", &credential.Credential{
+		Type:  credential.CredentialTypeAPIKey,
+		Token: "my-api-key",
+	})
+	defer cleanup()
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+	require.NoError(t, err)
+
+	authConfig := &config.AuthConfig{
+		Type:     "api_key",
+		Location: "query",
+		KeyName:  "api_key",
+	}
+
+	err = b.InjectAuth(req, "testapp", "default", authConfig)
+	assert.NoError(t, err)
+	assert.Equal(t, "my-api-key", req.URL.Query().Get("api_key"))
+}
+
+func TestInjectAuth_BasicAuth(t *testing.T) {
+	b, cleanup := setupBuilderWithCredentials(t, "testapp", "default", &credential.Credential{
+		Type:     credential.CredentialTypeBasic,
+		Username: "testuser",
+		Password: "testpass",
+	})
+	defer cleanup()
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+	require.NoError(t, err)
+
+	authConfig := &config.AuthConfig{
+		Type: "basic",
+	}
+
+	err = b.InjectAuth(req, "testapp", "default", authConfig)
+	assert.NoError(t, err)
+
+	username, password, ok := req.BasicAuth()
+	assert.True(t, ok)
+	assert.Equal(t, "testuser", username)
+	assert.Equal(t, "testpass", password)
+}
+
+func TestInjectAuth_NoAuthApplied(t *testing.T) {
+	tests := []struct {
+		name           string
+		storedAppName  string
+		storedProfile  string
+		requestApp     string
+		requestProfile string
+		authType       string
+		description    string
+	}{
+		{
+			name:           "unknown auth type",
+			storedAppName:  "testapp",
+			storedProfile:  "default",
+			requestApp:     "testapp",
+			requestProfile: "default",
+			authType:       "unknown_auth_type",
+			description:    "no authentication should be applied for unknown type",
+		},
+		{
+			name:           "credential not found",
+			storedAppName:  "otherapp",
+			storedProfile:  "default",
+			requestApp:     "nonexistent",
+			requestProfile: "profile",
+			authType:       "bearer",
+			description:    "no authorization header should be set when credential is not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, cleanup := setupBuilderWithCredentials(t, tt.storedAppName, tt.storedProfile, &credential.Credential{
+				Type:  credential.CredentialTypeBearer,
+				Token: "some-token",
+			})
+			defer cleanup()
+
+			req, err := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+			require.NoError(t, err)
+
+			authConfig := &config.AuthConfig{
+				Type: tt.authType,
+			}
+
+			err = b.InjectAuth(req, tt.requestApp, tt.requestProfile, authConfig)
+			assert.NoError(t, err)
+			assert.Empty(t, req.Header.Get("Authorization"), tt.description)
+		})
+	}
+}
+
+func TestAddHeaderParams(t *testing.T) {
+	b := NewBuilder(nil)
+
+	tests := []struct {
+		name           string
+		params         map[string]any
+		opParams       openapi3.Parameters
+		expectedHeader map[string]string
+	}{
+		{
+			name:   "single header parameter",
+			params: map[string]any{"X-Api-Key": "my-secret-key"},
+			opParams: openapi3.Parameters{
+				paramRef("X-Api-Key", "header", false, stringSchema()),
+			},
+			expectedHeader: map[string]string{"X-Api-Key": "my-secret-key"},
+		},
+		{
+			name:   "multiple header parameters",
+			params: map[string]any{"X-Api-Key": "key123", "X-Request-Id": "req-456"},
+			opParams: openapi3.Parameters{
+				paramRef("X-Api-Key", "header", false, stringSchema()),
+				paramRef("X-Request-Id", "header", false, stringSchema()),
+			},
+			expectedHeader: map[string]string{
+				"X-Api-Key":    "key123",
+				"X-Request-Id": "req-456",
+			},
+		},
+		{
+			name:   "ignores query parameters",
+			params: map[string]any{"X-Api-Key": "key123", "filter": "active"},
+			opParams: openapi3.Parameters{
+				paramRef("X-Api-Key", "header", false, stringSchema()),
+				paramRef("filter", "query", false, stringSchema()),
+			},
+			expectedHeader: map[string]string{"X-Api-Key": "key123"},
+		},
+		{
+			name:   "ignores path parameters",
+			params: map[string]any{"X-Api-Key": "key123", "userId": 123},
+			opParams: openapi3.Parameters{
+				paramRef("X-Api-Key", "header", false, stringSchema()),
+				paramRef("userId", "path", true, intSchema()),
+			},
+			expectedHeader: map[string]string{"X-Api-Key": "key123"},
+		},
+		{
+			name:           "no header parameters",
+			params:         map[string]any{"filter": "active"},
+			opParams:       openapi3.Parameters{},
+			expectedHeader: map[string]string{},
+		},
+		{
+			name:   "integer header value",
+			params: map[string]any{"X-Rate-Limit": 100},
+			opParams: openapi3.Parameters{
+				paramRef("X-Rate-Limit", "header", false, intSchema()),
+			},
+			expectedHeader: map[string]string{"X-Rate-Limit": "100"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
+			require.NoError(t, err)
+
+			b.addHeaderParams(req, tt.params, tt.opParams)
+
+			for k, v := range tt.expectedHeader {
+				assert.Equal(t, v, req.Header.Get(k))
+			}
+		})
+	}
+}
+
+func TestBuildRequest(t *testing.T) {
+	b := NewBuilder(nil)
+
+	tests := []struct {
+		name        string
+		method      string
+		path        string
+		baseURL     string
+		params      map[string]any
+		opParams    openapi3.Parameters
+		requestBody *openapi3.RequestBody
+		wantURL     string
+		wantMethod  string
+		wantBody    map[string]any
+		wantHeader  map[string]string
+		wantErr     bool
+	}{
+		{
+			name:    "GET request with path parameter",
+			method:  http.MethodGet,
+			path:    "/users/{userId}",
+			baseURL: "https://api.example.com",
+			params:  map[string]any{"userId": 123},
+			opParams: openapi3.Parameters{
+				paramRef("userId", "path", true, intSchema()),
+			},
+			wantURL:    "https://api.example.com/users/123",
+			wantMethod: http.MethodGet,
+			wantBody:   nil,
+			wantErr:    false,
+		},
+		{
+			name:    "GET request with query parameters",
+			method:  http.MethodGet,
+			path:    "/users",
+			baseURL: "https://api.example.com",
+			params:  map[string]any{"filter": "active"},
+			opParams: openapi3.Parameters{
+				paramRef("filter", "query", false, stringSchema()),
+			},
+			wantURL:    "https://api.example.com/users?filter=active",
+			wantMethod: http.MethodGet,
+			wantBody:   nil,
+			wantErr:    false,
+		},
+		{
+			name:    "GET request with path and query parameters",
+			method:  http.MethodGet,
+			path:    "/users/{userId}/posts",
+			baseURL: "https://api.example.com",
+			params:  map[string]any{"userId": 123, "limit": 10},
+			opParams: openapi3.Parameters{
+				paramRef("userId", "path", true, intSchema()),
+				paramRef("limit", "query", false, intSchema()),
+			},
+			wantURL:    "https://api.example.com/users/123/posts?limit=10",
+			wantMethod: http.MethodGet,
+			wantBody:   nil,
+			wantErr:    false,
+		},
+		{
+			name:     "POST request with body",
+			method:   http.MethodPost,
+			path:     "/users",
+			baseURL:  "https://api.example.com",
+			params:   map[string]any{"name": "John", "email": "john@example.com"},
+			opParams: openapi3.Parameters{},
+			requestBody: &openapi3.RequestBody{
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type: &openapi3.Types{"object"},
+								Properties: map[string]*openapi3.SchemaRef{
+									"name":  {Value: stringSchema()},
+									"email": {Value: stringSchema()},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantURL:    "https://api.example.com/users",
+			wantMethod: http.MethodPost,
+			wantBody:   map[string]any{"name": "John", "email": "john@example.com"},
+			wantHeader: map[string]string{"Content-Type": "application/json"},
+			wantErr:    false,
+		},
+		{
+			name:    "PUT request with path parameter and body",
+			method:  http.MethodPut,
+			path:    "/users/{userId}",
+			baseURL: "https://api.example.com",
+			params:  map[string]any{"userId": 123, "name": "Jane"},
+			opParams: openapi3.Parameters{
+				paramRef("userId", "path", true, intSchema()),
+			},
+			requestBody: &openapi3.RequestBody{
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type: &openapi3.Types{"object"},
+								Properties: map[string]*openapi3.SchemaRef{
+									"name": {Value: stringSchema()},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantURL:    "https://api.example.com/users/123",
+			wantMethod: http.MethodPut,
+			wantBody:   map[string]any{"name": "Jane"},
+			wantHeader: map[string]string{"Content-Type": "application/json"},
+			wantErr:    false,
+		},
+		{
+			name:    "DELETE request with path parameter",
+			method:  http.MethodDelete,
+			path:    "/users/{userId}",
+			baseURL: "https://api.example.com",
+			params:  map[string]any{"userId": 123},
+			opParams: openapi3.Parameters{
+				paramRef("userId", "path", true, intSchema()),
+			},
+			wantURL:    "https://api.example.com/users/123",
+			wantMethod: http.MethodDelete,
+			wantBody:   nil,
+			wantErr:    false,
+		},
+		{
+			name:    "request with header parameters",
+			method:  http.MethodGet,
+			path:    "/users",
+			baseURL: "https://api.example.com",
+			params:  map[string]any{"X-Api-Key": "secret123"},
+			opParams: openapi3.Parameters{
+				paramRef("X-Api-Key", "header", false, stringSchema()),
+			},
+			wantURL:    "https://api.example.com/users",
+			wantMethod: http.MethodGet,
+			wantBody:   nil,
+			wantHeader: map[string]string{"X-Api-Key": "secret123"},
+			wantErr:    false,
+		},
+		{
+			name:       "GET request without parameters",
+			method:     http.MethodGet,
+			path:       "/health",
+			baseURL:    "https://api.example.com",
+			params:     map[string]any{},
+			opParams:   openapi3.Parameters{},
+			wantURL:    "https://api.example.com/health",
+			wantMethod: http.MethodGet,
+			wantBody:   nil,
+			wantErr:    false,
+		},
+		{
+			name:       "HEAD request (no body)",
+			method:     http.MethodHead,
+			path:       "/users",
+			baseURL:    "https://api.example.com",
+			params:     map[string]any{"name": "John"},
+			opParams:   openapi3.Parameters{},
+			wantURL:    "https://api.example.com/users",
+			wantMethod: http.MethodHead,
+			wantBody:   nil,
+			wantErr:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := b.BuildRequest(tt.method, tt.path, tt.baseURL, tt.params, tt.opParams, tt.requestBody)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, req)
+
+			assert.Equal(t, tt.wantMethod, req.Method)
+			assert.Equal(t, tt.wantURL, req.URL.String())
+
+			// Check headers
+			for k, v := range tt.wantHeader {
+				assert.Equal(t, v, req.Header.Get(k))
+			}
+
+			// Check body
+			if tt.wantBody != nil {
+				body, err := io.ReadAll(req.Body)
+				require.NoError(t, err)
+
+				var actualBody map[string]any
+				err = json.Unmarshal(body, &actualBody)
+				require.NoError(t, err)
+
+				for k, v := range tt.wantBody {
+					assert.Equal(t, v, actualBody[k])
+				}
+			} else if req.Body != nil {
+				body, _ := io.ReadAll(req.Body)
+				assert.Empty(t, body)
+			}
+		})
+	}
+}
 
 func TestHandleBodyFlag_DirectJSON(t *testing.T) {
 	b := NewBuilder(nil)
