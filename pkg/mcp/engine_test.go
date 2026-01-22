@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+//nolint:dupl // Similar test structure is intentional for different type parsing
 func TestSearchEngineType_Parse(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -33,6 +34,11 @@ func TestSearchEngineType_Parse(t *testing.T) {
 			name:     "vector engine",
 			input:    "vector",
 			expected: SearchEngineVector,
+		},
+		{
+			name:     "hybrid engine",
+			input:    "hybrid",
+			expected: SearchEngineHybrid,
 		},
 		{
 			name:        "invalid engine",
@@ -76,6 +82,10 @@ func TestNewSearchEngine(t *testing.T) {
 		{
 			name:       "create vector engine",
 			engineType: SearchEngineVector,
+		},
+		{
+			name:       "create hybrid engine",
+			engineType: SearchEngineHybrid,
 		},
 		{
 			name:        "invalid engine type",
@@ -132,6 +142,10 @@ func TestSearchEngineInterface(t *testing.T) {
 	require.NoError(t, err)
 	engines = append(engines, vectorEngine)
 
+	hybridEngine, err := NewHybridSearchEngine(DefaultHybridSearchConfig())
+	require.NoError(t, err)
+	engines = append(engines, hybridEngine)
+
 	sampleTools := []ToolMetadata{
 		{ID: "listPets", Name: "listPets", Description: "List all pets", Method: "GET", Path: "/pets"},
 		{ID: "createPet", Name: "createPet", Description: "Create a new pet", Method: "POST", Path: "/pets"},
@@ -160,4 +174,40 @@ func TestSearchEngineInterface(t *testing.T) {
 		err = engine.Close()
 		assert.NoError(t, err)
 	}
+}
+
+func TestNewSearchEngineWithConfig(t *testing.T) {
+	t.Run("hybrid with custom config", func(t *testing.T) {
+		cfg := &HybridSearchConfig{
+			Enabled:        true,
+			FusionStrategy: FusionWeighted,
+			VectorWeight:   0.7,
+			RRFConstant:    30.0,
+			TopK:           20,
+			Embedder: EmbedderConfig{
+				Type: EmbedderTFIDF,
+			},
+			Tokenizer: TokenizerConfig{
+				Type: TokenizerSimple,
+			},
+		}
+
+		engine, err := NewSearchEngineWithConfig(SearchEngineHybrid, cfg)
+		require.NoError(t, err)
+		defer func() { _ = engine.Close() }()
+
+		hybrid, ok := engine.(*HybridSearchEngine)
+		require.True(t, ok)
+		assert.Equal(t, FusionWeighted, hybrid.Config().FusionStrategy)
+		assert.Equal(t, 0.7, hybrid.Config().VectorWeight)
+	})
+
+	t.Run("non-hybrid ignores config", func(t *testing.T) {
+		engine, err := NewSearchEngineWithConfig(SearchEngineSQL, nil)
+		require.NoError(t, err)
+		defer func() { _ = engine.Close() }()
+
+		_, ok := engine.(*SQLSearchEngine)
+		assert.True(t, ok)
+	})
 }

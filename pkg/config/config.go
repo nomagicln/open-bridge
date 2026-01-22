@@ -195,8 +195,48 @@ type SafetyConfig struct {
 	ProgressiveDisclosure bool `yaml:"progressive_disclosure,omitempty"`
 
 	// SearchEngine specifies the search engine type for progressive disclosure.
-	// Valid values: "sql" (default), "predicate", "vector".
+	// Valid values: "sql" (default), "predicate", "vector", "hybrid".
 	SearchEngine string `yaml:"search_engine,omitempty"`
+
+	// HybridSearch contains configuration for the hybrid search engine.
+	// Only used when SearchEngine is set to "hybrid".
+	HybridSearch *HybridSearchSettings `yaml:"hybrid_search,omitempty"`
+}
+
+// HybridSearchSettings contains configuration for hybrid search.
+type HybridSearchSettings struct {
+	// Enabled indicates whether hybrid search is enabled.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// EmbedderType specifies the embedder type: "adaptive", "tfidf", "ollama", "onnx".
+	EmbedderType string `yaml:"embedder_type,omitempty"`
+
+	// OllamaEndpoint is the Ollama API endpoint (e.g., "http://localhost:11434").
+	OllamaEndpoint string `yaml:"ollama_endpoint,omitempty"`
+
+	// OllamaModel is the Ollama model for embeddings (e.g., "nomic-embed-text").
+	OllamaModel string `yaml:"ollama_model,omitempty"`
+
+	// ONNXModelPath is the path to a custom ONNX model file.
+	ONNXModelPath string `yaml:"onnx_model_path,omitempty"`
+
+	// TokenizerType specifies the tokenizer type: "simple", "unicode", "cjk".
+	TokenizerType string `yaml:"tokenizer_type,omitempty"`
+
+	// FusionStrategy specifies the fusion strategy: "rrf" or "weighted".
+	FusionStrategy string `yaml:"fusion_strategy,omitempty"`
+
+	// RRFConstant is the k constant for RRF algorithm (default: 60).
+	RRFConstant float64 `yaml:"rrf_constant,omitempty"`
+
+	// VectorWeight is the weight for vector search results (0.0-1.0).
+	VectorWeight float64 `yaml:"vector_weight,omitempty"`
+
+	// TopK is the number of results to retrieve from each engine before fusion.
+	TopK int `yaml:"top_k,omitempty"`
+
+	// PredicateFilter is an optional Vulcand predicate expression for post-filtering.
+	PredicateFilter string `yaml:"predicate_filter,omitempty"`
 }
 
 // RetryConfig represents retry configuration.

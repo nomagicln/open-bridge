@@ -15,6 +15,8 @@ const (
 	SearchEnginePredicate SearchEngineType = "predicate"
 	// SearchEngineVector uses vector similarity for semantic search.
 	SearchEngineVector SearchEngineType = "vector"
+	// SearchEngineHybrid combines SQL FTS5 and vector search with RRF fusion.
+	SearchEngineHybrid SearchEngineType = "hybrid"
 )
 
 // ToolMetadata contains summary information about a tool for search results.
@@ -72,6 +74,29 @@ func NewSearchEngine(engineType SearchEngineType) (ToolSearchEngine, error) {
 		return NewPredicateSearchEngine()
 	case SearchEngineVector:
 		return NewVectorSearchEngine()
+	case SearchEngineHybrid:
+		return NewHybridSearchEngine(DefaultHybridSearchConfig())
+	default:
+		return nil, fmt.Errorf("unknown search engine type: %s", engineType)
+	}
+}
+
+// NewSearchEngineWithConfig creates a new search engine with custom configuration.
+// This is primarily useful for hybrid search which has additional configuration options.
+func NewSearchEngineWithConfig(engineType SearchEngineType, hybridCfg *HybridSearchConfig) (ToolSearchEngine, error) {
+	switch engineType {
+	case SearchEngineSQL:
+		return NewSQLSearchEngine()
+	case SearchEnginePredicate:
+		return NewPredicateSearchEngine()
+	case SearchEngineVector:
+		return NewVectorSearchEngine()
+	case SearchEngineHybrid:
+		cfg := DefaultHybridSearchConfig()
+		if hybridCfg != nil {
+			cfg = *hybridCfg
+		}
+		return NewHybridSearchEngine(cfg)
 	default:
 		return nil, fmt.Errorf("unknown search engine type: %s", engineType)
 	}
@@ -86,7 +111,9 @@ func ParseSearchEngineType(s string) (SearchEngineType, error) {
 		return SearchEnginePredicate, nil
 	case "vector":
 		return SearchEngineVector, nil
+	case "hybrid":
+		return SearchEngineHybrid, nil
 	default:
-		return "", fmt.Errorf("invalid search engine type: %s (valid: sql, predicate, vector)", s)
+		return "", fmt.Errorf("invalid search engine type: %s (valid: sql, predicate, vector, hybrid)", s)
 	}
 }
