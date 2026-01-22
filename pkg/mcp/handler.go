@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -43,8 +44,8 @@ func (h *Handler) SetSpec(spec *openapi3.T) {
 }
 
 // SetAppConfig sets the app configuration for the handler.
-func (h *Handler) SetAppConfig(config *config.AppConfig, profileName string) {
-	h.appConfig = config
+func (h *Handler) SetAppConfig(appCfg *config.AppConfig, profileName string) {
+	h.appConfig = appCfg
 	h.profileName = profileName
 }
 
@@ -77,10 +78,10 @@ func errorResult(format string, args ...any) *mcp.CallToolResult {
 }
 
 // parseToolArguments unmarshals the tool arguments from the request.
-func parseToolArguments(request *mcp.CallToolRequest) (map[string]any, error) {
+func parseToolArguments(req *mcp.CallToolRequest) (map[string]any, error) {
 	var arguments map[string]any
-	if len(request.Params.Arguments) > 0 {
-		if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
+	if len(req.Params.Arguments) > 0 {
+		if err := json.Unmarshal(req.Params.Arguments, &arguments); err != nil {
 			return nil, err
 		}
 	}
@@ -141,13 +142,13 @@ func (h *Handler) buildAndExecuteRequest(operation *openapi3.Operation, method, 
 }
 
 // HandleCallTool handles tool execution requests.
-func (h *Handler) HandleCallTool(_ context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	arguments, err := parseToolArguments(request)
+func (h *Handler) HandleCallTool(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	arguments, err := parseToolArguments(req)
 	if err != nil {
 		return errorResult("Error unmarshaling arguments: %v", err), nil
 	}
 
-	operation, method, path, err := h.MapToolToOperation(request.Params.Name)
+	operation, method, path, err := h.MapToolToOperation(req.Params.Name)
 	if err != nil {
 		return errorResult("Error mapping tool: %v", err), nil
 	}
@@ -323,21 +324,13 @@ func (h *Handler) isToolAllowed(toolName string, safetyConfig *config.SafetyConf
 	}
 
 	// Check denied list first
-	for _, op := range safetyConfig.DeniedOperations {
-		if op == toolName {
-			return false
-		}
+	if slices.Contains(safetyConfig.DeniedOperations, toolName) {
+		return false
 	}
 
 	// If allowed list is specified, only include those
 	if len(safetyConfig.AllowedOperations) > 0 {
-		allowed := false
-		for _, op := range safetyConfig.AllowedOperations {
-			if op == toolName {
-				allowed = true
-				break
-			}
-		}
+		allowed := slices.Contains(safetyConfig.AllowedOperations, toolName)
 		if !allowed {
 			return false
 		}

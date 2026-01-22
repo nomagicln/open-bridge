@@ -293,6 +293,8 @@ func (f *ErrorFormatter) FormatHTTPError(resp *http.Response, body []byte) strin
 		sb.WriteString("The service is temporarily unavailable.\n")
 	case http.StatusGatewayTimeout:
 		sb.WriteString("The server did not receive a timely response from an upstream server.\n")
+	default:
+		// No additional explanation for unrecognized status codes
 	}
 
 	// Add response body if available
@@ -374,7 +376,7 @@ func checkParamTypes(opParams openapi3.Parameters) (hasRequired, hasOptional boo
 			hasOptional = true
 		}
 	}
-	return
+	return hasRequired, hasOptional
 }
 
 // writeOutputFlags writes the standard output flags section.
@@ -687,7 +689,7 @@ func (f *ErrorFormatter) levenshteinDistance(s1, s2 string) int {
 			if s1[i-1] != s2[j-1] {
 				cost = 1
 			}
-			matrix[i][j] = min(
+			matrix[i][j] = minOfThree(
 				matrix[i-1][j]+1,      // deletion
 				matrix[i][j-1]+1,      // insertion
 				matrix[i-1][j-1]+cost, // substitution
@@ -698,8 +700,8 @@ func (f *ErrorFormatter) levenshteinDistance(s1, s2 string) int {
 	return matrix[len(s1)][len(s2)]
 }
 
-// min returns the minimum of three integers.
-func min(a, b, c int) int {
+// minOfThree returns the minimum of three integers.
+func minOfThree(a, b, c int) int {
 	if a < b {
 		if a < c {
 			return a

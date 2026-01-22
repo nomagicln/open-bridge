@@ -123,7 +123,6 @@ func TestCompleteVerbsAndResources(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run("List_"+tc.name, func(t *testing.T) {
 			items := tc.listFn("")
 			assert.NotEmpty(t, items)

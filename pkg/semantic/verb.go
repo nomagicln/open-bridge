@@ -4,6 +4,7 @@ package semantic
 
 import (
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -320,12 +321,7 @@ func (r *VerbConflictResolver) qualifyWithPath(mapping *VerbMapping) string {
 
 // containsVerb checks if a verb exists in the list.
 func containsVerb(verbs []string, verb string) bool {
-	for _, v := range verbs {
-		if v == verb {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(verbs, verb)
 }
 
 // VerbSet manages a set of mapped verbs for conflict detection.
@@ -425,12 +421,7 @@ var StandardVerbs = []string{
 
 // IsStandardVerb checks if a verb is a standard CRUD verb.
 func IsStandardVerb(verb string) bool {
-	for _, v := range StandardVerbs {
-		if v == verb {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(StandardVerbs, verb)
 }
 
 // ActionVerbs are common action verbs (non-CRUD).
@@ -455,12 +446,7 @@ var ActionVerbs = []string{
 
 // IsActionVerb checks if a verb is an action verb.
 func IsActionVerb(verb string) bool {
-	for _, v := range ActionVerbs {
-		if v == verb {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ActionVerbs, verb)
 }
 
 // VerbDescription returns a human-readable description for a verb.

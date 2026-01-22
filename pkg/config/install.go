@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -508,8 +509,7 @@ func (m *Manager) ShimExists(appName string) bool {
 
 // getDefaultShimDir returns the default directory for shim scripts.
 func getDefaultShimDir() (string, error) {
-	switch runtime.GOOS {
-	case "windows":
+	if runtime.GOOS == "windows" {
 		// Use user's local bin directory
 		localAppData := os.Getenv("LOCALAPPDATA")
 		if localAppData == "" {
@@ -520,23 +520,14 @@ func getDefaultShimDir() (string, error) {
 			localAppData = filepath.Join(homeDir, "AppData", "Local")
 		}
 		return filepath.Join(localAppData, "OpenBridge", "bin"), nil
-
-	case "darwin":
-		// macOS: use ~/.local/bin (standard user bin directory)
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(homeDir, ".local", "bin"), nil
-
-	default:
-		// Linux/Unix: use ~/.local/bin (standard user bin directory)
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(homeDir, ".local", "bin"), nil
 	}
+
+	// macOS/Linux/Unix: use ~/.local/bin (standard user bin directory)
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDir, ".local", "bin"), nil
 }
 
 // IsShimDirInPath checks if the shim directory is in the user's PATH.
@@ -553,8 +544,8 @@ func IsShimDirInPath(shimDir string) bool {
 		pathSep = ":"
 	}
 
-	paths := strings.Split(pathEnv, pathSep)
-	for _, p := range paths {
+	paths := strings.SplitSeq(pathEnv, pathSep)
+	for p := range paths {
 		// Resolve to absolute path for comparison
 		absPath, err := filepath.Abs(p)
 		if err != nil {
@@ -691,10 +682,8 @@ func promptChoice(reader io.Reader, writer io.Writer, prompt string, choices []s
 		}
 
 		// Validate choice
-		for _, choice := range choices {
-			if input == choice {
-				return input, nil
-			}
+		if slices.Contains(choices, input) {
+			return input, nil
 		}
 
 		return "", fmt.Errorf("invalid choice: %s (must be one of: %s)", input, strings.Join(choices, ", "))

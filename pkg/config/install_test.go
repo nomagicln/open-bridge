@@ -642,12 +642,12 @@ func TestGetDefaultShimDir(t *testing.T) {
 	}
 
 	// Verify platform-specific expectations
-	switch runtime.GOOS {
-	case "windows":
+	if runtime.GOOS == "windows" {
 		if !strings.Contains(shimDir, "OpenBridge") {
 			t.Errorf("expected Windows shim dir to contain 'OpenBridge', got '%s'", shimDir)
 		}
-	case "darwin", "linux":
+	} else {
+		// macOS, Linux, and other Unix-like systems use .local/bin
 		if !strings.Contains(shimDir, ".local/bin") {
 			t.Errorf("expected Unix shim dir to contain '.local/bin', got '%s'", shimDir)
 		}

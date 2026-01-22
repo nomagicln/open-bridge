@@ -336,14 +336,14 @@ func (h *Handler) setNestedValue(params map[string]any, key, value string) {
 		if _, ok := current[part]; !ok {
 			current[part] = make(map[string]any)
 		}
-		if next, ok := current[part].(map[string]any); ok {
-			current = next
-		} else {
+		next, ok := current[part].(map[string]any)
+		if !ok {
 			// Conflict - can't nest under non-map
 			// Fallback to using full key
 			params[key] = value
 			return
 		}
+		current = next
 		_ = i
 	}
 

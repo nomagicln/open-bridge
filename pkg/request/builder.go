@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -97,16 +98,18 @@ func (b *Builder) InjectAuth(req *http.Request, appName, profileName string, aut
 	case "bearer":
 		req.Header.Set("Authorization", "Bearer "+cred.Token)
 	case "api_key":
-		switch authConfig.Location {
-		case "header":
-			req.Header.Set(authConfig.KeyName, cred.Token)
-		case "query":
+		if authConfig.Location == "query" {
 			q := req.URL.Query()
 			q.Set(authConfig.KeyName, cred.Token)
 			req.URL.RawQuery = q.Encode()
+		} else {
+			// Default to header if location not specified or is "header"
+			req.Header.Set(authConfig.KeyName, cred.Token)
 		}
 	case "basic":
 		req.SetBasicAuth(cred.Username, cred.Password)
+	default:
+		// Unknown auth type - no authentication applied
 	}
 
 	return nil
@@ -189,8 +192,8 @@ func (b *Builder) handleBodyFlag(body any) ([]byte, error) {
 	switch v := body.(type) {
 	case string:
 		// Check for file input: @filename
-		if strings.HasPrefix(v, "@") {
-			filename := strings.TrimPrefix(v, "@")
+		if after, ok := strings.CutPrefix(v, "@"); ok {
+			filename := after
 			return b.readBodyFromFile(filename)
 		}
 		// Check if it's a JSON string
@@ -377,30 +380,37 @@ func (b *Builder) convertToSchemaType(val any, schema *openapi3.Schema) any {
 		return val
 	}
 
-	if schema.Type.Is("integer") {
-		if v, err := strconv.Atoi(strVal); err == nil {
+	// Convert string values based on schema type
+	// If conversions fail, return original value and let validation catch it
+	switch {
+	case schema.Type.Is("integer"):
+		v, err := strconv.Atoi(strVal)
+		if err == nil {
 			return v
 		}
-		// If conversions fail, return original value and let validation catch it
-	} else if schema.Type.Is("number") {
-		if v, err := strconv.ParseFloat(strVal, 64); err == nil {
+	case schema.Type.Is("number"):
+		v, err := strconv.ParseFloat(strVal, 64)
+		if err == nil {
 			return v
 		}
-	} else if schema.Type.Is("boolean") {
-		if v, err := strconv.ParseBool(strVal); err == nil {
+	case schema.Type.Is("boolean"):
+		v, err := strconv.ParseBool(strVal)
+		if err == nil {
 			return v
 		}
-	} else if schema.Type.Is("object") {
+	case schema.Type.Is("object"):
 		// Try to parse JSON string to map
 		var m map[string]any
 		if err := json.Unmarshal([]byte(strVal), &m); err == nil {
 			return m
 		}
-	} else if schema.Type.Is("array") {
+	case schema.Type.Is("array"):
 		// This case might not be hit if flags are already parsed as slices,
 		// but if a single string was passed to an array type (e.g. env var or single flag)
 		// we treat it as a single-item array or comma-separated
 		return b.constructArrayValue(strVal, schema)
+	default:
+		// String type or unknown - return original value
 	}
 
 	return val
@@ -472,10 +482,9 @@ func typeMatches(actualType, expectedType string) bool {
 	switch expectedType {
 	case "string":
 		return actualType == "string"
-	case "integer":
-		// Allow both integer and number for integer schema (numbers without decimals)
-		return actualType == "integer" || actualType == "number"
-	case "number":
+	case "integer", "number":
+		// Allow both integer and number for numeric schemas
+		// (numbers without decimals can match integer schema)
 		return actualType == "integer" || actualType == "number"
 	case "boolean":
 		return actualType == "boolean"
@@ -491,10 +500,8 @@ func typeMatches(actualType, expectedType string) bool {
 
 // validateEnumValue validates that the value is one of the allowed enum values.
 func validateEnumValue(name string, value any, enums []any) error {
-	for _, enumVal := range enums {
-		if value == enumVal {
-			return nil
-		}
+	if slices.Contains(enums, value) {
+		return nil
 	}
 	return fmt.Errorf("parameter '%s' must be one of %v, got %v", name, enums, value)
 }

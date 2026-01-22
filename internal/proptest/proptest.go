@@ -30,8 +30,8 @@ func AnyString() gopter.Gen {
 }
 
 // IntRange generates integers in a range.
-func IntRange(min, max int) gopter.Gen {
-	return gen.IntRange(min, max)
+func IntRange(lower, upper int) gopter.Gen {
+	return gen.IntRange(lower, upper)
 }
 
 // SliceOf generates slices of elements from the given generator.

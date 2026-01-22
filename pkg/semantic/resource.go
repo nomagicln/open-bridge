@@ -4,6 +4,7 @@ package semantic
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -221,12 +222,7 @@ func (e *ResourceExtractor) isVersionSegment(segment string) bool {
 // isIgnoredPrefix checks if a segment should be ignored.
 func (e *ResourceExtractor) isIgnoredPrefix(segment string) bool {
 	lower := strings.ToLower(segment)
-	for _, prefix := range e.IgnoredPrefixes {
-		if lower == prefix {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(e.IgnoredPrefixes, lower)
 }
 
 // isResourceSegment checks if a segment represents a resource.
@@ -343,8 +339,8 @@ func Singularize(word string) string {
 	}
 
 	for _, mapping := range suffixMappings {
-		if strings.HasSuffix(word, mapping.suffix) {
-			return strings.TrimSuffix(word, mapping.suffix) + mapping.replacement
+		if before, ok := strings.CutSuffix(word, mapping.suffix); ok {
+			return before + mapping.replacement
 		}
 	}
 
@@ -469,10 +465,7 @@ func AnalyzePath(path string) *PathAnalysis {
 	}
 
 	// Determine nesting level
-	analysis.NestingLevel = len(analysis.ResourceSegments) - 1
-	if analysis.NestingLevel < 0 {
-		analysis.NestingLevel = 0
-	}
+	analysis.NestingLevel = max(len(analysis.ResourceSegments)-1, 0)
 	analysis.IsNested = analysis.NestingLevel > 0
 
 	return analysis

@@ -93,7 +93,7 @@ type ProfileExportV2 struct {
 	ProfileName string          `yaml:"profile_name" json:"profile_name"`
 	Profile     ExportedProfile `yaml:"profile" json:"profile"`
 	ExportedAt  time.Time       `yaml:"exported_at" json:"exported_at"`
-	Metadata    ExportMetadata  `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	Metadata    ExportMetadata  `yaml:"metadata,omitempty" json:"metadata,omitzero"`
 }
 
 // ExportedProfile is a cleaned profile structure for export.
@@ -101,7 +101,7 @@ type ExportedProfile struct {
 	Name         string            `yaml:"name" json:"name"`
 	BaseURL      string            `yaml:"base_url" json:"base_url"`
 	Description  string            `yaml:"description,omitempty" json:"description,omitempty"`
-	Auth         ExportedAuth      `yaml:"auth,omitempty" json:"auth,omitempty"`
+	Auth         ExportedAuth      `yaml:"auth,omitempty" json:"auth,omitzero"`
 	Headers      map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 	QueryParams  map[string]string `yaml:"query_params,omitempty" json:"query_params,omitempty"`
 	Timeout      string            `yaml:"timeout,omitempty" json:"timeout,omitempty"`

@@ -302,6 +302,11 @@ func RedactCredential(cred *Credential) map[string]any {
 		if !cred.ExpiresAt.IsZero() {
 			redacted["expires_at"] = cred.ExpiresAt.String()
 		}
+	default:
+		// Unknown credential type - redact any token-like field
+		if cred.Token != "" {
+			redacted["token"] = redactString(cred.Token)
+		}
 	}
 
 	if !cred.CreatedAt.IsZero() {

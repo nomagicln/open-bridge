@@ -28,6 +28,8 @@ linters:
     # correctness
     - staticcheck
     - govet
+    - modernize
+    - revive
     # unused code detection
     - unparam
     - unused
@@ -42,6 +44,41 @@ linters:
     - gosec
 
   settings:
+    revive:
+      rules:
+        # 代码质量 / 可读性
+        - name: empty-lines
+        - name: var-declaration
+        - name: superfluous-else
+        - name: if-return
+
+        # 命名 / 风格
+        - name: receiver-naming
+        - name: time-naming
+        - name: import-shadowing
+        - name: redefines-builtin-id
+        - name: unnecessary-stmt
+        - name: early-return
+        - name: enforce-switch-style
+        - name: useless-fallthrough
+        - name: useless-break
+        - name: identical-switch-branches
+        - name: identical-switch-conditions
+        - name: max-control-nesting
+          arguments:
+            - 3
+
+        # 错误处理
+        - name: error-strings
+        - name: error-return
+        - name: unexported-return
+
+        # Go 常见坑
+        - name: range
+        - name: bare-return
+        - name: increment-decrement
+        - name: blank-imports
+        - name: struct-tag
     gocyclo:
       min-complexity: 25
     gocognit:
