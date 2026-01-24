@@ -4,6 +4,9 @@ export default defineConfig({
   title: "OpenBridge",
   description: "A universal bridge connecting AI agents with everything.",
   base: '/open-bridge/',
+  sitemap: {
+    hostname: 'https://nomagicln.github.io/open-bridge/'
+  },
 
   head: [
     ['link', { rel: 'icon', href: '/open-bridge/logo.jpeg' }],
