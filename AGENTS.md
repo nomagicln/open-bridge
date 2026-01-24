@@ -1,147 +1,164 @@
 # OpenBridge AI Agent Guidelines
 
-## Constitution (Non-Negotiable)
+## 1. Constitution (Non-Negotiable)
 
-### 1. `.golangci.yml` is the Single Source of Truth
+These rules are absolute. Any deviation requires explicit human approval.
 
-- **Never modify** the `.golangci.yml` file
-- Use `//nolint` directives only when strictly necessary to preserve readability or consistency
+### 1.1 The Single Source of Truth
 
-### 2. Test-Driven Development
+* **Linting:** `.golangci.yml` is the supreme law. Never modify it to silence errors.
+* **Overrides:** Use `//nolint` directives only as a last resort and **MUST** include a comment explaining why (e.g., `//nolint:gosec // Safe because...`).
 
-- Workflow: **Requirements → Tests → Implementation**
-- Never modify tests to make them pass (unless the test logic itself is flawed)
+### 1.2 Zero-Inference Policy
 
-### 3. Test Requirements
+* Do not guess business logic. If a requirement is ambiguous, ask the user for clarification before writing code.
+* Do not invent external dependencies. Use the standard library whenever possible.
 
-- Unit test pass rate: **100%**
-- Code coverage: **≥ 80%**
+---
 
-### 4. Test Organization
+## 2. Test-Driven Development (The Protocol)
 
-#### File Naming Conventions
+**Principle:** Tests define the requirement. Implementation is merely a solution to pass the test.
 
-| Test Type | File Name | Description |
-|-----------|-----------|-------------|
-| Unit | `foo_test.go` | Corresponds to `foo.go` |
-| Integration | `foo_integration_test.go` | Tests involving external dependencies (HTTP, filesystem, etc.) |
-| Property | `foo_property_test.go` | Randomized input testing with `gopter` |
-| Helpers | `test_helpers.go` | Shared test utilities within a package |
+The Agent **MUST** follow this strict 3-step sequence for any new functionality. **Do not attempt to generate the full solution in one pass.**
 
-#### File Naming Rules (Mandatory)
+### Step 1: Interface Design (Skeleton)
 
-1. **Strict Name Matching**: Test file names **MUST** exactly match their source file names
-   - `errors.go` → `errors_test.go`, `errors_integration_test.go`, `errors_property_test.go`
-   - `install.go` → `install_test.go`, `install_integration_test.go`
-   - ❌ `error_test.go` for `errors.go` is **WRONG**
-   - ❌ `shim_integration_test.go` for `install.go` is **WRONG**
+*Goal: Define the contract and ensure compilation.*
 
-2. **No Orphan Test Files**: Every test file must have a corresponding source file
-   - ❌ `spec_source_test.go` is invalid if `spec_source.go` does not exist
-   - ✅ Move such tests to the correct file (e.g., merge into `install_test.go`)
-
-3. **Function Placement**: Test functions must be placed in the test file corresponding to the source file where the function under test is defined
-
-#### Principles
-
-- **Colocation**: All tests (unit/integration/property) must correspond to their source file for maintainability
-- **Extract helpers**: When multiple test files share common logic, extract it to `test_helpers.go`
-- **Property tests**: Core algorithms, parsers, and mapping logic should have property tests to verify invariants
-- **Use testify**: Use `assert` for assertions; use `require` when failure should halt the test
-
-#### Property Test Naming Convention
-
-All property test functions **MUST** use the `TestProperty` prefix:
+1. Analyze requirements.
+2. Define exported types, interfaces, and function signatures in the source file (`foo.go`).
+3. **DO NOT** implement logic. Use placeholders to ensure the code compiles.
 
 ```go
-// Good
-func TestPropertyConfigPersistenceRoundTrip(t *testing.T) { ... }
-func TestPropertyCredentialRoundTrip(t *testing.T) { ... }
+func CalculateMetric(data []int) (int, error) {
+    panic("unimplemented") // Placeholder
+}
 
-// Bad - missing TestProperty prefix
-func TestConfigRoundTrip(t *testing.T) { ... }
-func TestRoundTripProperty(t *testing.T) { ... }
 ```
 
-This naming convention enables:
+### Step 2: Write The Test (The "Red" State)
 
-- Running property tests separately: `make test-property`
-- Skipping property tests in short mode: `go test -short ./...`
+*Goal: Codify behavior and edge cases.*
 
-#### testify Usage
+1. Create the test file (`foo_test.go`).
+2. Write comprehensive test cases covering happy paths and error scenarios based **only** on the signatures from Step 1.
+3. **Constraint:** The tests must compile, but they should fail (panic) when run.
+
+### Step 3: Implementation (The "Green" State)
+
+*Goal: Pass the tests with minimal code.*
+
+1. Implement the business logic in `foo.go` to satisfy the tests.
+2. Replace `panic("unimplemented")` with actual logic.
+3. **YAGNI:** Do not add public functions or logic not covered by the tests.
+
+---
+
+## 3. Test Architecture & Organization
+
+### 3.1 File Naming Conventions (Strict)
+
+| Test Type | File Name | Build Tag Requirement | Description |
+| --- | --- | --- | --- |
+| **Unit** | `foo_test.go` | None | Tests logic within `foo.go` in isolation. |
+| **Integration** | `foo_integration_test.go` | `//go:build integration` | Tests involving DB, HTTP, or FS. |
+| **Property** | `foo_property_test.go` | None | Randomized input testing with `gopter`. |
+| **Helpers** | `test_helpers.go` | None | Shared test utilities within the package. |
+
+**Rules:**
+
+1. **Strict Name Matching:** `foo.go`  `foo_test.go`. Never use mismatched names like `foo_service_test.go`.
+2. **No Orphan Tests:** Every test file must correspond to an existing source file.
+
+### 3.2 Property Testing Strategy
+
+You **MUST** use property-based testing (using `gopter` or similar) for:
+
+* Parsers and formatters.
+* Serialization/Deserialization logic.
+* Complex algorithms with invariant properties (e.g., `Decode(Encode(x)) == x`).
+* **Naming:** All property test functions must start with `TestProperty`.
+
+### 3.3 Integration Test Isolation
+
+All files ending in `_integration_test.go` **MUST** include the build tag at the very top:
 
 ```go
-import (
-    "testing"
-    "github.com/stretchr/testify/assert"
-    "github.com/stretchr/testify/require"
-)
+//go:build integration
 
-func TestExample(t *testing.T) {
-    // require: halts on failure, use for preconditions
-    result, err := DoSomething()
-    require.NoError(t, err)
-    require.NotNil(t, result)
+package mypackage_test
 
-    // assert: continues on failure, use for verifying results
-    assert.Equal(t, expected, result.Value)
-    assert.Contains(t, result.List, item)
-}
 ```
 
 ---
 
-## Operational Guidelines
+## 4. Coding Standards
 
-### 1. Before Writing Code
+### 4.1 Error Handling
 
-Read `.golangci.yml` to understand the coding standards.
+* **Wrapping:** Always wrap errors when passing them up the stack to preserve context.
 
-### 2. Before Writing Tests
+```go
+// ✅ Good
+if err != nil {
+    return fmt.Errorf("failed to load config: %w", err)
+}
+// ❌ Bad
+if err != nil {
+    return err
+}
 
-Verify the test file name matches the source file:
-
-```bash
-# Example: If you're testing functions in install.go
-# ✅ Correct: install_test.go, install_integration_test.go
-# ❌ Wrong: shim_test.go, spec_source_test.go
-
-# List source files to confirm naming
-ls pkg/<package>/*.go | grep -v _test.go
 ```
 
-### 3. Before Committing
+* **Sentinel Errors:** Define strict sentinel errors (e.g., `ErrConfigNotFound`) for state checks in the `var` block of the package.
 
-Run the following commands and ensure all checks pass:
+### 4.2 Mocking & Dependency Injection
+
+* **Interfaces:** Always define dependencies as interfaces, not concrete structs.
+* **Generation:** If a `Generate Mocks` task is required, prefer standard tools (like `mockery`) over hand-written mocks unless the interface is trivial.
+
+---
+
+## 5. Operational Guidelines
+
+### 5.1 Before Committing (The Checklist)
+
+Run the following commands. All must pass:
+
+1. **Format & Lint:**
 
 ```bash
-make fmt-fix && make lint-fix && make test
+make fmt-fix && make lint-fix
+
 ```
 
-Additionally, verify test file naming compliance:
+1. **Unit Tests:**
 
 ```bash
-# Ensure no orphan test files exist (test files without corresponding source files)
-# For each *_test.go file, the base name should match a *.go source file
+go test -v -short ./...
+
 ```
 
-### 4. Commit Messages
+1. **Integration Tests (Optional but Recommended):**
+
+```bash
+go test -v -tags=integration ./...
+
+```
+
+### 5.2 Commit Messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
+`type(scope): description`
 
-```
-<type>(<scope>): <description>
+* **Types:** `feat`, `fix`, `refactor`, `test`, `chore`, `docs`.
+* **Scopes:** `spec`, `config`, `cli`, `tui`, `mcp`.
 
-[body]
+---
 
-[footer]
-```
+## 6. How to Read This Document (For AI)
 
-**Type**: `feat` | `fix` | `refactor` | `docs` | `test` | `chore`
-
-**Scope**: `spec` | `config` | `credential` | `semantic` | `request` | `cli` | `mcp` | `tui`
-
-### 5. Code Readability
-
-- Add comments to explain **why**, not what
-- Complex logic must include comments describing the intent
+1. **Context:** You are an expert Golang engineer working on the OpenBridge project.
+2. **Trigger:** When asked to "Implement feature X", you automatically initiate the **Step 1 (Interface Design)** of the TDD Protocol defined in Section 2.
+3. **Constraint:** You stop after Step 2 to wait for user confirmation before proceeding to Implementation (Step 3).
