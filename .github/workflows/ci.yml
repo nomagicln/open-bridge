@@ -12,6 +12,42 @@ permissions:
   contents: read
 
 jobs:
+  dco:
+    name: DCO
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify DCO sign-off
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            if [[ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]]; then
+              range="${{ github.sha }}"
+            else
+              range="${{ github.event.before }}..${{ github.sha }}"
+            fi
+          fi
+
+          missing=0
+          for commit in $(git rev-list "$range"); do
+            if ! git log -1 --pretty=%B "$commit" | grep -qi "^Signed-off-by: "; then
+              echo "Missing Signed-off-by in commit $commit"
+              missing=1
+            fi
+          done
+
+          if [[ $missing -ne 0 ]]; then
+            echo "DCO check failed. Please add Signed-off-by lines (git commit -s)."
+            exit 1
+          fi
+
   test:
     name: Test
     runs-on: ${{ matrix.os }}
@@ -75,7 +111,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [test, lint]
+    needs: [dco, test, lint]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
