@@ -6,7 +6,8 @@ export default defineConfig({
   base: '/open-bridge/',
 
   head: [
-    ['link', { rel: 'icon', href: '/open-bridge/logo.jpeg' }]
+    ['link', { rel: 'icon', href: '/open-bridge/logo.jpeg' }],
+    ['meta', { name: 'algolia-site-verification', content: '3886DFB52573D01F' }]
   ],
 
 
