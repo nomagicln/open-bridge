@@ -1402,3 +1402,313 @@ func TestSwagger20SpecInfo(t *testing.T) {
 		t.Errorf("expected at least 10 operations, got %d", info.Operations)
 	}
 }
+
+// =============================================================================
+// SpecFetchOptions Tests
+// =============================================================================
+
+func TestSpecFetchOptionsClone(t *testing.T) {
+	original := &SpecFetchOptions{
+		Headers: map[string]string{
+			"X-Custom": "value",
+		},
+		AuthType:     "bearer",
+		AuthToken:    "secret",
+		AuthKeyName:  "X-API-Key",
+		AuthLocation: "header",
+	}
+
+	clone := original.Clone()
+
+	// Verify values are copied
+	if clone.AuthType != original.AuthType {
+		t.Errorf("expected AuthType %q, got %q", original.AuthType, clone.AuthType)
+	}
+	if clone.AuthToken != original.AuthToken {
+		t.Errorf("expected AuthToken %q, got %q", original.AuthToken, clone.AuthToken)
+	}
+	if clone.Headers["X-Custom"] != "value" {
+		t.Error("expected headers to be copied")
+	}
+
+	// Verify it's a deep copy (modifying clone doesn't affect original)
+	clone.Headers["X-Custom"] = "modified"
+	if original.Headers["X-Custom"] == "modified" {
+		t.Error("modifying clone should not affect original")
+	}
+}
+
+func TestSpecFetchOptionsCloneNil(t *testing.T) {
+	var opts *SpecFetchOptions
+	clone := opts.Clone()
+	if clone != nil {
+		t.Error("Clone of nil should return nil")
+	}
+}
+
+func TestSpecFetchOptionsMerge(t *testing.T) {
+	base := &SpecFetchOptions{
+		Headers: map[string]string{
+			"X-Base":   "base-value",
+			"X-Shared": "base-shared",
+		},
+		AuthType:  "bearer",
+		AuthToken: "base-token",
+	}
+
+	override := &SpecFetchOptions{
+		Headers: map[string]string{
+			"X-Override": "override-value",
+			"X-Shared":   "override-shared",
+		},
+		AuthType:     "api_key",
+		AuthToken:    "override-token",
+		AuthKeyName:  "X-API-Key",
+		AuthLocation: "query",
+	}
+
+	merged := base.Merge(override)
+
+	// Override auth should take precedence
+	if merged.AuthType != "api_key" {
+		t.Errorf("expected AuthType 'api_key', got %q", merged.AuthType)
+	}
+	if merged.AuthToken != "override-token" {
+		t.Errorf("expected AuthToken 'override-token', got %q", merged.AuthToken)
+	}
+	if merged.AuthKeyName != "X-API-Key" {
+		t.Errorf("expected AuthKeyName 'X-API-Key', got %q", merged.AuthKeyName)
+	}
+	if merged.AuthLocation != "query" {
+		t.Errorf("expected AuthLocation 'query', got %q", merged.AuthLocation)
+	}
+
+	// Headers should be merged
+	if merged.Headers["X-Base"] != "base-value" {
+		t.Error("expected base header to be preserved")
+	}
+	if merged.Headers["X-Override"] != "override-value" {
+		t.Error("expected override header to be present")
+	}
+	if merged.Headers["X-Shared"] != "override-shared" {
+		t.Error("expected override to take precedence for shared header")
+	}
+}
+
+func TestSpecFetchOptionsMergeNilBase(t *testing.T) {
+	var base *SpecFetchOptions
+	override := &SpecFetchOptions{
+		AuthType: "bearer",
+	}
+
+	merged := base.Merge(override)
+	if merged.AuthType != "bearer" {
+		t.Errorf("expected AuthType 'bearer', got %q", merged.AuthType)
+	}
+}
+
+func TestSpecFetchOptionsMergeNilOverride(t *testing.T) {
+	base := &SpecFetchOptions{
+		AuthType: "bearer",
+	}
+	var override *SpecFetchOptions
+
+	merged := base.Merge(override)
+	if merged.AuthType != "bearer" {
+		t.Errorf("expected AuthType 'bearer', got %q", merged.AuthType)
+	}
+}
+
+func TestSpecFetchOptionsMergeBothNil(t *testing.T) {
+	var base, override *SpecFetchOptions
+	merged := base.Merge(override)
+	if merged != nil {
+		t.Error("expected nil when both are nil")
+	}
+}
+
+func TestNewParserWithFetchOptions(t *testing.T) {
+	opts := &SpecFetchOptions{
+		Headers: map[string]string{
+			"X-Custom": "value",
+		},
+		AuthType:  "bearer",
+		AuthToken: "test-token",
+	}
+
+	p := NewParser(WithFetchOptions(opts))
+
+	if p.fetchOptions == nil {
+		t.Fatal("expected fetchOptions to be set")
+	}
+	if p.fetchOptions.AuthType != "bearer" {
+		t.Errorf("expected AuthType 'bearer', got %q", p.fetchOptions.AuthType)
+	}
+}
+
+func TestLoadSpecWithFetchOptions(t *testing.T) {
+	var receivedHeaders http.Header
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"openapi":"3.0.0","info":{"title":"Test","version":"1.0.0"},"paths":{}}`))
+	}))
+	defer server.Close()
+
+	// Test bearer auth
+	opts := &SpecFetchOptions{
+		Headers: map[string]string{
+			"X-Custom-Header": "custom-value",
+		},
+		AuthType:  "bearer",
+		AuthToken: "my-bearer-token",
+	}
+
+	p := NewParser(WithFetchOptions(opts))
+	_, err := p.LoadSpec(server.URL)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify custom header was sent
+	if receivedHeaders.Get("X-Custom-Header") != "custom-value" {
+		t.Errorf("expected custom header 'custom-value', got %q", receivedHeaders.Get("X-Custom-Header"))
+	}
+
+	// Verify bearer auth was sent
+	authHeader := receivedHeaders.Get("Authorization")
+	if authHeader != "Bearer my-bearer-token" {
+		t.Errorf("expected Authorization 'Bearer my-bearer-token', got %q", authHeader)
+	}
+}
+
+func TestLoadSpecWithOptionsOverride(t *testing.T) {
+	var receivedHeaders http.Header
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"openapi":"3.0.0","info":{"title":"Test","version":"1.0.0"},"paths":{}}`))
+	}))
+	defer server.Close()
+
+	// Parser with default options
+	defaultOpts := &SpecFetchOptions{
+		Headers: map[string]string{
+			"X-Default": "default-value",
+		},
+		AuthType:  "bearer",
+		AuthToken: "default-token",
+	}
+	p := NewParser(WithFetchOptions(defaultOpts))
+
+	// Per-spec override
+	overrideOpts := &SpecFetchOptions{
+		Headers: map[string]string{
+			"X-Override": "override-value",
+		},
+		AuthType:  "api_key",
+		AuthToken: "override-key",
+	}
+
+	ctx := context.Background()
+	_, err := p.LoadSpecWithOptions(ctx, server.URL, overrideOpts)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify default header is present
+	if receivedHeaders.Get("X-Default") != "default-value" {
+		t.Errorf("expected default header to be present")
+	}
+
+	// Verify override header is present
+	if receivedHeaders.Get("X-Override") != "override-value" {
+		t.Errorf("expected override header to be present")
+	}
+
+	// Verify override auth takes precedence (api_key defaults to X-API-Key header)
+	if receivedHeaders.Get("X-API-Key") != "override-key" {
+		t.Errorf("expected X-API-Key header with override-key, got %q", receivedHeaders.Get("X-API-Key"))
+	}
+
+	// Bearer token should NOT be present (api_key override)
+	if authHeader := receivedHeaders.Get("Authorization"); authHeader != "" {
+		t.Errorf("expected no Authorization header when using api_key, got %q", authHeader)
+	}
+}
+
+func TestLoadSpecWithAPIKeyQueryAuth(t *testing.T) {
+	var receivedQuery string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"openapi":"3.0.0","info":{"title":"Test","version":"1.0.0"},"paths":{}}`))
+	}))
+	defer server.Close()
+
+	opts := &SpecFetchOptions{
+		AuthType:     "api_key",
+		AuthToken:    "my-api-key",
+		AuthKeyName:  "api_key",
+		AuthLocation: "query",
+	}
+
+	p := NewParser(WithFetchOptions(opts))
+	_, err := p.LoadSpec(server.URL)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify api_key was added to query
+	if receivedQuery != "api_key=my-api-key" {
+		t.Errorf("expected query 'api_key=my-api-key', got %q", receivedQuery)
+	}
+}
+
+func TestLoadSpecWithBasicAuth(t *testing.T) {
+	var receivedHeaders http.Header
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"openapi":"3.0.0","info":{"title":"Test","version":"1.0.0"},"paths":{}}`))
+	}))
+	defer server.Close()
+
+	opts := &SpecFetchOptions{
+		AuthType:  "basic",
+		AuthToken: "dXNlcjpwYXNz", // base64("user:pass")
+	}
+
+	p := NewParser(WithFetchOptions(opts))
+	_, err := p.LoadSpec(server.URL)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	authHeader := receivedHeaders.Get("Authorization")
+	if authHeader != "Basic dXNlcjpwYXNz" {
+		t.Errorf("expected Authorization 'Basic dXNlcjpwYXNz', got %q", authHeader)
+	}
+}
+
+func TestGetHTTPClient(t *testing.T) {
+	customClient := &http.Client{Timeout: 60 * time.Second}
+	p := NewParser(WithHTTPClient(customClient))
+
+	if p.GetHTTPClient() != customClient {
+		t.Error("GetHTTPClient should return the configured client")
+	}
+}
+
+func TestGetFetchOptions(t *testing.T) {
+	opts := &SpecFetchOptions{AuthType: "bearer"}
+	p := NewParser(WithFetchOptions(opts))
+
+	if p.GetFetchOptions() != opts {
+		t.Error("GetFetchOptions should return the configured options")
+	}
+}

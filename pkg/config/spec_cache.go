@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -44,6 +45,19 @@ type SpecCacheMeta struct {
 
 	// Size is the size of the cached spec file in bytes.
 	Size int64 `json:"size"`
+
+	// FetchHeaders contains custom headers used when fetching the spec.
+	// These are persisted to enable revalidation with the same credentials.
+	FetchHeaders map[string]string `json:"fetch_headers,omitempty"`
+
+	// FetchAuthType is the authentication type used when fetching: "bearer", "api_key", "basic", or empty.
+	FetchAuthType string `json:"fetch_auth_type,omitempty"`
+
+	// FetchAuthKeyName is the header/query parameter name for api_key auth.
+	FetchAuthKeyName string `json:"fetch_auth_key_name,omitempty"`
+
+	// FetchAuthLocation is where api_key auth was sent: "header" or "query".
+	FetchAuthLocation string `json:"fetch_auth_location,omitempty"`
 }
 
 // IsStale returns true if the cached spec has expired.
@@ -51,10 +65,31 @@ func (m *SpecCacheMeta) IsStale() bool {
 	return time.Now().After(m.ExpiresAt)
 }
 
+// SpecFetchOptions contains options for fetching remote specs.
+// This is imported from pkg/spec but redefined here to avoid circular imports.
+// The values are compatible and can be converted between the two types.
+type SpecFetchOptions struct {
+	// Headers contains custom HTTP headers to send with the fetch request.
+	Headers map[string]string
+
+	// AuthType is the authentication type: "bearer", "api_key", "basic", or empty for none.
+	AuthType string
+
+	// AuthToken is the authentication token or credential value.
+	AuthToken string
+
+	// AuthKeyName is the header or query parameter name for api_key auth.
+	AuthKeyName string
+
+	// AuthLocation is where to send api_key auth: "header" or "query".
+	AuthLocation string
+}
+
 // SpecCacheManager manages caching of OpenAPI specifications.
 type SpecCacheManager struct {
-	baseDir    string
-	httpClient *http.Client
+	baseDir      string
+	httpClient   *http.Client
+	fetchOptions *SpecFetchOptions
 }
 
 // NewSpecCacheManager creates a new spec cache manager.
@@ -67,10 +102,31 @@ func NewSpecCacheManager(baseDir string) *SpecCacheManager {
 	}
 }
 
+// NewSpecCacheManagerWithOptions creates a new spec cache manager with custom client and fetch options.
+func NewSpecCacheManagerWithOptions(baseDir string, client *http.Client, opts *SpecFetchOptions) *SpecCacheManager {
+	mgr := &SpecCacheManager{
+		baseDir:      baseDir,
+		fetchOptions: opts,
+	}
+	if client != nil {
+		mgr.httpClient = client
+	} else {
+		mgr.httpClient = &http.Client{
+			Timeout: 30 * time.Second,
+		}
+	}
+	return mgr
+}
+
 // SetHTTPClient sets a custom HTTP client for fetching specs.
 // This is useful for configuring TLS settings.
 func (c *SpecCacheManager) SetHTTPClient(client *http.Client) {
 	c.httpClient = client
+}
+
+// SetFetchOptions sets default fetch options for remote spec fetching.
+func (c *SpecCacheManager) SetFetchOptions(opts *SpecFetchOptions) {
+	c.fetchOptions = opts
 }
 
 // getCacheDir returns the cache directory for an app.
@@ -171,10 +227,59 @@ type FetchResult struct {
 // For HTTP URLs, it respects cache headers and supports offline fallback.
 // For local files, it reads directly without caching.
 func (c *SpecCacheManager) FetchWithCache(appName, source string) (*FetchResult, error) {
+	return c.FetchWithCacheAndOptions(appName, source, nil)
+}
+
+// FetchWithCacheAndOptions fetches a spec with caching support and custom fetch options.
+// The provided options are merged with manager defaults (per-spec override takes precedence).
+func (c *SpecCacheManager) FetchWithCacheAndOptions(appName, source string, opts *SpecFetchOptions) (*FetchResult, error) {
 	if !isWebURL(source) {
 		return c.fetchLocalFile(source)
 	}
-	return c.fetchRemoteWithCache(appName, source)
+	// Merge manager defaults with per-spec options
+	effectiveOpts := c.mergeFetchOptions(opts)
+	return c.fetchRemoteWithCache(appName, source, effectiveOpts)
+}
+
+// mergeFetchOptions merges manager defaults with per-spec overrides.
+func (c *SpecCacheManager) mergeFetchOptions(override *SpecFetchOptions) *SpecFetchOptions {
+	if c.fetchOptions == nil && override == nil {
+		return nil
+	}
+	if c.fetchOptions == nil {
+		return override
+	}
+	if override == nil {
+		return c.fetchOptions
+	}
+
+	// Merge: override takes precedence
+	merged := &SpecFetchOptions{
+		AuthType:     c.fetchOptions.AuthType,
+		AuthToken:    c.fetchOptions.AuthToken,
+		AuthKeyName:  c.fetchOptions.AuthKeyName,
+		AuthLocation: c.fetchOptions.AuthLocation,
+	}
+	if c.fetchOptions.Headers != nil {
+		merged.Headers = make(map[string]string, len(c.fetchOptions.Headers))
+		maps.Copy(merged.Headers, c.fetchOptions.Headers)
+	}
+
+	// Apply overrides
+	if override.AuthType != "" {
+		merged.AuthType = override.AuthType
+		merged.AuthToken = override.AuthToken
+		merged.AuthKeyName = override.AuthKeyName
+		merged.AuthLocation = override.AuthLocation
+	}
+	if override.Headers != nil {
+		if merged.Headers == nil {
+			merged.Headers = make(map[string]string)
+		}
+		maps.Copy(merged.Headers, override.Headers)
+	}
+
+	return merged
 }
 
 // fetchLocalFile reads a local spec file.
@@ -201,7 +306,7 @@ func (c *SpecCacheManager) fetchLocalFile(path string) (*FetchResult, error) {
 }
 
 // fetchRemoteWithCache fetches a remote spec with caching.
-func (c *SpecCacheManager) fetchRemoteWithCache(appName, url string) (*FetchResult, error) {
+func (c *SpecCacheManager) fetchRemoteWithCache(appName, url string, opts *SpecFetchOptions) (*FetchResult, error) {
 	// Try to load existing cache metadata
 	meta, _ := c.LoadMeta(appName)
 
@@ -222,7 +327,7 @@ func (c *SpecCacheManager) fetchRemoteWithCache(appName, url string) (*FetchResu
 	}
 
 	// Fetch from remote
-	result, err := c.fetchRemote(url, meta)
+	result, err := c.fetchRemote(url, meta, opts)
 	if err != nil {
 		// Network error - try to use stale cache if available
 		if meta != nil {
@@ -264,9 +369,9 @@ func (c *SpecCacheManager) fetchRemoteWithCache(appName, url string) (*FetchResu
 
 // fetchRemote fetches a spec from a remote URL.
 // buildMetaFromResponse creates SpecCacheMeta from HTTP response and content.
-func buildMetaFromResponse(resp *http.Response, url string, content []byte) *SpecCacheMeta {
+func buildMetaFromResponse(resp *http.Response, url string, content []byte, opts *SpecFetchOptions) *SpecCacheMeta {
 	format := detectFormat(resp.Header.Get("Content-Type"), url)
-	return &SpecCacheMeta{
+	meta := &SpecCacheMeta{
 		SourceURL:    url,
 		Format:       format,
 		ETag:         resp.Header.Get("ETag"),
@@ -276,13 +381,32 @@ func buildMetaFromResponse(resp *http.Response, url string, content []byte) *Spe
 		ContentHash:  computeHash(content),
 		Size:         int64(len(content)),
 	}
+
+	// Persist fetch options (excluding sensitive token) for revalidation
+	if opts != nil {
+		if opts.Headers != nil {
+			meta.FetchHeaders = make(map[string]string, len(opts.Headers))
+			maps.Copy(meta.FetchHeaders, opts.Headers)
+		}
+		meta.FetchAuthType = opts.AuthType
+		meta.FetchAuthKeyName = opts.AuthKeyName
+		meta.FetchAuthLocation = opts.AuthLocation
+		// Note: AuthToken is NOT persisted for security reasons.
+		// Revalidation requires the caller to provide fresh credentials.
+	}
+
+	return meta
 }
 
-func (c *SpecCacheManager) fetchRemote(url string, existingMeta *SpecCacheMeta) (*FetchResult, error) {
+func (c *SpecCacheManager) fetchRemote(url string, existingMeta *SpecCacheMeta, opts *SpecFetchOptions) (*FetchResult, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
+
+	// Set common headers
+	req.Header.Set("Accept", "application/json, application/yaml, text/yaml, */*")
+	req.Header.Set("User-Agent", "OpenBridge/1.0")
 
 	// Add conditional headers if we have existing cache
 	if existingMeta != nil {
@@ -293,6 +417,9 @@ func (c *SpecCacheManager) fetchRemote(url string, existingMeta *SpecCacheMeta) 
 			req.Header.Set("If-Modified-Since", existingMeta.LastModified)
 		}
 	}
+
+	// Apply custom headers and authentication
+	applyFetchOptions(req, opts)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -317,8 +444,47 @@ func (c *SpecCacheManager) fetchRemote(url string, existingMeta *SpecCacheMeta) 
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	meta := buildMetaFromResponse(resp, url, content)
+	meta := buildMetaFromResponse(resp, url, content, opts)
 	return &FetchResult{Content: content, Format: meta.Format, Meta: meta, FromCache: false}, nil
+}
+
+// applyFetchOptions applies custom headers and authentication to an HTTP request.
+func applyFetchOptions(req *http.Request, opts *SpecFetchOptions) {
+	if opts == nil {
+		return
+	}
+
+	// Apply custom headers
+	for key, value := range opts.Headers {
+		req.Header.Set(key, value)
+	}
+
+	// Apply authentication
+	if opts.AuthToken == "" {
+		return
+	}
+
+	switch opts.AuthType {
+	case "bearer":
+		req.Header.Set("Authorization", "Bearer "+opts.AuthToken)
+	case "basic":
+		req.Header.Set("Authorization", "Basic "+opts.AuthToken)
+	case "api_key":
+		keyName := opts.AuthKeyName
+		if keyName == "" {
+			keyName = "X-API-Key"
+		}
+		// Apply api_key to query if explicitly specified, otherwise default to header
+		if opts.AuthLocation == "query" {
+			q := req.URL.Query()
+			q.Set(keyName, opts.AuthToken)
+			req.URL.RawQuery = q.Encode()
+		} else {
+			req.Header.Set(keyName, opts.AuthToken)
+		}
+	default:
+		// Unknown auth type, skip authentication
+	}
 }
 
 // saveToCache saves a fetch result to the cache.

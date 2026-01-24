@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -33,12 +34,91 @@ const (
 	Version31 SpecVersion = "3.1"
 )
 
+// SpecFetchOptions contains options for fetching remote OpenAPI specifications.
+// This allows passing custom headers, authentication, and other HTTP settings
+// when loading specs from remote URLs.
+type SpecFetchOptions struct {
+	// Headers contains custom HTTP headers to send with the fetch request.
+	// These are merged with default headers (Accept, User-Agent).
+	Headers map[string]string
+
+	// AuthType is the authentication type: "bearer", "api_key", "basic", or empty for none.
+	AuthType string
+
+	// AuthToken is the authentication token or credential value.
+	// For bearer: the token value
+	// For api_key: the API key value
+	// For basic: base64-encoded "username:password"
+	AuthToken string
+
+	// AuthKeyName is the header or query parameter name for api_key auth.
+	// Defaults to "Authorization" for bearer, or the specified key name for api_key.
+	AuthKeyName string
+
+	// AuthLocation is where to send api_key auth: "header" or "query".
+	// Defaults to "header".
+	AuthLocation string
+}
+
+// Clone returns a deep copy of SpecFetchOptions.
+func (o *SpecFetchOptions) Clone() *SpecFetchOptions {
+	if o == nil {
+		return nil
+	}
+	clone := &SpecFetchOptions{
+		AuthType:     o.AuthType,
+		AuthToken:    o.AuthToken,
+		AuthKeyName:  o.AuthKeyName,
+		AuthLocation: o.AuthLocation,
+	}
+	if o.Headers != nil {
+		clone.Headers = make(map[string]string, len(o.Headers))
+		maps.Copy(clone.Headers, o.Headers)
+	}
+	return clone
+}
+
+// Merge combines two SpecFetchOptions, with override taking precedence.
+// This allows per-spec overrides to be layered on top of profile defaults.
+func (o *SpecFetchOptions) Merge(override *SpecFetchOptions) *SpecFetchOptions {
+	if o == nil && override == nil {
+		return nil
+	}
+	if o == nil {
+		return override.Clone()
+	}
+	if override == nil {
+		return o.Clone()
+	}
+
+	merged := o.Clone()
+
+	// Override auth settings if specified
+	if override.AuthType != "" {
+		merged.AuthType = override.AuthType
+		merged.AuthToken = override.AuthToken
+		merged.AuthKeyName = override.AuthKeyName
+		merged.AuthLocation = override.AuthLocation
+	}
+
+	// Merge headers (override takes precedence)
+	if override.Headers != nil {
+		if merged.Headers == nil {
+			merged.Headers = make(map[string]string)
+		}
+		maps.Copy(merged.Headers, override.Headers)
+	}
+
+	return merged
+}
+
 // Parser handles loading, parsing, and caching of OpenAPI specifications.
 type Parser struct {
-	cache    sync.Map // map[string]*CachedSpec
-	cacheTTL time.Duration
-	client   *http.Client
-	loader   *openapi3.Loader
+	cache        sync.Map // map[string]*CachedSpec
+	cacheTTL     time.Duration
+	client       *http.Client
+	loader       *openapi3.Loader
+	fetchOptions *SpecFetchOptions
 }
 
 // CachedSpec represents a cached OpenAPI specification with metadata.
@@ -78,6 +158,14 @@ func WithHTTPClient(client *http.Client) ParserOption {
 	}
 }
 
+// WithFetchOptions sets default fetch options for remote spec loading.
+// These options provide custom headers and authentication for fetching specs.
+func WithFetchOptions(opts *SpecFetchOptions) ParserOption {
+	return func(p *Parser) {
+		p.fetchOptions = opts
+	}
+}
+
 // NewParser creates a new Parser with the given options. 🐾
 func NewParser(opts ...ParserOption) *Parser {
 	loader := openapi3.NewLoader()
@@ -108,9 +196,29 @@ func (p *Parser) LoadSpec(source string) (*openapi3.T, error) {
 func (p *Parser) LoadSpecWithContext(ctx context.Context, source string) (*openapi3.T, error) {
 	// Detect if source is a URL or file path
 	if isURL(source) {
-		return p.loadFromURL(ctx, source)
+		return p.loadFromURL(ctx, source, nil)
 	}
 	return p.loadFromFile(ctx, source)
+}
+
+// LoadSpecWithOptions loads an OpenAPI specification with custom fetch options.
+// The provided options are merged with parser defaults (per-spec override takes precedence).
+func (p *Parser) LoadSpecWithOptions(ctx context.Context, source string, opts *SpecFetchOptions) (*openapi3.T, error) {
+	if isURL(source) {
+		return p.loadFromURL(ctx, source, opts)
+	}
+	return p.loadFromFile(ctx, source)
+}
+
+// GetHTTPClient returns the HTTP client used by the parser.
+// This allows sharing the same client with other components.
+func (p *Parser) GetHTTPClient() *http.Client {
+	return p.client
+}
+
+// GetFetchOptions returns the default fetch options configured for the parser.
+func (p *Parser) GetFetchOptions() *SpecFetchOptions {
+	return p.fetchOptions
 }
 
 // loadFromFile loads a specification from a local file.
@@ -135,7 +243,8 @@ func (p *Parser) loadFromFile(ctx context.Context, path string) (*openapi3.T, er
 }
 
 // loadFromURL loads a specification from a remote URL.
-func (p *Parser) loadFromURL(ctx context.Context, specURL string) (*openapi3.T, error) {
+// If perSpecOpts is provided, it is merged with parser defaults (per-spec takes precedence).
+func (p *Parser) loadFromURL(ctx context.Context, specURL string, perSpecOpts *SpecFetchOptions) (*openapi3.T, error) {
 	// Validate URL
 	parsedURL, err := url.Parse(specURL)
 	if err != nil {
@@ -151,6 +260,10 @@ func (p *Parser) loadFromURL(ctx context.Context, specURL string) (*openapi3.T, 
 	// Set common headers
 	req.Header.Set("Accept", "application/json, application/yaml, text/yaml, */*")
 	req.Header.Set("User-Agent", "OpenBridge/1.0")
+
+	// Merge parser defaults with per-spec options (per-spec takes precedence)
+	effectiveOpts := p.fetchOptions.Merge(perSpecOpts)
+	p.applyFetchOptions(req, effectiveOpts)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -173,6 +286,46 @@ func (p *Parser) loadFromURL(ctx context.Context, specURL string) (*openapi3.T, 
 
 	// Use the URL as the source for relative reference resolution
 	return p.parseSpecWithBaseURL(ctx, data, parsedURL)
+}
+
+// applyFetchOptions applies custom headers and authentication to an HTTP request.
+func (p *Parser) applyFetchOptions(req *http.Request, opts *SpecFetchOptions) {
+	if opts == nil {
+		return
+	}
+
+	// Apply custom headers
+	for key, value := range opts.Headers {
+		req.Header.Set(key, value)
+	}
+
+	// Apply authentication
+	if opts.AuthToken == "" {
+		return
+	}
+
+	switch opts.AuthType {
+	case "bearer":
+		req.Header.Set("Authorization", "Bearer "+opts.AuthToken)
+	case "basic":
+		req.Header.Set("Authorization", "Basic "+opts.AuthToken)
+	case "api_key":
+		keyName := opts.AuthKeyName
+		if keyName == "" {
+			keyName = "X-API-Key"
+		}
+		location := opts.AuthLocation
+		// Apply api_key to query if explicitly specified, otherwise default to header
+		if location == "query" {
+			q := req.URL.Query()
+			q.Set(keyName, opts.AuthToken)
+			req.URL.RawQuery = q.Encode()
+		} else {
+			req.Header.Set(keyName, opts.AuthToken)
+		}
+	default:
+		// Unknown auth type, skip authentication
+	}
 }
 
 // parseSpec parses specification data and handles version detection.

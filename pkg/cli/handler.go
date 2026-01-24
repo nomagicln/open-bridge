@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -389,58 +390,18 @@ func (h *Handler) FormatOutput(body []byte, format string) (string, error) {
 		if err := json.Unmarshal(body, &data); err != nil {
 			return string(body), nil
 		}
-		formatted, err := yaml.Marshal(data)
-		if err != nil {
+		// Use encoder to set 2-space indentation
+		var buf bytes.Buffer
+		enc := yaml.NewEncoder(&buf)
+		enc.SetIndent(2)
+		if err := enc.Encode(data); err != nil {
 			return string(body), nil
 		}
-		return string(formatted), nil
-
-	case "table":
-		// For table format, parse JSON and display as table
-		// This is a simplified implementation
-		var data any
-		if err := json.Unmarshal(body, &data); err != nil {
-			return string(body), nil
-		}
-		return h.formatAsTable(data), nil
+		return buf.String(), nil
 
 	default:
-		return string(body), nil
-	}
-}
-
-// formatAsTable formats data as a simple table.
-func (h *Handler) formatAsTable(data any) string {
-	// Simple implementation - to be enhanced with tablewriter
-	switch v := data.(type) {
-	case []any:
-		if len(v) == 0 {
-			return "No results"
-		}
-		// Format as list
-		var lines []string
-		for _, item := range v {
-			if m, ok := item.(map[string]any); ok {
-				var parts []string
-				for key, val := range m {
-					parts = append(parts, fmt.Sprintf("%s: %v", key, val))
-				}
-				lines = append(lines, strings.Join(parts, ", "))
-			} else {
-				lines = append(lines, fmt.Sprintf("%v", item))
-			}
-		}
-		return strings.Join(lines, "\n")
-
-	case map[string]any:
-		var lines []string
-		for key, val := range v {
-			lines = append(lines, fmt.Sprintf("%s: %v", key, val))
-		}
-		return strings.Join(lines, "\n")
-
-	default:
-		return fmt.Sprintf("%v", data)
+		// Default to yaml format
+		return h.FormatOutput(body, "yaml")
 	}
 }
 
@@ -590,8 +551,8 @@ func (h *Handler) showAppHelp(appName string, appConfig *config.AppConfig) error
 	sb.WriteString("Global Flags:\n")
 	sb.WriteString("  --help, -h       Show help\n")
 	sb.WriteString("  --json           Output in JSON format\n")
-	sb.WriteString("  --yaml           Output in YAML format\n")
-	sb.WriteString("  --output, -o     Output format: table, json, yaml\n")
+	sb.WriteString("  --yaml           Output in YAML format (default)\n")
+	sb.WriteString("  --output, -o     Output format: json, yaml (default: yaml)\n")
 	sb.WriteString("  --profile, -p    Profile to use\n\n")
 
 	sb.WriteString("Examples:\n")

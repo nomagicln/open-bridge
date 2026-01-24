@@ -382,3 +382,284 @@ func TestGetCacheInfo(t *testing.T) {
 		assert.False(t, info.IsStale) // Cache should be valid (not stale)
 	})
 }
+
+// =============================================================================
+// SpecFetchOptions Tests
+// =============================================================================
+
+func TestNewSpecCacheManagerWithOptions(t *testing.T) {
+	tmpDir, cleanup := createTestCacheDir(t)
+	defer cleanup()
+
+	customClient := &http.Client{Timeout: 60 * time.Second}
+	opts := &SpecFetchOptions{
+		Headers:  map[string]string{"X-Custom": "value"},
+		AuthType: "bearer",
+	}
+
+	manager := NewSpecCacheManagerWithOptions(tmpDir, customClient, opts)
+	require.NotNil(t, manager)
+	assert.Equal(t, customClient, manager.httpClient)
+	assert.Equal(t, opts, manager.fetchOptions)
+}
+
+func TestSetFetchOptions(t *testing.T) {
+	tmpDir, cleanup := createTestCacheDir(t)
+	defer cleanup()
+
+	manager := NewSpecCacheManager(tmpDir)
+	opts := &SpecFetchOptions{
+		AuthType:  "bearer",
+		AuthToken: "test-token",
+	}
+
+	manager.SetFetchOptions(opts)
+	assert.Equal(t, opts, manager.fetchOptions)
+}
+
+func TestFetchWithCacheAndOptions_BearerAuth(t *testing.T) {
+	tmpDir, cleanup := createTestCacheDir(t)
+	defer cleanup()
+
+	var receivedHeaders http.Header
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"openapi":"3.0.0","info":{"title":"Test","version":"1.0.0"},"paths":{}}`))
+	}))
+	defer server.Close()
+
+	manager := NewSpecCacheManager(tmpDir)
+	opts := &SpecFetchOptions{
+		Headers: map[string]string{
+			"X-Custom-Header": "custom-value",
+		},
+		AuthType:  "bearer",
+		AuthToken: "my-bearer-token",
+	}
+
+	result, err := manager.FetchWithCacheAndOptions("test-app", server.URL, opts)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.FromCache)
+
+	// Verify custom header was sent
+	assert.Equal(t, "custom-value", receivedHeaders.Get("X-Custom-Header"))
+
+	// Verify bearer auth was sent
+	assert.Equal(t, "Bearer my-bearer-token", receivedHeaders.Get("Authorization"))
+}
+
+func TestFetchWithCacheAndOptions_APIKeyHeader(t *testing.T) {
+	tmpDir, cleanup := createTestCacheDir(t)
+	defer cleanup()
+
+	var receivedHeaders http.Header
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"openapi":"3.0.0","info":{"title":"Test","version":"1.0.0"},"paths":{}}`))
+	}))
+	defer server.Close()
+
+	manager := NewSpecCacheManager(tmpDir)
+	opts := &SpecFetchOptions{
+		AuthType:     "api_key",
+		AuthToken:    "my-api-key",
+		AuthKeyName:  "X-API-Key",
+		AuthLocation: "header",
+	}
+
+	result, err := manager.FetchWithCacheAndOptions("test-app", server.URL, opts)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Verify api_key header was sent
+	assert.Equal(t, "my-api-key", receivedHeaders.Get("X-API-Key"))
+}
+
+func TestFetchWithCacheAndOptions_APIKeyQuery(t *testing.T) {
+	tmpDir, cleanup := createTestCacheDir(t)
+	defer cleanup()
+
+	var receivedQuery string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"openapi":"3.0.0","info":{"title":"Test","version":"1.0.0"},"paths":{}}`))
+	}))
+	defer server.Close()
+
+	manager := NewSpecCacheManager(tmpDir)
+	opts := &SpecFetchOptions{
+		AuthType:     "api_key",
+		AuthToken:    "my-api-key",
+		AuthKeyName:  "api_key",
+		AuthLocation: "query",
+	}
+
+	result, err := manager.FetchWithCacheAndOptions("test-app", server.URL, opts)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Verify api_key was added to query
+	assert.Equal(t, "api_key=my-api-key", receivedQuery)
+}
+
+func TestFetchWithCacheAndOptions_BasicAuth(t *testing.T) {
+	tmpDir, cleanup := createTestCacheDir(t)
+	defer cleanup()
+
+	var receivedHeaders http.Header
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"openapi":"3.0.0","info":{"title":"Test","version":"1.0.0"},"paths":{}}`))
+	}))
+	defer server.Close()
+
+	manager := NewSpecCacheManager(tmpDir)
+	opts := &SpecFetchOptions{
+		AuthType:  "basic",
+		AuthToken: "dXNlcjpwYXNz", // base64("user:pass")
+	}
+
+	result, err := manager.FetchWithCacheAndOptions("test-app", server.URL, opts)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, "Basic dXNlcjpwYXNz", receivedHeaders.Get("Authorization"))
+}
+
+func TestFetchWithCacheAndOptions_MergeFetchOptions(t *testing.T) {
+	tmpDir, cleanup := createTestCacheDir(t)
+	defer cleanup()
+
+	var receivedHeaders http.Header
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"openapi":"3.0.0","info":{"title":"Test","version":"1.0.0"},"paths":{}}`))
+	}))
+	defer server.Close()
+
+	// Manager with default options
+	defaultOpts := &SpecFetchOptions{
+		Headers: map[string]string{
+			"X-Default": "default-value",
+		},
+		AuthType:  "bearer",
+		AuthToken: "default-token",
+	}
+	manager := NewSpecCacheManagerWithOptions(tmpDir, nil, defaultOpts)
+
+	// Per-spec override
+	overrideOpts := &SpecFetchOptions{
+		Headers: map[string]string{
+			"X-Override": "override-value",
+		},
+		AuthType:  "api_key",
+		AuthToken: "override-key",
+	}
+
+	result, err := manager.FetchWithCacheAndOptions("test-app", server.URL, overrideOpts)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Verify default header is present (merged)
+	assert.Equal(t, "default-value", receivedHeaders.Get("X-Default"))
+
+	// Verify override header is present
+	assert.Equal(t, "override-value", receivedHeaders.Get("X-Override"))
+
+	// Verify override auth takes precedence
+	assert.Equal(t, "override-key", receivedHeaders.Get("X-API-Key"))
+
+	// Bearer should not be present (overridden)
+	assert.Empty(t, receivedHeaders.Get("Authorization"))
+}
+
+func TestSpecCacheMeta_FetchOptionsFields(t *testing.T) {
+	tmpDir, cleanup := createTestCacheDir(t)
+	defer cleanup()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", `"abc123"`)
+		_, _ = w.Write([]byte(`{"openapi":"3.0.0","info":{"title":"Test","version":"1.0.0"},"paths":{}}`))
+	}))
+	defer server.Close()
+
+	manager := NewSpecCacheManager(tmpDir)
+	opts := &SpecFetchOptions{
+		Headers: map[string]string{
+			"X-Custom": "value",
+		},
+		AuthType:     "api_key",
+		AuthKeyName:  "X-API-Key",
+		AuthLocation: "header",
+		AuthToken:    "secret-token", // Should NOT be persisted
+	}
+
+	result, err := manager.FetchWithCacheAndOptions("test-app", server.URL, opts)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Load persisted meta
+	meta, err := manager.LoadMeta("test-app")
+	require.NoError(t, err)
+	require.NotNil(t, meta)
+
+	// Verify fetch options metadata is persisted
+	assert.Equal(t, "value", meta.FetchHeaders["X-Custom"])
+	assert.Equal(t, "api_key", meta.FetchAuthType)
+	assert.Equal(t, "X-API-Key", meta.FetchAuthKeyName)
+	assert.Equal(t, "header", meta.FetchAuthLocation)
+}
+
+func TestMergeFetchOptions(t *testing.T) {
+	tmpDir, cleanup := createTestCacheDir(t)
+	defer cleanup()
+
+	manager := NewSpecCacheManager(tmpDir)
+
+	t.Run("both nil", func(t *testing.T) {
+		result := manager.mergeFetchOptions(nil)
+		assert.Nil(t, result)
+	})
+
+	t.Run("manager nil, override provided", func(t *testing.T) {
+		override := &SpecFetchOptions{AuthType: "bearer"}
+		result := manager.mergeFetchOptions(override)
+		assert.Equal(t, "bearer", result.AuthType)
+	})
+
+	t.Run("manager provided, override nil", func(t *testing.T) {
+		mgr := NewSpecCacheManagerWithOptions(tmpDir, nil, &SpecFetchOptions{AuthType: "bearer"})
+		result := mgr.mergeFetchOptions(nil)
+		assert.Equal(t, "bearer", result.AuthType)
+	})
+
+	t.Run("both provided, override takes precedence", func(t *testing.T) {
+		mgr := NewSpecCacheManagerWithOptions(tmpDir, nil, &SpecFetchOptions{
+			AuthType:  "bearer",
+			AuthToken: "base-token",
+			Headers:   map[string]string{"X-Base": "base"},
+		})
+		override := &SpecFetchOptions{
+			AuthType:  "api_key",
+			AuthToken: "override-token",
+			Headers:   map[string]string{"X-Override": "override"},
+		}
+		result := mgr.mergeFetchOptions(override)
+		assert.Equal(t, "api_key", result.AuthType)
+		assert.Equal(t, "override-token", result.AuthToken)
+		assert.Equal(t, "base", result.Headers["X-Base"])
+		assert.Equal(t, "override", result.Headers["X-Override"])
+	})
+}

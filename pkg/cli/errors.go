@@ -383,8 +383,8 @@ func checkParamTypes(opParams openapi3.Parameters) (hasRequired, hasOptional boo
 func writeOutputFlags(sb *strings.Builder) {
 	sb.WriteString("Output Flags:\n")
 	sb.WriteString("  --json       Output in JSON format\n")
-	sb.WriteString("  --yaml       Output in YAML format\n")
-	sb.WriteString("  --output     Output format: table, json, yaml (default: table)\n\n")
+	sb.WriteString("  --yaml       Output in YAML format (default)\n")
+	sb.WriteString("  --output     Output format: json, yaml (default: yaml)\n\n")
 }
 
 // FormatUsageHelpWithBody formats usage help for a command including request body parameters.

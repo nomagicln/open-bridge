@@ -228,7 +228,7 @@ func NewModel(appName string, opts config.InstallOptions, appExists bool) Model 
 		tlsSkipVerifyOptions:   []string{"No", "Yes"},
 		mcpAdvancedOptions:     []string{"Skip", "Configure"},
 		mcpProgressiveOptions:  []string{"No", "Yes"},
-		mcpSearchEngineOptions: []string{"predicate", "sql", "vector", "hybrid"},
+		mcpSearchEngineOptions: []string{"predicate"},
 		mcpReadOnlyOptions:     []string{"No", "Yes"},
 		history:                []string{},
 	}
@@ -588,13 +588,32 @@ func (m Model) updateBaseURL(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addHistory("Base URL", val)
 		}
 
-		// Continue to TLS configuration
-		m.step = StepTLSSkipVerify
+		// Only show TLS skip verify option if HTTPS is involved (spec URL or base URL)
+		if m.needsTLSConfiguration() {
+			m.step = StepTLSSkipVerify
+		} else {
+			// Skip TLS configuration steps for non-HTTPS URLs
+			m.step = StepAuthType
+		}
 		return m, nil
 	}
 	var cmd tea.Cmd
 	m.baseUrlInput, cmd = m.baseUrlInput.Update(msg)
 	return m, cmd
+}
+
+// needsTLSConfiguration checks if TLS configuration is needed.
+// Returns true if either the spec source or base URL uses HTTPS.
+func (m *Model) needsTLSConfiguration() bool {
+	// Check spec source
+	if strings.HasPrefix(strings.ToLower(m.options.SpecSource), "https://") {
+		return true
+	}
+	// Check base URL
+	if strings.HasPrefix(strings.ToLower(m.options.BaseURL), "https://") {
+		return true
+	}
+	return false
 }
 
 // updateTLSSkipVerify handles the TLS skip verify step.
@@ -1073,19 +1092,33 @@ func (m Model) updateMCPProgressiveDisclosure(msg tea.Msg) (tea.Model, tea.Cmd) 
 		case "right", "l":
 			m.mcpProgressiveIndex = 1
 		case "enter":
-			enabled := (m.mcpProgressiveIndex == 1) // Yes is 1
-			m.options.ProgressiveDisclosure = &enabled
-			if enabled {
-				m.addHistory("Progressive Disclosure", "Enabled")
-			} else {
-				m.addHistory("Progressive Disclosure", "Disabled")
-			}
-			m.step = StepMCPSearchEngine
-			return m, nil
+			return m.confirmMCPProgressiveDisclosure()
 		default:
 			// Ignore other keys
 		}
 	}
+	return m, nil
+}
+
+// confirmMCPProgressiveDisclosure processes the progressive disclosure selection and determines the next step.
+func (m Model) confirmMCPProgressiveDisclosure() (tea.Model, tea.Cmd) {
+	enabled := (m.mcpProgressiveIndex == 1) // Yes is 1
+	m.options.ProgressiveDisclosure = &enabled
+	if enabled {
+		m.addHistory("Progressive Disclosure", "Enabled")
+	} else {
+		m.addHistory("Progressive Disclosure", "Disabled")
+	}
+	// Only show search engine selection if there are >= 2 options
+	if len(m.mcpSearchEngineOptions) >= 2 {
+		m.step = StepMCPSearchEngine
+		return m, nil
+	}
+	// Auto-select the first (and only) search engine if available
+	if len(m.mcpSearchEngineOptions) == 1 {
+		m.options.SearchEngine = m.mcpSearchEngineOptions[0]
+	}
+	m.step = StepMCPReadOnlyMode
 	return m, nil
 }
 

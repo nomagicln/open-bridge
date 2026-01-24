@@ -143,7 +143,7 @@ One Spec, Dual Interface.`,
 	// Add global flags
 	rootCmd.PersistentFlags().StringP("profile", "p", "", "Profile to use for the operation")
 	rootCmd.PersistentFlags().Bool("mcp", false, "Start in MCP server mode")
-	rootCmd.PersistentFlags().StringP("output", "o", "table", "Output format: table, json, yaml")
+	rootCmd.PersistentFlags().StringP("output", "o", "yaml", "Output format: json, yaml")
 
 	// Add subcommands
 	rootCmd.AddCommand(
@@ -409,7 +409,8 @@ Example:
 				} else {
 					fmt.Fprintf(os.Stderr, "App '%s' not found. No apps are currently installed.\n", appName)
 				}
-				return fmt.Errorf("app not found: %s", appName)
+				// Wrap with PrintedError to prevent double printing
+				return &cli.PrintedError{Err: fmt.Errorf("app not found: %s", appName)}
 			}
 
 			// Uninstall

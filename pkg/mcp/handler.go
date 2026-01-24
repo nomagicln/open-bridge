@@ -158,7 +158,7 @@ func (h *Handler) MapToolToOperation(toolName string) (*openapi3.Operation, stri
 		return nil, "", "", fmt.Errorf("OpenAPI spec not loaded")
 	}
 
-	// Search for operation by operationId
+	// Search for operation by operationId or generated tool name
 	for path, pathItem := range h.spec.Paths.Map() {
 		operations := map[string]*openapi3.Operation{
 			"GET":    pathItem.Get,
@@ -178,8 +178,8 @@ func (h *Handler) MapToolToOperation(toolName string) (*openapi3.Operation, stri
 				return op, method, path, nil
 			}
 
-			// Fallback: match by generated name (method_path)
-			generatedName := fmt.Sprintf("%s_%s", method, path)
+			// Match by generated tool name (same logic as BuildMCPTools)
+			generatedName := GenerateToolName(method, path, op)
 			if generatedName == toolName {
 				return op, method, path, nil
 			}

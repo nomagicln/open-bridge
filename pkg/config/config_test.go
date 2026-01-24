@@ -639,6 +639,98 @@ func TestNewProfile(t *testing.T) {
 	}
 }
 
+func TestProfile_BuildSpecFetchOptions(t *testing.T) {
+	t.Run("no spec fetch auth", func(t *testing.T) {
+		profile := &Profile{
+			Name:    "test",
+			BaseURL: "https://api.example.com",
+		}
+		opts := profile.BuildSpecFetchOptions("")
+		if opts.AuthType != "" {
+			t.Errorf("expected empty AuthType, got %q", opts.AuthType)
+		}
+	})
+
+	t.Run("with headers only", func(t *testing.T) {
+		profile := &Profile{
+			Name:    "test",
+			BaseURL: "https://api.example.com",
+			SpecFetchHeaders: map[string]string{
+				"X-Custom": "value",
+			},
+		}
+		opts := profile.BuildSpecFetchOptions("")
+		if opts.Headers["X-Custom"] != "value" {
+			t.Errorf("expected custom header 'value', got %q", opts.Headers["X-Custom"])
+		}
+	})
+
+	t.Run("with bearer auth", func(t *testing.T) {
+		profile := &Profile{
+			Name:    "test",
+			BaseURL: "https://api.example.com",
+			SpecFetchAuth: &SpecFetchAuthConfig{
+				Type: "bearer",
+			},
+		}
+		opts := profile.BuildSpecFetchOptions("my-token")
+		if opts.AuthType != "bearer" {
+			t.Errorf("expected AuthType 'bearer', got %q", opts.AuthType)
+		}
+		if opts.AuthToken != "my-token" {
+			t.Errorf("expected AuthToken 'my-token', got %q", opts.AuthToken)
+		}
+	})
+
+	t.Run("with api_key auth", func(t *testing.T) {
+		profile := &Profile{
+			Name:    "test",
+			BaseURL: "https://api.example.com",
+			SpecFetchAuth: &SpecFetchAuthConfig{
+				Type:     "api_key",
+				KeyName:  "X-API-Key",
+				Location: "query",
+			},
+		}
+		opts := profile.BuildSpecFetchOptions("my-api-key")
+		if opts.AuthType != "api_key" {
+			t.Errorf("expected AuthType 'api_key', got %q", opts.AuthType)
+		}
+		if opts.AuthToken != "my-api-key" {
+			t.Errorf("expected AuthToken 'my-api-key', got %q", opts.AuthToken)
+		}
+		if opts.AuthKeyName != "X-API-Key" {
+			t.Errorf("expected AuthKeyName 'X-API-Key', got %q", opts.AuthKeyName)
+		}
+		if opts.AuthLocation != "query" {
+			t.Errorf("expected AuthLocation 'query', got %q", opts.AuthLocation)
+		}
+	})
+
+	t.Run("with headers and auth", func(t *testing.T) {
+		profile := &Profile{
+			Name:    "test",
+			BaseURL: "https://api.example.com",
+			SpecFetchHeaders: map[string]string{
+				"X-Org-ID": "org-123",
+			},
+			SpecFetchAuth: &SpecFetchAuthConfig{
+				Type: "bearer",
+			},
+		}
+		opts := profile.BuildSpecFetchOptions("token")
+		if opts.Headers["X-Org-ID"] != "org-123" {
+			t.Errorf("expected custom header 'org-123', got %q", opts.Headers["X-Org-ID"])
+		}
+		if opts.AuthType != "bearer" {
+			t.Errorf("expected AuthType 'bearer', got %q", opts.AuthType)
+		}
+		if opts.AuthToken != "token" {
+			t.Errorf("expected AuthToken 'token', got %q", opts.AuthToken)
+		}
+	})
+}
+
 // Helper function
 func contains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {

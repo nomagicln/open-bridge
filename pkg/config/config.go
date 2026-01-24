@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -85,6 +86,54 @@ type Profile struct {
 
 	// IsDefault indicates if this is the default profile.
 	IsDefault bool `yaml:"is_default,omitempty"`
+
+	// SpecFetchAuth contains authentication configuration for fetching remote specs.
+	// This allows accessing private/protected OpenAPI specification URLs.
+	// If not set, specs are fetched without authentication.
+	SpecFetchAuth *SpecFetchAuthConfig `yaml:"spec_fetch_auth,omitempty"`
+
+	// SpecFetchHeaders contains custom headers to send when fetching remote specs.
+	// These headers are applied in addition to default Accept and User-Agent headers.
+	SpecFetchHeaders map[string]string `yaml:"spec_fetch_headers,omitempty"`
+}
+
+// SpecFetchAuthConfig contains authentication configuration for fetching remote specs.
+type SpecFetchAuthConfig struct {
+	// Type is the authentication type: "bearer", "api_key", "basic", or empty for none.
+	Type string `yaml:"type"`
+
+	// KeyName is the header or query parameter name for api_key auth.
+	// Defaults to "X-API-Key" if not specified.
+	KeyName string `yaml:"key_name,omitempty"`
+
+	// Location is where to send api_key auth: "header" or "query".
+	// Defaults to "header" if not specified.
+	Location string `yaml:"location,omitempty"`
+
+	// Note: Actual credentials (tokens) should be stored in the system keyring
+	// and retrieved at runtime, similar to API authentication.
+}
+
+// BuildSpecFetchOptions constructs SpecFetchOptions from profile settings and a credential token.
+// The token should be retrieved from the system keyring at runtime.
+func (p *Profile) BuildSpecFetchOptions(authToken string) *SpecFetchOptions {
+	opts := &SpecFetchOptions{}
+
+	// Copy headers
+	if len(p.SpecFetchHeaders) > 0 {
+		opts.Headers = make(map[string]string, len(p.SpecFetchHeaders))
+		maps.Copy(opts.Headers, p.SpecFetchHeaders)
+	}
+
+	// Apply auth configuration
+	if p.SpecFetchAuth != nil && p.SpecFetchAuth.Type != "" {
+		opts.AuthType = p.SpecFetchAuth.Type
+		opts.AuthToken = authToken
+		opts.AuthKeyName = p.SpecFetchAuth.KeyName
+		opts.AuthLocation = p.SpecFetchAuth.Location
+	}
+
+	return opts
 }
 
 // Duration is a wrapper around time.Duration for YAML serialization.
