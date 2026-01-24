@@ -1,0 +1,32 @@
+{
+  "name": "open-bridge",
+  "version": "1.0.0",
+  "description": "<p align=\"center\">   <img src=\"docs/public/logo.jpeg\" alt=\"OpenBridge Logo\" width=\"600\"> </p>",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "example": "examples"
+  },
+  "scripts": {
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nomagicln/open-bridge.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/nomagicln/open-bridge/issues"
+  },
+  "homepage": "https://github.com/nomagicln/open-bridge#readme",
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "vitepress": "^1.6.4",
+    "vue": "^3.5.27"
+  }
+}
