@@ -9,7 +9,7 @@
 | `ob install <name> --spec <path>` | 将 API 安装为 CLI 应用程序 |
 | `ob uninstall <name>` | 移除已安装的应用程序 |
 | `ob list` | 列出所有已安装的应用程序 |
-| `ob run <name> [args...]` | 运行已安装应程序的命令 |
+| `ob run <name> [args...]` | 运行已安装应用程序的命令 |
 | `ob completion [bash\|zsh\|fish]` | 生成 Shell 自动补全脚本 |
 | `ob version` | 显示版本信息 |
 | `ob help` | 显示帮助 |

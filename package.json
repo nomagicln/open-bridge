@@ -1,7 +1,7 @@
 {
   "name": "open-bridge",
   "version": "1.0.0",
-  "description": "<p align=\"center\">   <img src=\"docs/public/logo.jpeg\" alt=\"OpenBridge Logo\" width=\"600\"> </p>",
+  "description": "A universal bridge connecting AI agents with everything",
   "main": "index.js",
   "directories": {
     "doc": "docs",
@@ -18,7 +18,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "Apache-2.0",
   "type": "module",
   "bugs": {
     "url": "https://github.com/nomagicln/open-bridge/issues"

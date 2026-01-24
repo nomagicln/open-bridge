@@ -2,7 +2,7 @@
 
 在几分钟内启动并运行 OpenBridge。
 
-> **注意**：有关详细的通过教程，请参阅仓库中的 [QUICKSTART.md](https://github.com/nomagicln/open-bridge/blob/main/QUICKSTART.md)。
+> **注意**：有关详细的逐步教程，请参阅仓库中的 [QUICKSTART.md](https://github.com/nomagicln/open-bridge/blob/main/QUICKSTART.md)。
 
 ## 1. 安装 API
 
