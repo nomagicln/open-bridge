@@ -483,6 +483,11 @@ func BuildNestedBody(flatBodyParams map[string]any) (map[string]any, error) {
 
 		// Handle direct values (no nesting)
 		if !strings.Contains(pathKey, ".") {
+			if existing, exists := result[pathKey]; exists {
+				if _, ok := existing.(map[string]any); ok {
+					return nil, fmt.Errorf("conflicting types at path '%s': expected value, got map", pathKey)
+				}
+			}
 			result[pathKey] = value
 			continue
 		}
