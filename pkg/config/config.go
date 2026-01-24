@@ -45,6 +45,10 @@ type AppConfig struct {
 
 	// Metadata contains arbitrary user-defined metadata.
 	Metadata map[string]string `yaml:"metadata,omitempty"`
+
+	// OperationCount is the number of operations in the spec.
+	// Used for determining progressive disclosure recommendation.
+	OperationCount int `yaml:"operation_count,omitempty"`
 }
 
 // Profile represents a configuration profile for an app.

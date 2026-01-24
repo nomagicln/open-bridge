@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"text/template"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -21,6 +22,29 @@ const (
 	MetaToolLoad        = "LoadTool"
 	MetaToolInvoke      = "InvokeTool"
 )
+
+// searchToolDescTemplate is the template for building the SearchTools description.
+const searchToolDescTemplate = `Search for available API tools in {{.AppName}} using intelligent tool discovery.{{if .AppDescription}}
+
+{{.AppName}} Description: {{.AppDescription}}{{end}}
+
+Searching Strategy: {{.SearchStrategy}}
+
+Example: {{.Example}}
+
+Returns a list of matching tools from {{.AppName}} with their ID, name, and description.
+Use Load{{.AppName}}Tool to get the full definition of a specific {{.AppName}} tool before invoking it with Invoke{{.AppName}}Tool.`
+
+// loadToolDescTemplate is the template for building the LoadTool description.
+const loadToolDescTemplate = `Load the full definition of a {{.AppName}} API tool by its ID from Search{{.AppName}}Tools results.
+This retrieves the complete tool schema including all parameters and their types.
+Loaded tools are cached for faster subsequent access.
+You must load a {{.AppName}} tool before invoking it with Invoke{{.AppName}}Tool.`
+
+// invokeToolDescTemplate is the template for building the InvokeTool description.
+const invokeToolDescTemplate = `Invoke a {{.AppName}} API tool with the specified arguments.
+The tool must be loaded first using Load{{.AppName}}Tool.
+Arguments should match the tool's input schema as returned by Load{{.AppName}}Tool.`
 
 // ProgressiveHandler implements the progressive disclosure mechanism.
 // Instead of exposing all tools at once, it provides three meta-tools:
@@ -79,7 +103,14 @@ func (h *ProgressiveHandler) SetSpec(spec *openapi3.T, safetyConfig *config.Safe
 }
 
 // SetAppConfig sets the app configuration.
+// Panics if appCfg is nil or appCfg.Name is empty.
 func (h *ProgressiveHandler) SetAppConfig(appCfg *config.AppConfig, profileName string) {
+	if appCfg == nil {
+		panic("appCfg cannot be nil")
+	}
+	if appCfg.Name == "" {
+		panic("appCfg.Name cannot be empty")
+	}
 	h.appConfig = appCfg
 	h.profileName = profileName
 }
@@ -101,19 +132,47 @@ func (h *ProgressiveHandler) Register(s *mcp.Server) {
 
 // buildSearchToolDefinition creates the SearchTools tool definition.
 func (h *ProgressiveHandler) buildSearchToolDefinition() mcp.Tool {
-	description := fmt.Sprintf(`Search for available API tools. %s
+	appName := h.formatAppName()
 
-Example: %s
+	// Parse and execute template
+	tpl, err := template.New("searchToolDesc").Parse(searchToolDescTemplate)
+	if err != nil {
+		// Fallback if template parsing fails
+		return mcp.Tool{
+			Name: "Search" + appName + "Tools",
+			Description: fmt.Sprintf("Search for available API tools in %s using intelligent tool discovery.\n\nSearching Strategy: %s\n\nExample: %s",
+				appName,
+				h.searchEngine.GetDescription(),
+				h.searchEngine.GetQueryExample()),
+		}
+	}
 
-Returns a list of matching tools with their ID, name, description, HTTP method, and path.
-Use LoadTool to get the full definition of a specific tool before invoking it.`,
-		h.searchEngine.GetDescription(),
-		h.searchEngine.GetQueryExample(),
-	)
+	data := map[string]any{
+		"AppName":        appName,
+		"AppDescription": "",
+		"SearchStrategy": h.searchEngine.GetDescription(),
+		"Example":        h.searchEngine.GetQueryExample(),
+	}
+
+	if h.appConfig != nil && h.appConfig.Description != "" {
+		data["AppDescription"] = h.appConfig.Description
+	}
+
+	var buf strings.Builder
+	if err := tpl.Execute(&buf, data); err != nil {
+		// Fallback if template execution fails
+		return mcp.Tool{
+			Name: "Search" + appName + "Tools",
+			Description: fmt.Sprintf("Search for available API tools in %s using intelligent tool discovery.\n\nSearching Strategy: %s\n\nExample: %s",
+				appName,
+				h.searchEngine.GetDescription(),
+				h.searchEngine.GetQueryExample()),
+		}
+	}
 
 	return mcp.Tool{
-		Name:        MetaToolSearchTools,
-		Description: description,
+		Name:        "Search" + appName + "Tools",
+		Description: buf.String(),
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -129,18 +188,40 @@ Use LoadTool to get the full definition of a specific tool before invoking it.`,
 
 // buildLoadToolDefinition creates the LoadTool tool definition.
 func (h *ProgressiveHandler) buildLoadToolDefinition() mcp.Tool {
+	appName := h.formatAppName()
+
+	// Parse and execute template
+	tpl, err := template.New("loadToolDesc").Parse(loadToolDescTemplate)
+	if err != nil {
+		// Fallback if template parsing fails
+		return mcp.Tool{
+			Name:        "Load" + appName + "Tool",
+			Description: "Load the full definition of an API tool",
+		}
+	}
+
+	data := map[string]any{
+		"AppName": appName,
+	}
+
+	var buf strings.Builder
+	if err := tpl.Execute(&buf, data); err != nil {
+		// Fallback if template execution fails
+		return mcp.Tool{
+			Name:        "Load" + appName + "Tool",
+			Description: "Load the full definition of an API tool",
+		}
+	}
+
 	return mcp.Tool{
-		Name: MetaToolLoad,
-		Description: `Load the full definition of a tool by its ID.
-This retrieves the complete tool schema including all parameters and their types.
-Loaded tools are cached for faster subsequent access.
-You must load a tool before invoking it with InvokeTool.`,
+		Name:        "Load" + appName + "Tool",
+		Description: buf.String(),
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"toolId": map[string]any{
 					"type":        "string",
-					"description": "The unique ID of the tool to load (from SearchTools results).",
+					"description": fmt.Sprintf("The unique ID of the tool to load (from Search%sTools results).", appName),
 				},
 			},
 			"required": []string{"toolId"},
@@ -150,11 +231,34 @@ You must load a tool before invoking it with InvokeTool.`,
 
 // buildInvokeToolDefinition creates the InvokeTool tool definition.
 func (h *ProgressiveHandler) buildInvokeToolDefinition() mcp.Tool {
+	appName := h.formatAppName()
+
+	// Parse and execute template
+	tpl, err := template.New("invokeToolDesc").Parse(invokeToolDescTemplate)
+	if err != nil {
+		// Fallback if template parsing fails
+		return mcp.Tool{
+			Name:        "Invoke" + appName + "Tool",
+			Description: "Invoke an API tool",
+		}
+	}
+
+	data := map[string]any{
+		"AppName": appName,
+	}
+
+	var buf strings.Builder
+	if err := tpl.Execute(&buf, data); err != nil {
+		// Fallback if template execution fails
+		return mcp.Tool{
+			Name:        "Invoke" + appName + "Tool",
+			Description: "Invoke an API tool",
+		}
+	}
+
 	return mcp.Tool{
-		Name: MetaToolInvoke,
-		Description: `Invoke a loaded tool with the specified arguments.
-The tool must be loaded first using LoadTool.
-Arguments should match the tool's input schema.`,
+		Name:        "Invoke" + appName + "Tool",
+		Description: buf.String(),
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -191,16 +295,12 @@ func (h *ProgressiveHandler) handleSearchTools(_ context.Context, req *mcp.CallT
 
 	// Format results
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Found %d tool(s):\n\n", len(results)))
+	fmt.Fprintf(&sb, "Found %d tool(s):\n\n", len(results))
 
 	for _, tool := range results {
 		sb.WriteString(fmt.Sprintf("**%s** (`%s`)\n", tool.Name, tool.ID))
-		sb.WriteString(fmt.Sprintf("  %s %s\n", tool.Method, tool.Path))
 		if tool.Description != "" {
-			sb.WriteString(fmt.Sprintf("  %s\n", tool.Description))
-		}
-		if len(tool.Tags) > 0 {
-			sb.WriteString(fmt.Sprintf("  Tags: %s\n", strings.Join(tool.Tags, ", ")))
+			fmt.Fprintf(&sb, "  %s\n", tool.Description)
 		}
 		sb.WriteString("\n")
 	}
@@ -240,12 +340,12 @@ func (h *ProgressiveHandler) handleLoadTool(_ context.Context, req *mcp.CallTool
 	// Format tool definition
 	var sb strings.Builder
 	if fromCache {
-		sb.WriteString(fmt.Sprintf("Tool **%s** (from cache):\n\n", tool.Name))
+		fmt.Fprintf(&sb, "Tool **%s** (from cache):\n\n", tool.Name)
 	} else {
-		sb.WriteString(fmt.Sprintf("Tool **%s** (newly loaded):\n\n", tool.Name))
+		fmt.Fprintf(&sb, "Tool **%s** (newly loaded):\n\n", tool.Name)
 	}
 
-	sb.WriteString(fmt.Sprintf("**Description:** %s\n\n", tool.Description))
+	fmt.Fprintf(&sb, "**Description:** %s\n\n", tool.Description)
 	sb.WriteString("**Parameters:**\n")
 
 	// Extract and format input schema
@@ -406,4 +506,33 @@ func (h *ProgressiveHandler) GetRegistry() *ToolRegistry {
 // GetSearchEngine returns the search engine for testing and inspection.
 func (h *ProgressiveHandler) GetSearchEngine() ToolSearchEngine {
 	return h.searchEngine
+}
+
+// formatAppName converts the app name to PascalCase format.
+// Handles special characters like hyphens, underscores, and dots.
+// Examples: "petstore" -> "Petstore", "my-api-v2" -> "MyApiV2", "my_api" -> "MyApi".
+func (h *ProgressiveHandler) formatAppName() string {
+	if h.appConfig == nil || h.appConfig.Name == "" {
+		return ""
+	}
+
+	name := h.appConfig.Name
+	var result strings.Builder
+	capitalizeNext := true
+
+	for _, r := range name {
+		switch {
+		case r == '-' || r == '_' || r == '.':
+			// Skip special characters and mark next character for capitalization
+			capitalizeNext = true
+		case capitalizeNext:
+			upper := strings.ToUpper(string(r))
+			result.WriteString(upper)
+			capitalizeNext = false
+		default:
+			result.WriteRune(r)
+		}
+	}
+
+	return result.String()
 }

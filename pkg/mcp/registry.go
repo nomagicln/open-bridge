@@ -83,11 +83,8 @@ func (r *ToolRegistry) BuildFromSpec(spec *openapi3.T, safetyConfig *config.Safe
 				continue
 			}
 
-			// Generate tool ID
-			toolID := op.OperationID
-			if toolID == "" {
-				toolID = fmt.Sprintf("%s_%s", method, path)
-			}
+			// Generate tool ID (use smart naming to avoid redundancy)
+			toolID := GenerateToolName(method, path, op)
 
 			// Check if tool is allowed
 			if !isToolAllowedByConfig(toolID, safetyConfig) {
@@ -125,13 +122,11 @@ func (r *ToolRegistry) BuildFromSpec(spec *openapi3.T, safetyConfig *config.Safe
 
 // convertOperationToMCPTool converts an OpenAPI operation to an MCP tool.
 func convertOperationToMCPTool(method, path string, op *openapi3.Operation) mcp.Tool {
-	name := op.OperationID
-	if name == "" {
-		name = fmt.Sprintf("%s_%s", method, path)
-	}
+	// Use smart naming to generate clean, non-redundant tool names
+	name := GenerateToolName(method, path, op)
 
 	properties := make(map[string]any)
-	var required []string
+	required := []string{} // Initialize as empty slice, not nil (nil becomes null in JSON)
 
 	// Add parameters
 	required = addParametersToSchema(op.Parameters, properties, required)

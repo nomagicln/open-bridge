@@ -19,6 +19,10 @@ import (
 	"github.com/nomagicln/open-bridge/pkg/spec"
 )
 
+// DefaultProgressiveThreshold is the default number of operations above which
+// progressive disclosure is recommended.
+const DefaultProgressiveThreshold = 25
+
 // InstallOptions contains options for app installation.
 type InstallOptions struct {
 	// SpecSource is the path or URL to the OpenAPI specification.
@@ -61,6 +65,39 @@ type InstallOptions struct {
 	// These are returned by the interactive wizard but NOT saved to the config file.
 	// The caller is responsible for saving them to the keyring.
 	AuthParams map[string]string
+
+	// TLS Configuration
+	// TLSSkipVerify disables TLS certificate verification.
+	TLSSkipVerify bool
+
+	// TLSCACert is the path to a custom CA certificate file.
+	TLSCACert string
+
+	// TLSClientCert is the path to a client certificate file.
+	TLSClientCert string
+
+	// TLSClientKey is the path to a client private key file.
+	TLSClientKey string
+
+	// MCP Configuration
+	// ProgressiveDisclosure enables progressive tool disclosure mode.
+	ProgressiveDisclosure *bool
+
+	// SearchEngine specifies the search engine type for progressive disclosure.
+	// Valid values: "predicate" (default), "sql", "vector", "hybrid".
+	SearchEngine string
+
+	// ReadOnlyMode restricts the AI to read-only operations (GET only).
+	ReadOnlyMode bool
+
+	// ProgressiveThreshold is the number of operations above which
+	// progressive disclosure is automatically recommended.
+	// Defaults to DefaultProgressiveThreshold (25).
+	ProgressiveThreshold int
+
+	// OperationCount is populated after loading the spec, used for
+	// determining progressive disclosure recommendation.
+	OperationCount int
 }
 
 // InstallResult contains the result of an app installation.
@@ -86,6 +123,30 @@ func mergeExistingAppConfig(opts InstallOptions, existing *AppConfig) InstallOpt
 		}
 		if opts.AuthType == "" {
 			opts.AuthType = profile.Auth.Type
+		}
+		// Merge TLS configuration
+		if opts.TLSCACert == "" {
+			opts.TLSCACert = profile.TLSConfig.CAFile
+		}
+		if opts.TLSClientCert == "" {
+			opts.TLSClientCert = profile.TLSConfig.CertFile
+		}
+		if opts.TLSClientKey == "" {
+			opts.TLSClientKey = profile.TLSConfig.KeyFile
+		}
+		if !opts.TLSSkipVerify {
+			opts.TLSSkipVerify = profile.TLSConfig.InsecureSkipVerify
+		}
+		// Merge MCP configuration
+		if opts.ProgressiveDisclosure == nil && profile.SafetyConfig.ProgressiveDisclosure {
+			progressive := true
+			opts.ProgressiveDisclosure = &progressive
+		}
+		if opts.SearchEngine == "" {
+			opts.SearchEngine = profile.SafetyConfig.SearchEngine
+		}
+		if !opts.ReadOnlyMode {
+			opts.ReadOnlyMode = profile.SafetyConfig.ReadOnlyMode
 		}
 	}
 	return opts
@@ -135,9 +196,48 @@ func resolveBaseURL(opts InstallOptions, specDoc *openapi3.T) (string, error) {
 	return baseURL, nil
 }
 
+// buildTLSConfig creates the TLS configuration from install options.
+func buildTLSConfig(opts InstallOptions) TLSConfig {
+	return TLSConfig{
+		InsecureSkipVerify: opts.TLSSkipVerify,
+		CAFile:             opts.TLSCACert,
+		CertFile:           opts.TLSClientCert,
+		KeyFile:            opts.TLSClientKey,
+	}
+}
+
+// buildSafetyConfig creates the safety configuration for MCP from install options.
+func buildSafetyConfig(opts InstallOptions) SafetyConfig {
+	safetyConfig := SafetyConfig{
+		ReadOnlyMode: opts.ReadOnlyMode,
+		SearchEngine: opts.SearchEngine,
+	}
+
+	// Set progressive disclosure based on explicit setting or threshold
+	if opts.ProgressiveDisclosure != nil {
+		safetyConfig.ProgressiveDisclosure = *opts.ProgressiveDisclosure
+	} else if opts.OperationCount > 0 {
+		threshold := opts.ProgressiveThreshold
+		if threshold <= 0 {
+			threshold = DefaultProgressiveThreshold
+		}
+		safetyConfig.ProgressiveDisclosure = opts.OperationCount > threshold
+	}
+
+	// Default search engine to predicate if progressive disclosure is enabled
+	if safetyConfig.ProgressiveDisclosure && safetyConfig.SearchEngine == "" {
+		safetyConfig.SearchEngine = "predicate"
+	}
+
+	return safetyConfig
+}
+
 // createAppConfig creates the app configuration structure.
 func createAppConfig(appName, specSource string, specSources []string, opts InstallOptions, baseURL string, specInfo *spec.SpecInfo) *AppConfig {
 	now := time.Now()
+	tlsConfig := buildTLSConfig(opts)
+	safetyConfig := buildSafetyConfig(opts)
+
 	config := &AppConfig{
 		Name:           appName,
 		SpecSource:     specSource,
@@ -149,12 +249,14 @@ func createAppConfig(appName, specSource string, specSources []string, opts Inst
 		UpdatedAt:      now,
 		Profiles: map[string]Profile{
 			"default": {
-				Name:      "default",
-				BaseURL:   baseURL,
-				Auth:      AuthConfig{Type: opts.AuthType},
-				Headers:   opts.Headers,
-				Timeout:   Duration{Duration: 30 * time.Second},
-				IsDefault: true,
+				Name:         "default",
+				BaseURL:      baseURL,
+				Auth:         AuthConfig{Type: opts.AuthType},
+				Headers:      opts.Headers,
+				TLSConfig:    tlsConfig,
+				SafetyConfig: safetyConfig,
+				Timeout:      Duration{Duration: 30 * time.Second},
+				IsDefault:    true,
 			},
 		},
 	}
@@ -257,10 +359,31 @@ func (m *Manager) doInstall(appName string, opts InstallOptions) (*InstallResult
 	}
 
 	specInfo := spec.GetSpecInfo(specDoc, primarySource)
+
+	// Set operation count for progressive disclosure decision
+	if specInfo != nil {
+		opts.OperationCount = specInfo.Operations
+	}
+
 	config := createAppConfig(appName, specSource, specSources, opts, baseURL, specInfo)
+
+	// Store operation count in config for future reference
+	if specInfo != nil {
+		config.OperationCount = specInfo.Operations
+	}
 
 	if err := m.SaveAppConfig(config); err != nil {
 		return nil, fmt.Errorf("failed to save config: %w", err)
+	}
+
+	// Cache the spec if it's from a remote URL
+	if isWebURL(primarySource) {
+		cacheManager := NewSpecCacheManager(m.AppsDir())
+		_, cacheErr := cacheManager.FetchWithCache(appName, primarySource)
+		if cacheErr != nil {
+			// Warning but don't fail installation
+			fmt.Fprintf(os.Stderr, "Warning: failed to cache spec: %v\n", cacheErr)
+		}
 	}
 
 	result := &InstallResult{

@@ -49,6 +49,11 @@ func (h *Handler) SetAppConfig(appCfg *config.AppConfig, profileName string) {
 	h.profileName = profileName
 }
 
+// GetRequestBuilder returns the request builder used by the handler.
+func (h *Handler) GetRequestBuilder() *request.Builder {
+	return h.requestBuilder
+}
+
 // Register registers the tools with the MCP server.
 func (h *Handler) Register(s *mcp.Server, safetyConfig *config.SafetyConfig) {
 	tools := h.GetTools(safetyConfig)

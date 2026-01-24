@@ -9,14 +9,8 @@ import (
 type SearchEngineType string
 
 const (
-	// SearchEngineSQL uses SQLite FTS5 for full-text search.
-	SearchEngineSQL SearchEngineType = "sql"
 	// SearchEnginePredicate uses vulcand-predicate for expression matching.
 	SearchEnginePredicate SearchEngineType = "predicate"
-	// SearchEngineVector uses vector similarity for semantic search.
-	SearchEngineVector SearchEngineType = "vector"
-	// SearchEngineHybrid combines SQL FTS5 and vector search with RRF fusion.
-	SearchEngineHybrid SearchEngineType = "hybrid"
 )
 
 // ToolMetadata contains summary information about a tool for search results.
@@ -68,52 +62,26 @@ type ToolSearchEngine interface {
 // NewSearchEngine creates a new search engine of the specified type.
 func NewSearchEngine(engineType SearchEngineType) (ToolSearchEngine, error) {
 	switch engineType {
-	case SearchEngineSQL:
-		return NewSQLSearchEngine()
 	case SearchEnginePredicate:
 		return NewPredicateSearchEngine()
-	case SearchEngineVector:
-		return NewVectorSearchEngine()
-	case SearchEngineHybrid:
-		return NewHybridSearchEngine(DefaultHybridSearchConfig())
 	default:
 		return nil, fmt.Errorf("unknown search engine type: %s", engineType)
 	}
 }
 
 // NewSearchEngineWithConfig creates a new search engine with custom configuration.
-// This is primarily useful for hybrid search which has additional configuration options.
-func NewSearchEngineWithConfig(engineType SearchEngineType, hybridCfg *HybridSearchConfig) (ToolSearchEngine, error) {
-	switch engineType {
-	case SearchEngineSQL:
-		return NewSQLSearchEngine()
-	case SearchEnginePredicate:
-		return NewPredicateSearchEngine()
-	case SearchEngineVector:
-		return NewVectorSearchEngine()
-	case SearchEngineHybrid:
-		cfg := DefaultHybridSearchConfig()
-		if hybridCfg != nil {
-			cfg = *hybridCfg
-		}
-		return NewHybridSearchEngine(cfg)
-	default:
-		return nil, fmt.Errorf("unknown search engine type: %s", engineType)
-	}
+// Deprecated: This function is kept for backward compatibility but is no longer needed
+// since only predicate engine is supported.
+func NewSearchEngineWithConfig(engineType SearchEngineType, _ any) (ToolSearchEngine, error) {
+	return NewSearchEngine(engineType)
 }
 
 // ParseSearchEngineType parses a string into a SearchEngineType.
 func ParseSearchEngineType(s string) (SearchEngineType, error) {
 	switch s {
-	case "sql", "sqlite":
-		return SearchEngineSQL, nil
 	case "predicate":
 		return SearchEnginePredicate, nil
-	case "vector":
-		return SearchEngineVector, nil
-	case "hybrid":
-		return SearchEngineHybrid, nil
 	default:
-		return "", fmt.Errorf("invalid search engine type: %s (valid: sql, predicate, vector, hybrid)", s)
+		return "", fmt.Errorf("invalid search engine type: %s (valid: predicate)", s)
 	}
 }

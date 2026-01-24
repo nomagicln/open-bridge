@@ -111,17 +111,6 @@ func (e *PredicateSearchEngine) createMatcher(query string) (func(ToolMetadata) 
 					return false
 				}
 			},
-			// ID matching
-			"IDIs": func(id string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return t.ID == id
-				}
-			},
-			"IDContains": func(substr string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return strings.Contains(strings.ToLower(t.ID), strings.ToLower(substr))
-				}
-			},
 		},
 		Operators: predicate.Operators{
 			AND: func(a, b toolPredicate) toolPredicate {
@@ -167,7 +156,6 @@ func (e *PredicateSearchEngine) createMatcher(query string) (func(ToolMetadata) 
 // - NameStartsWith("list"): prefix match on tool name
 // - DescriptionContains("create"): substring match on description
 // - HasTag("admin"): check if tool has a specific tag
-// - IDIs("GET_/pets"): exact match on tool ID
 // - Logical operators: && (and), || (or), ! (not)
 //
 // Examples:
@@ -217,7 +205,7 @@ func (e *PredicateSearchEngine) GetDescription() string {
 - Name: NameContains("user"), NameStartsWith("list"), NameEndsWith("Pet"), NameIs("exact")
 - Description: DescriptionContains("create")
 - Tags: HasTag("tagname")
-- ID: IDIs("GET_/pets"), IDContains("pets")
+
 - Logical operators: && (and), || (or), ! (not)
 - Parentheses for grouping: (expr1 || expr2) && expr3`
 }

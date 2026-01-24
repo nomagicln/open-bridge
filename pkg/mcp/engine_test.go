@@ -16,29 +16,9 @@ func TestSearchEngineType_Parse(t *testing.T) {
 		expectError bool
 	}{
 		{
-			name:     "sql engine",
-			input:    "sql",
-			expected: SearchEngineSQL,
-		},
-		{
-			name:     "sqlite alias",
-			input:    "sqlite",
-			expected: SearchEngineSQL,
-		},
-		{
 			name:     "predicate engine",
 			input:    "predicate",
 			expected: SearchEnginePredicate,
-		},
-		{
-			name:     "vector engine",
-			input:    "vector",
-			expected: SearchEngineVector,
-		},
-		{
-			name:     "hybrid engine",
-			input:    "hybrid",
-			expected: SearchEngineHybrid,
 		},
 		{
 			name:        "invalid engine",
@@ -72,20 +52,8 @@ func TestNewSearchEngine(t *testing.T) {
 		expectError bool
 	}{
 		{
-			name:       "create SQL engine",
-			engineType: SearchEngineSQL,
-		},
-		{
 			name:       "create predicate engine",
 			engineType: SearchEnginePredicate,
-		},
-		{
-			name:       "create vector engine",
-			engineType: SearchEngineVector,
-		},
-		{
-			name:       "create hybrid engine",
-			engineType: SearchEngineHybrid,
 		},
 		{
 			name:        "invalid engine type",
@@ -130,21 +98,9 @@ func TestSearchEngineInterface(t *testing.T) {
 	// Verify all engines implement the interface
 	engines := []ToolSearchEngine{}
 
-	sqlEngine, err := NewSQLSearchEngine()
-	require.NoError(t, err)
-	engines = append(engines, sqlEngine)
-
 	predicateEngine, err := NewPredicateSearchEngine()
 	require.NoError(t, err)
 	engines = append(engines, predicateEngine)
-
-	vectorEngine, err := NewVectorSearchEngine()
-	require.NoError(t, err)
-	engines = append(engines, vectorEngine)
-
-	hybridEngine, err := NewHybridSearchEngine(DefaultHybridSearchConfig())
-	require.NoError(t, err)
-	engines = append(engines, hybridEngine)
 
 	sampleTools := []ToolMetadata{
 		{ID: "listPets", Name: "listPets", Description: "List all pets", Method: "GET", Path: "/pets"},
@@ -177,37 +133,12 @@ func TestSearchEngineInterface(t *testing.T) {
 }
 
 func TestNewSearchEngineWithConfig(t *testing.T) {
-	t.Run("hybrid with custom config", func(t *testing.T) {
-		cfg := &HybridSearchConfig{
-			Enabled:        true,
-			FusionStrategy: FusionWeighted,
-			VectorWeight:   0.7,
-			RRFConstant:    30.0,
-			TopK:           20,
-			Embedder: EmbedderConfig{
-				Type: EmbedderTFIDF,
-			},
-			Tokenizer: TokenizerConfig{
-				Type: TokenizerSimple,
-			},
-		}
-
-		engine, err := NewSearchEngineWithConfig(SearchEngineHybrid, cfg)
+	t.Run("predicate with config", func(t *testing.T) {
+		engine, err := NewSearchEngineWithConfig(SearchEnginePredicate, nil)
 		require.NoError(t, err)
 		defer func() { _ = engine.Close() }()
 
-		hybrid, ok := engine.(*HybridSearchEngine)
-		require.True(t, ok)
-		assert.Equal(t, FusionWeighted, hybrid.Config().FusionStrategy)
-		assert.Equal(t, 0.7, hybrid.Config().VectorWeight)
-	})
-
-	t.Run("non-hybrid ignores config", func(t *testing.T) {
-		engine, err := NewSearchEngineWithConfig(SearchEngineSQL, nil)
-		require.NoError(t, err)
-		defer func() { _ = engine.Close() }()
-
-		_, ok := engine.(*SQLSearchEngine)
+		_, ok := engine.(*PredicateSearchEngine)
 		assert.True(t, ok)
 	})
 }

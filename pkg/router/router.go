@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/getkin/kin-openapi/openapi3"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nomagicln/open-bridge/pkg/cli"
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/mcp"
@@ -110,66 +112,111 @@ func (r *Router) handleOBCommand() error {
 	return fmt.Errorf("ob commands should be handled by CLI framework")
 }
 
+// mcpOptions holds parsed MCP server options from command-line arguments.
+type mcpOptions struct {
+	profileName string
+	transport   string
+	port        string
+}
+
+// parseMCPOptions extracts MCP-related options from command-line arguments.
+func (r *Router) parseMCPOptions(args []string, defaultProfile string) mcpOptions {
+	opts := mcpOptions{
+		profileName: r.detectProfile(args),
+		transport:   "stdio",
+		port:        "8080",
+	}
+
+	for i, arg := range args {
+		if arg == "--transport" && i+1 < len(args) {
+			opts.transport = args[i+1]
+		}
+		if after, ok := strings.CutPrefix(arg, "--transport="); ok {
+			opts.transport = after
+		}
+		if arg == "--port" && i+1 < len(args) {
+			opts.port = args[i+1]
+		}
+		if after, ok := strings.CutPrefix(arg, "--port="); ok {
+			opts.port = after
+		}
+	}
+
+	if opts.profileName == "" {
+		opts.profileName = defaultProfile
+	}
+	return opts
+}
+
+// registerProgressiveHandler creates and registers a progressive disclosure handler.
+func (r *Router) registerProgressiveHandler(
+	server *mcpsdk.Server,
+	specDoc *openapi3.T,
+	appConfig *config.AppConfig,
+	profile *config.Profile,
+	profileName string,
+) (func(), error) {
+	engineType := mcp.SearchEnginePredicate
+	if profile.SafetyConfig.SearchEngine != "" {
+		var err error
+		engineType, err = mcp.ParseSearchEngineType(profile.SafetyConfig.SearchEngine)
+		if err != nil {
+			return nil, fmt.Errorf("invalid search engine type: %w", err)
+		}
+	}
+
+	progressiveHandler, err := mcp.NewProgressiveHandler(
+		r.mcpHandler.GetRequestBuilder(),
+		nil,
+		engineType,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create progressive handler: %w", err)
+	}
+
+	progressiveHandler.SetAppConfig(appConfig, profileName)
+	if err := progressiveHandler.SetSpec(specDoc, &profile.SafetyConfig); err != nil {
+		_ = progressiveHandler.Close()
+		return nil, fmt.Errorf("failed to set spec for progressive handler: %w", err)
+	}
+
+	progressiveHandler.Register(server)
+	return func() { _ = progressiveHandler.Close() }, nil
+}
+
 // startMCPServer starts the MCP server for the given app.
 func (r *Router) startMCPServer(appConfig *config.AppConfig, args []string) error {
-	// Load spec
 	specDoc, err := r.specParser.LoadSpec(appConfig.SpecSource)
 	if err != nil {
 		return fmt.Errorf("failed to load spec: %w", err)
 	}
 
-	// Determine profile
-	profileName := r.detectProfile(args)
-	transport := "stdio"
-	port := "8080"
+	opts := r.parseMCPOptions(args, appConfig.DefaultProfile)
 
-	for i, arg := range args {
-		// Transport
-		if arg == "--transport" {
-			if i+1 < len(args) {
-				transport = args[i+1]
-			}
-		}
-		if after, ok := strings.CutPrefix(arg, "--transport="); ok {
-			transport = after
-		}
-
-		// Port
-		if arg == "--port" {
-			if i+1 < len(args) {
-				port = args[i+1]
-			}
-		}
-		if after, ok := strings.CutPrefix(arg, "--port="); ok {
-			port = after
-		}
-	}
-
-	if profileName == "" {
-		profileName = appConfig.DefaultProfile
-	}
-
-	// Configure handler
-	r.mcpHandler.SetSpec(specDoc)
-	r.mcpHandler.SetAppConfig(appConfig, profileName)
-
-	// Retrieve profile for safety config
-	profile, ok := appConfig.GetProfile(profileName)
+	profile, ok := appConfig.GetProfile(opts.profileName)
 	if !ok {
-		return fmt.Errorf("profile '%s' not found", profileName)
+		return fmt.Errorf("profile '%s' not found", opts.profileName)
 	}
 
-	// Create server using factory
-	// Note: We don't have version info here easily, hardcoding "1.0" or using global if accessible.
-	// Router doesn't seem to have version field. Using "1.0" for now.
 	factory := mcp.NewServerFactory(appConfig.Name, "1.0")
 	server := factory.CreateServer()
 
-	// Register tools
-	r.mcpHandler.Register(server, &profile.SafetyConfig)
+	if profile.SafetyConfig.ProgressiveDisclosure {
+		cleanup, err := r.registerProgressiveHandler(server, specDoc, appConfig, profile, opts.profileName)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s, progressive: true) via %s...\n",
+			appConfig.Name, opts.profileName, opts.transport)
+	} else {
+		r.mcpHandler.SetSpec(specDoc)
+		r.mcpHandler.SetAppConfig(appConfig, opts.profileName)
+		r.mcpHandler.Register(server, &profile.SafetyConfig)
+		fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s) via %s...\n",
+			appConfig.Name, opts.profileName, opts.transport)
+	}
 
 	// Run server
-	fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s) via %s...\n", appConfig.Name, profileName, transport)
-
-	return factory.RunServer(context.Background(), server, transport, port)
+	return factory.RunServer(context.Background(), server, opts.transport, opts.port)
 }

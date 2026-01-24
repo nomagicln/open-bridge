@@ -32,16 +32,8 @@ func TestNewProgressiveHandler(t *testing.T) {
 		expectError bool
 	}{
 		{
-			name:       "SQL engine",
-			engineType: SearchEngineSQL,
-		},
-		{
 			name:       "predicate engine",
 			engineType: SearchEnginePredicate,
-		},
-		{
-			name:       "vector engine",
-			engineType: SearchEngineVector,
 		},
 		{
 			name:        "invalid engine",
@@ -73,7 +65,7 @@ func TestProgressiveHandler_SetSpec(t *testing.T) {
 	handler, err := NewProgressiveHandler(
 		request.NewBuilder(nil),
 		nil,
-		SearchEngineSQL,
+		SearchEnginePredicate,
 	)
 	require.NoError(t, err)
 	defer func() { _ = handler.Close() }()
@@ -90,7 +82,7 @@ func TestProgressiveHandler_SetSpec_WithSafety(t *testing.T) {
 	handler, err := NewProgressiveHandler(
 		request.NewBuilder(nil),
 		nil,
-		SearchEngineSQL,
+		SearchEnginePredicate,
 	)
 	require.NoError(t, err)
 	defer func() { _ = handler.Close() }()
@@ -128,7 +120,8 @@ func TestProgressiveHandler_HandleSearchTools_WithQuery(t *testing.T) {
 	handler := setupTestHandler(t)
 	defer func() { _ = handler.Close() }()
 
-	req := createCallToolRequest(MetaToolSearchTools, `{"query": "delete"}`)
+	// Use predicate expression syntax instead of SQL
+	req := createCallToolRequest(MetaToolSearchTools, `{"query": "MethodIs(\"DELETE\")"}`)
 
 	result, err := handler.handleSearchTools(context.Background(), req)
 	require.NoError(t, err)
@@ -234,7 +227,7 @@ func TestProgressiveHandler_HandleInvokeTool_Success(t *testing.T) {
 	handler, err := NewProgressiveHandler(
 		request.NewBuilder(nil),
 		mockServer.Client(),
-		SearchEngineSQL,
+		SearchEnginePredicate,
 	)
 	require.NoError(t, err)
 	defer func() { _ = handler.Close() }()
@@ -278,18 +271,103 @@ func TestProgressiveHandler_BuildToolDefinitions(t *testing.T) {
 
 	// Test SearchTools definition
 	searchTool := handler.buildSearchToolDefinition()
-	assert.Equal(t, MetaToolSearchTools, searchTool.Name)
+	expectedSearchName := "SearchTestTools"
+	assert.Equal(t, expectedSearchName, searchTool.Name)
 	assert.Contains(t, searchTool.Description, "Search")
+	assert.Contains(t, searchTool.Description, "Test")
 
 	// Test LoadTool definition
 	loadTool := handler.buildLoadToolDefinition()
-	assert.Equal(t, MetaToolLoad, loadTool.Name)
+	expectedLoadName := "LoadTestTool"
+	assert.Equal(t, expectedLoadName, loadTool.Name)
 	assert.Contains(t, loadTool.Description, "Load")
+	assert.Contains(t, loadTool.Description, "Test")
 
 	// Test InvokeTool definition
 	invokeTool := handler.buildInvokeToolDefinition()
-	assert.Equal(t, MetaToolInvoke, invokeTool.Name)
+	expectedInvokeName := "InvokeTestTool"
+	assert.Equal(t, expectedInvokeName, invokeTool.Name)
 	assert.Contains(t, invokeTool.Description, "Invoke")
+	assert.Contains(t, invokeTool.Description, "Test")
+}
+
+func TestProgressiveHandler_SetAppConfig_Validation(t *testing.T) {
+	handler, err := NewProgressiveHandler(
+		request.NewBuilder(nil),
+		nil,
+		SearchEnginePredicate,
+	)
+	require.NoError(t, err)
+	defer func() { _ = handler.Close() }()
+
+	tests := []struct {
+		name       string
+		appConfig  *config.AppConfig
+		shoulPanic bool
+	}{
+		{
+			name:       "valid config",
+			appConfig:  &config.AppConfig{Name: "test"},
+			shoulPanic: false,
+		},
+		{
+			name:       "nil config",
+			appConfig:  nil,
+			shoulPanic: true,
+		},
+		{
+			name:       "empty name",
+			appConfig:  &config.AppConfig{Name: ""},
+			shoulPanic: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.shoulPanic {
+				assert.Panics(t, func() {
+					handler.SetAppConfig(tt.appConfig, "")
+				})
+			} else {
+				assert.NotPanics(t, func() {
+					handler.SetAppConfig(tt.appConfig, "")
+				})
+			}
+		})
+	}
+}
+
+func TestProgressiveHandler_FormatAppName(t *testing.T) {
+	tests := []struct {
+		name     string
+		appName  string
+		expected string
+	}{
+		{name: "simple", appName: "petstore", expected: "Petstore"},
+		{name: "with hyphen", appName: "my-api", expected: "MyApi"},
+		{name: "with underscore", appName: "my_api", expected: "MyApi"},
+		{name: "with dot", appName: "my.api", expected: "MyApi"},
+		{name: "complex", appName: "my-api-v2", expected: "MyApiV2"},
+		{name: "multiple separators", appName: "my_api.v-2", expected: "MyApiV2"},
+		{name: "already pascal", appName: "MyAPI", expected: "MyAPI"},
+		{name: "single letter", appName: "a", expected: "A"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, err := NewProgressiveHandler(
+				request.NewBuilder(nil),
+				nil,
+				SearchEnginePredicate,
+			)
+			require.NoError(t, err)
+			defer func() { _ = handler.Close() }()
+
+			handler.SetAppConfig(&config.AppConfig{Name: tt.appName}, "")
+			result := handler.formatAppName()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }
 
 func TestProgressiveHandler_Register(t *testing.T) {
@@ -311,13 +389,25 @@ func setupTestHandler(t *testing.T) *ProgressiveHandler {
 	handler, err := NewProgressiveHandler(
 		request.NewBuilder(nil),
 		nil,
-		SearchEngineSQL,
+		SearchEnginePredicate,
 	)
 	require.NoError(t, err)
 
 	spec := createTestOpenAPISpec()
 	err = handler.SetSpec(spec, nil)
 	require.NoError(t, err)
+
+	// Set app config for tool naming
+	appConfig := &config.AppConfig{
+		Name:           "test",
+		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{
+			"default": {
+				Name: "default",
+			},
+		},
+	}
+	handler.SetAppConfig(appConfig, "")
 
 	return handler
 }
