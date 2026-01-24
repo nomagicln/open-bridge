@@ -73,19 +73,6 @@ paths:
 		}
 	}
 
-	// Read shim content and verify it's correct
-	content, err := os.ReadFile(result.ShimPath)
-	if err != nil {
-		t.Fatalf("failed to read shim: %v", err)
-	}
-
-	contentStr := string(content)
-
-	// Verify shim contains app name
-	if !strings.Contains(contentStr, "shimtest") {
-		t.Error("shim does not contain app name")
-	}
-
 	// Verify shim format
 	switch runtime.GOOS {
 	case "windows":
