@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,6 +46,10 @@ type AppConfig struct {
 
 	// Metadata contains arbitrary user-defined metadata.
 	Metadata map[string]string `yaml:"metadata,omitempty"`
+
+	// OperationCount is the number of operations in the spec.
+	// Used for determining progressive disclosure recommendation.
+	OperationCount int `yaml:"operation_count,omitempty"`
 }
 
 // Profile represents a configuration profile for an app.
@@ -81,6 +86,54 @@ type Profile struct {
 
 	// IsDefault indicates if this is the default profile.
 	IsDefault bool `yaml:"is_default,omitempty"`
+
+	// SpecFetchAuth contains authentication configuration for fetching remote specs.
+	// This allows accessing private/protected OpenAPI specification URLs.
+	// If not set, specs are fetched without authentication.
+	SpecFetchAuth *SpecFetchAuthConfig `yaml:"spec_fetch_auth,omitempty"`
+
+	// SpecFetchHeaders contains custom headers to send when fetching remote specs.
+	// These headers are applied in addition to default Accept and User-Agent headers.
+	SpecFetchHeaders map[string]string `yaml:"spec_fetch_headers,omitempty"`
+}
+
+// SpecFetchAuthConfig contains authentication configuration for fetching remote specs.
+type SpecFetchAuthConfig struct {
+	// Type is the authentication type: "bearer", "api_key", "basic", or empty for none.
+	Type string `yaml:"type"`
+
+	// KeyName is the header or query parameter name for api_key auth.
+	// Defaults to "X-API-Key" if not specified.
+	KeyName string `yaml:"key_name,omitempty"`
+
+	// Location is where to send api_key auth: "header" or "query".
+	// Defaults to "header" if not specified.
+	Location string `yaml:"location,omitempty"`
+
+	// Note: Actual credentials (tokens) should be stored in the system keyring
+	// and retrieved at runtime, similar to API authentication.
+}
+
+// BuildSpecFetchOptions constructs SpecFetchOptions from profile settings and a credential token.
+// The token should be retrieved from the system keyring at runtime.
+func (p *Profile) BuildSpecFetchOptions(authToken string) *SpecFetchOptions {
+	opts := &SpecFetchOptions{}
+
+	// Copy headers
+	if len(p.SpecFetchHeaders) > 0 {
+		opts.Headers = make(map[string]string, len(p.SpecFetchHeaders))
+		maps.Copy(opts.Headers, p.SpecFetchHeaders)
+	}
+
+	// Apply auth configuration
+	if p.SpecFetchAuth != nil && p.SpecFetchAuth.Type != "" {
+		opts.AuthType = p.SpecFetchAuth.Type
+		opts.AuthToken = authToken
+		opts.AuthKeyName = p.SpecFetchAuth.KeyName
+		opts.AuthLocation = p.SpecFetchAuth.Location
+	}
+
+	return opts
 }
 
 // Duration is a wrapper around time.Duration for YAML serialization.
@@ -188,6 +241,55 @@ type SafetyConfig struct {
 
 	// DangerousOperationPatterns are regex patterns for dangerous operations.
 	DangerousOperationPatterns []string `yaml:"dangerous_operation_patterns,omitempty"`
+
+	// ProgressiveDisclosure enables progressive tool disclosure mode.
+	// When enabled, only meta-tools (SearchTools, LoadTool, InvokeTool) are exposed
+	// instead of all API operations, reducing context usage for large APIs.
+	ProgressiveDisclosure bool `yaml:"progressive_disclosure,omitempty"`
+
+	// SearchEngine specifies the search engine type for progressive disclosure.
+	// Valid values: "sql" (default), "predicate", "vector", "hybrid".
+	SearchEngine string `yaml:"search_engine,omitempty"`
+
+	// HybridSearch contains configuration for the hybrid search engine.
+	// Only used when SearchEngine is set to "hybrid".
+	HybridSearch *HybridSearchSettings `yaml:"hybrid_search,omitempty"`
+}
+
+// HybridSearchSettings contains configuration for hybrid search.
+type HybridSearchSettings struct {
+	// Enabled indicates whether hybrid search is enabled.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// EmbedderType specifies the embedder type: "adaptive", "tfidf", "ollama", "onnx".
+	EmbedderType string `yaml:"embedder_type,omitempty"`
+
+	// OllamaEndpoint is the Ollama API endpoint (e.g., "http://localhost:11434").
+	OllamaEndpoint string `yaml:"ollama_endpoint,omitempty"`
+
+	// OllamaModel is the Ollama model for embeddings (e.g., "nomic-embed-text").
+	OllamaModel string `yaml:"ollama_model,omitempty"`
+
+	// ONNXModelPath is the path to a custom ONNX model file.
+	ONNXModelPath string `yaml:"onnx_model_path,omitempty"`
+
+	// TokenizerType specifies the tokenizer type: "simple", "unicode", "cjk".
+	TokenizerType string `yaml:"tokenizer_type,omitempty"`
+
+	// FusionStrategy specifies the fusion strategy: "rrf" or "weighted".
+	FusionStrategy string `yaml:"fusion_strategy,omitempty"`
+
+	// RRFConstant is the k constant for RRF algorithm (default: 60).
+	RRFConstant float64 `yaml:"rrf_constant,omitempty"`
+
+	// VectorWeight is the weight for vector search results (0.0-1.0).
+	VectorWeight float64 `yaml:"vector_weight,omitempty"`
+
+	// TopK is the number of results to retrieve from each engine before fusion.
+	TopK int `yaml:"top_k,omitempty"`
+
+	// PredicateFilter is an optional Vulcand predicate expression for post-filtering.
+	PredicateFilter string `yaml:"predicate_filter,omitempty"`
 }
 
 // RetryConfig represents retry configuration.

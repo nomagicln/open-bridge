@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	"github.com/nomagicln/open-bridge/pkg/spec"
 	installTui "github.com/nomagicln/open-bridge/pkg/tui/install"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 // Build information, set via ldflags
@@ -141,13 +143,14 @@ One Spec, Dual Interface.`,
 	// Add global flags
 	rootCmd.PersistentFlags().StringP("profile", "p", "", "Profile to use for the operation")
 	rootCmd.PersistentFlags().Bool("mcp", false, "Start in MCP server mode")
-	rootCmd.PersistentFlags().StringP("output", "o", "table", "Output format: table, json, yaml")
+	rootCmd.PersistentFlags().StringP("output", "o", "yaml", "Output format: json, yaml")
 
 	// Add subcommands
 	rootCmd.AddCommand(
 		newInstallCmd(),
 		newUninstallCmd(),
 		newListCmd(),
+		newInfoCmd(),
 		newRunCmd(),
 		newCompletionCmd(),
 	)
@@ -406,7 +409,8 @@ Example:
 				} else {
 					fmt.Fprintf(os.Stderr, "App '%s' not found. No apps are currently installed.\n", appName)
 				}
-				return fmt.Errorf("app not found: %s", appName)
+				// Wrap with PrintedError to prevent double printing
+				return &cli.PrintedError{Err: fmt.Errorf("app not found: %s", appName)}
 			}
 
 			// Uninstall
@@ -525,6 +529,233 @@ Example:
 	return cmd
 }
 
+// newInfoCmd creates the info subcommand to show app configuration
+func newInfoCmd() *cobra.Command {
+	var outputFormat string
+
+	cmd := &cobra.Command{
+		Use:   "info <app-name>",
+		Short: "Show configuration for an installed application",
+		Long: `Show detailed configuration for an installed API application.
+
+This command displays all configuration settings including:
+  - Spec source and API information
+  - Profile configurations (base URL, auth, TLS, headers)
+  - MCP/AI safety settings
+  - Metadata and timestamps
+
+Example:
+  ob info petstore
+  ob info petstore -o yaml
+  ob info petstore -o json`,
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeAppNames,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appName := args[0]
+
+			if !configMgr.AppExists(appName) {
+				return fmt.Errorf("app '%s' not found", appName)
+			}
+
+			appConfig, err := configMgr.GetAppConfig(appName)
+			if err != nil {
+				return fmt.Errorf("failed to get app config: %w", err)
+			}
+
+			return printAppConfig(appConfig, outputFormat)
+		},
+	}
+
+	cmd.Flags().StringVarP(&outputFormat, "output", "o", "text", "Output format: text, json, yaml")
+
+	return cmd
+}
+
+// printAppConfig prints the app configuration in the specified format.
+func printAppConfig(cfg *config.AppConfig, format string) error {
+	switch format {
+	case "json":
+		return printAppConfigJSON(cfg)
+	case "yaml":
+		return printAppConfigYAML(cfg)
+	default:
+		printAppConfigText(cfg)
+		return nil
+	}
+}
+
+// printAppConfigJSON prints the app configuration as JSON.
+func printAppConfigJSON(cfg *config.AppConfig) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config to JSON: %w", err)
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+// printAppConfigYAML prints the app configuration as YAML.
+func printAppConfigYAML(cfg *config.AppConfig) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config to YAML: %w", err)
+	}
+	fmt.Print(string(data))
+	return nil
+}
+
+// printAppConfigText prints the app configuration as human-readable text.
+func printAppConfigText(cfg *config.AppConfig) {
+	fmt.Printf("Application: %s\n", cfg.Name)
+	fmt.Println(strings.Repeat("=", 50))
+
+	// Basic info
+	fmt.Println("\n📋 Basic Information")
+	fmt.Printf("  Description:     %s\n", valueOrNone(cfg.Description))
+	fmt.Printf("  Spec Source:     %s\n", cfg.SpecSource)
+	if len(cfg.SpecSources) > 0 {
+		fmt.Printf("  Additional Specs: %s\n", strings.Join(cfg.SpecSources, ", "))
+	}
+	fmt.Printf("  Version:         %s\n", valueOrNone(cfg.Version))
+	fmt.Printf("  Operations:      %d\n", cfg.OperationCount)
+	if !cfg.CreatedAt.IsZero() {
+		fmt.Printf("  Created:         %s\n", cfg.CreatedAt.Format("2006-01-02 15:04:05"))
+	}
+	if !cfg.UpdatedAt.IsZero() {
+		fmt.Printf("  Updated:         %s\n", cfg.UpdatedAt.Format("2006-01-02 15:04:05"))
+	}
+
+	// Profiles
+	fmt.Printf("\n👤 Profiles (%d)\n", len(cfg.Profiles))
+	fmt.Printf("  Default Profile: %s\n", cfg.DefaultProfile)
+
+	for name, profile := range cfg.Profiles {
+		fmt.Printf("\n  [%s]\n", name)
+		printProfileDetails(&profile, "    ")
+	}
+
+	// Metadata
+	if len(cfg.Metadata) > 0 {
+		fmt.Println("\n📝 Metadata")
+		for k, v := range cfg.Metadata {
+			fmt.Printf("  %s: %s\n", k, v)
+		}
+	}
+}
+
+// printProfileDetails prints the details of a profile.
+func printProfileDetails(p *config.Profile, indent string) {
+	fmt.Printf("%sBase URL:    %s\n", indent, valueOrNone(p.BaseURL))
+	fmt.Printf("%sDescription: %s\n", indent, valueOrNone(p.Description))
+
+	printProfileAuth(p, indent)
+	printProfileTLS(p, indent)
+	printProfileHeaders(p, indent)
+	printProfileSafety(p, indent)
+
+	if p.Timeout.Duration > 0 {
+		fmt.Printf("%sTimeout:     %s\n", indent, p.Timeout.String())
+	}
+}
+
+// printProfileAuth prints authentication configuration.
+func printProfileAuth(p *config.Profile, indent string) {
+	if p.Auth.Type != "" && p.Auth.Type != "none" {
+		fmt.Printf("%sAuth Type:   %s\n", indent, p.Auth.Type)
+		if p.Auth.KeyName != "" {
+			fmt.Printf("%sAuth Key:    %s\n", indent, p.Auth.KeyName)
+		}
+	}
+}
+
+// printProfileTLS prints TLS configuration.
+func printProfileTLS(p *config.Profile, indent string) {
+	if !p.TLSConfig.InsecureSkipVerify && p.TLSConfig.CAFile == "" && p.TLSConfig.CertFile == "" {
+		return
+	}
+	fmt.Printf("%sTLS:\n", indent)
+	if p.TLSConfig.InsecureSkipVerify {
+		fmt.Printf("%s  Skip Verify: true (insecure)\n", indent)
+	}
+	if p.TLSConfig.CAFile != "" {
+		fmt.Printf("%s  CA File:     %s\n", indent, p.TLSConfig.CAFile)
+	}
+	if p.TLSConfig.CertFile != "" {
+		fmt.Printf("%s  Cert File:   %s\n", indent, p.TLSConfig.CertFile)
+	}
+	if p.TLSConfig.KeyFile != "" {
+		fmt.Printf("%s  Key File:    %s\n", indent, p.TLSConfig.KeyFile)
+	}
+}
+
+// printProfileHeaders prints custom headers configuration.
+func printProfileHeaders(p *config.Profile, indent string) {
+	if len(p.Headers) == 0 {
+		return
+	}
+	fmt.Printf("%sHeaders:\n", indent)
+	for k, v := range p.Headers {
+		displayValue := v
+		if isSensitiveHeader(k) {
+			displayValue = maskValue(v)
+		}
+		fmt.Printf("%s  %s: %s\n", indent, k, displayValue)
+	}
+}
+
+// printProfileSafety prints MCP safety configuration.
+func printProfileSafety(p *config.Profile, indent string) {
+	sc := &p.SafetyConfig
+	if !sc.ReadOnlyMode && !sc.ProgressiveDisclosure &&
+		len(sc.AllowedOperations) == 0 && len(sc.DeniedOperations) == 0 {
+		return
+	}
+	fmt.Printf("%sSafety (MCP):\n", indent)
+	if sc.ReadOnlyMode {
+		fmt.Printf("%s  Read-Only Mode:          true\n", indent)
+	}
+	if sc.ProgressiveDisclosure {
+		fmt.Printf("%s  Progressive Disclosure:  true\n", indent)
+	}
+	if sc.SearchEngine != "" {
+		fmt.Printf("%s  Search Engine:           %s\n", indent, sc.SearchEngine)
+	}
+	if len(sc.AllowedOperations) > 0 {
+		fmt.Printf("%s  Allowed Operations:      %s\n", indent, strings.Join(sc.AllowedOperations, ", "))
+	}
+	if len(sc.DeniedOperations) > 0 {
+		fmt.Printf("%s  Denied Operations:       %s\n", indent, strings.Join(sc.DeniedOperations, ", "))
+	}
+}
+
+// valueOrNone returns the value if non-empty, otherwise returns "(none)".
+func valueOrNone(value string) string {
+	if value == "" {
+		return "(none)"
+	}
+	return value
+}
+
+// isSensitiveHeader checks if a header name is sensitive.
+func isSensitiveHeader(name string) bool {
+	sensitive := []string{"authorization", "x-api-key", "api-key", "token", "secret", "password"}
+	nameLower := strings.ToLower(name)
+	for _, s := range sensitive {
+		if strings.Contains(nameLower, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// maskValue masks a sensitive value, showing only first and last 2 chars.
+func maskValue(value string) string {
+	if len(value) <= 4 {
+		return "****"
+	}
+	return value[:2] + strings.Repeat("*", len(value)-4) + value[len(value)-2:]
+}
+
 // newRunCmd creates the run subcommand for running app commands
 func newRunCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -626,9 +857,6 @@ func startMCPServer(appConfig *config.AppConfig, args []string) error {
 
 	opts := parseMCPServerArgs(args, appConfig.DefaultProfile)
 
-	mcpHandler.SetSpec(specDoc)
-	mcpHandler.SetAppConfig(appConfig, opts.profileName)
-
 	profile, ok := appConfig.GetProfile(opts.profileName)
 	if !ok {
 		return fmt.Errorf("profile '%s' not found", opts.profileName)
@@ -636,11 +864,48 @@ func startMCPServer(appConfig *config.AppConfig, args []string) error {
 
 	factory := mcp.NewServerFactory(appConfig.Name, version)
 	server := factory.CreateServer()
-	mcpHandler.Register(server, &profile.SafetyConfig)
 
-	fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s) via %s...\n", appConfig.Name, opts.profileName, opts.transport)
+	// Check if progressive disclosure mode is enabled
+	if profile.SafetyConfig.ProgressiveDisclosure {
+		// Use ProgressiveHandler for progressive disclosure mode
+		engineType, err := parseSearchEngineType(profile.SafetyConfig.SearchEngine)
+		if err != nil {
+			return fmt.Errorf("failed to parse search engine type: %w", err)
+		}
+
+		progressiveHandler, err := mcp.NewProgressiveHandler(reqBuilder, nil, engineType)
+		if err != nil {
+			return fmt.Errorf("failed to create progressive handler: %w", err)
+		}
+		defer func() {
+			_ = progressiveHandler.Close()
+		}()
+
+		if err := progressiveHandler.SetSpec(specDoc, &profile.SafetyConfig); err != nil {
+			return fmt.Errorf("failed to set spec: %w", err)
+		}
+		progressiveHandler.SetAppConfig(appConfig, opts.profileName)
+		progressiveHandler.Register(server)
+
+		fmt.Fprintf(os.Stderr, "Starting MCP server (progressive mode) for app '%s' (profile: %s) via %s...\n", appConfig.Name, opts.profileName, opts.transport)
+	} else {
+		// Use standard Handler
+		mcpHandler.SetSpec(specDoc)
+		mcpHandler.SetAppConfig(appConfig, opts.profileName)
+		mcpHandler.Register(server, &profile.SafetyConfig)
+
+		fmt.Fprintf(os.Stderr, "Starting MCP server for app '%s' (profile: %s) via %s...\n", appConfig.Name, opts.profileName, opts.transport)
+	}
 
 	return factory.RunServer(context.Background(), server, opts.transport, opts.port)
+}
+
+// parseSearchEngineType parses the search engine type from config string.
+func parseSearchEngineType(s string) (mcp.SearchEngineType, error) {
+	if s == "" {
+		return mcp.SearchEnginePredicate, nil // Default to predicate
+	}
+	return mcp.ParseSearchEngineType(s)
 }
 
 // completeAppNames provides completion for installed app names

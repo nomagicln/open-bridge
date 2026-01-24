@@ -18,14 +18,21 @@ type Step int
 
 const (
 	StepSpecInput Step = iota
+	StepBaseURL
+	StepTLSSkipVerify
+	StepTLSCACert
+	StepTLSClientCert
+	StepAuthType
+	StepAuthDetails
 	StepLoading
 	StepDescription
-	StepBaseURL
-	StepAuthType
 	StepShim
-	StepAuthDetails
 	StepAddHeadersConfirm
 	StepHeaderInput
+	StepMCPAdvancedConfirm
+	StepMCPProgressiveDisclosure
+	StepMCPSearchEngine
+	StepMCPReadOnlyMode
 	StepOverwriteConfirm
 	StepDone
 )
@@ -69,6 +76,11 @@ type Model struct {
 	descInput    textinput.Model
 	baseUrlInput textinput.Model
 
+	// TLS Inputs
+	tlsCACertInput     textinput.Model
+	tlsClientCertInput textinput.Model
+	tlsClientKeyInput  textinput.Model
+
 	// Auth Inputs
 	authInputs      []textinput.Model
 	authInputLabels []string
@@ -90,6 +102,21 @@ type Model struct {
 	addHeadersOptions []string
 	addHeadersIndex   int
 
+	// TLS Choices
+	tlsSkipVerifyOptions []string
+	tlsSkipVerifyIndex   int
+
+	// MCP Choices
+	mcpAdvancedOptions        []string
+	mcpAdvancedIndex          int
+	mcpProgressiveOptions     []string
+	mcpProgressiveIndex       int
+	mcpSearchEngineOptions    []string
+	mcpSearchEngineIndex      int
+	mcpReadOnlyOptions        []string
+	mcpReadOnlyIndex          int
+	progressiveRecommendation string
+
 	// Focus index for forms
 	focusIndex int
 
@@ -102,8 +129,8 @@ type Model struct {
 	defaultDescription string
 }
 
-// initializeTextInputs sets up all text input fields for the model.
-func (m *Model) initializeTextInputs(opts config.InstallOptions) {
+// initializeBasicInputs sets up the basic text input fields (spec, description, baseURL).
+func (m *Model) initializeBasicInputs(opts config.InstallOptions) {
 	m.specInput = textinput.New()
 	m.specInput.Placeholder = "https://example.com/openapi.json or ./spec.yaml"
 	m.specInput.Focus()
@@ -130,7 +157,37 @@ func (m *Model) initializeTextInputs(opts config.InstallOptions) {
 		m.defaultBaseURL = opts.BaseURL
 		m.baseUrlInput.Placeholder = opts.BaseURL
 	}
+}
 
+// initializeTLSInputs sets up the TLS certificate input fields.
+func (m *Model) initializeTLSInputs(opts config.InstallOptions) {
+	m.tlsCACertInput = textinput.New()
+	m.tlsCACertInput.Placeholder = "/path/to/ca.pem (optional)"
+	m.tlsCACertInput.CharLimit = 200
+	m.tlsCACertInput.Width = 50
+	if opts.TLSCACert != "" {
+		m.tlsCACertInput.SetValue(opts.TLSCACert)
+	}
+
+	m.tlsClientCertInput = textinput.New()
+	m.tlsClientCertInput.Placeholder = "/path/to/client.pem (optional)"
+	m.tlsClientCertInput.CharLimit = 200
+	m.tlsClientCertInput.Width = 50
+	if opts.TLSClientCert != "" {
+		m.tlsClientCertInput.SetValue(opts.TLSClientCert)
+	}
+
+	m.tlsClientKeyInput = textinput.New()
+	m.tlsClientKeyInput.Placeholder = "/path/to/client-key.pem (optional)"
+	m.tlsClientKeyInput.CharLimit = 200
+	m.tlsClientKeyInput.Width = 50
+	if opts.TLSClientKey != "" {
+		m.tlsClientKeyInput.SetValue(opts.TLSClientKey)
+	}
+}
+
+// initializeHeaderInputs sets up the custom header input fields.
+func (m *Model) initializeHeaderInputs() {
 	m.headerNameInput = textinput.New()
 	m.headerNameInput.Placeholder = "Header Name"
 	m.headerNameInput.Width = 30
@@ -140,6 +197,13 @@ func (m *Model) initializeTextInputs(opts config.InstallOptions) {
 	m.headerValueInput.Placeholder = "Value"
 	m.headerValueInput.Width = 30
 	m.headerValueInput.CharLimit = 500
+}
+
+// initializeTextInputs sets up all text input fields for the model.
+func (m *Model) initializeTextInputs(opts config.InstallOptions) {
+	m.initializeBasicInputs(opts)
+	m.initializeTLSInputs(opts)
+	m.initializeHeaderInputs()
 }
 
 // initializeSpinner sets up the loading spinner.
@@ -152,23 +216,30 @@ func (m *Model) initializeSpinner() {
 
 func NewModel(appName string, opts config.InstallOptions, appExists bool) Model {
 	m := Model{
-		step:              StepSpecInput,
-		appName:           appName,
-		options:           opts,
-		appExists:         appExists,
-		collectedHeaders:  make(map[string]string),
-		authOptions:       []string{"none", "bearer", "api_key", "basic"},
-		shimOptions:       []string{"Yes", "No"},
-		confirmOptions:    []string{"No", "Yes"},
-		addHeadersOptions: []string{"No", "Yes"},
-		history:           []string{},
+		step:                   StepSpecInput,
+		appName:                appName,
+		options:                opts,
+		appExists:              appExists,
+		collectedHeaders:       make(map[string]string),
+		authOptions:            []string{"none", "bearer", "api_key", "basic"},
+		shimOptions:            []string{"Yes", "No"},
+		confirmOptions:         []string{"No", "Yes"},
+		addHeadersOptions:      []string{"No", "Yes"},
+		tlsSkipVerifyOptions:   []string{"No", "Yes"},
+		mcpAdvancedOptions:     []string{"Skip", "Configure"},
+		mcpProgressiveOptions:  []string{"No", "Yes"},
+		mcpSearchEngineOptions: []string{"predicate"},
+		mcpReadOnlyOptions:     []string{"No", "Yes"},
+		history:                []string{},
 	}
 
 	m.initializeTextInputs(opts)
 	m.initializeSpinner()
 
 	if opts.SpecSource != "" || len(opts.SpecSources) > 0 {
-		m.step = StepLoading
+		m.step = StepBaseURL
+		m.specInput.Blur()
+		m.baseUrlInput.Focus()
 	}
 
 	if opts.AuthType != "" {
@@ -178,6 +249,11 @@ func NewModel(appName string, opts config.InstallOptions, appExists bool) Model 
 				break
 			}
 		}
+	}
+
+	// Set TLS skip verify from options
+	if opts.TLSSkipVerify {
+		m.tlsSkipVerifyIndex = 1 // Yes
 	}
 
 	return m
@@ -200,22 +276,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.step {
 	case StepSpecInput:
 		return m.updateSpecInput(msg)
+	case StepBaseURL:
+		return m.updateBaseURL(msg)
+	case StepTLSSkipVerify:
+		return m.updateTLSSkipVerify(msg)
+	case StepTLSCACert:
+		return m.updateTLSCACert(msg)
+	case StepTLSClientCert:
+		return m.updateTLSClientCert(msg)
+	case StepAuthType:
+		return m.updateAuthType(msg)
+	case StepAuthDetails:
+		return m.updateAuthDetails(msg)
 	case StepLoading:
 		return m.updateLoading(msg)
 	case StepDescription:
 		return m.updateDescription(msg)
-	case StepBaseURL:
-		return m.updateBaseURL(msg)
-	case StepAuthType:
-		return m.updateAuthType(msg)
 	case StepShim:
 		return m.updateShim(msg)
-	case StepAuthDetails:
-		return m.updateAuthDetails(msg)
 	case StepAddHeadersConfirm:
 		return m.updateAddHeadersConfirm(msg)
 	case StepHeaderInput:
 		return m.updateHeaderInput(msg)
+	case StepMCPAdvancedConfirm:
+		return m.updateMCPAdvancedConfirm(msg)
+	case StepMCPProgressiveDisclosure:
+		return m.updateMCPProgressiveDisclosure(msg)
+	case StepMCPSearchEngine:
+		return m.updateMCPSearchEngine(msg)
+	case StepMCPReadOnlyMode:
+		return m.updateMCPReadOnlyMode(msg)
 	case StepOverwriteConfirm:
 		return m.updateOverwriteConfirm(msg)
 	}
@@ -231,6 +321,15 @@ func renderTextInputStep(s *strings.Builder, question, inputView string) {
 	s.WriteString("\n\n(Press Enter to continue)")
 }
 
+// renderTextInputStepWithHint renders a text input step with custom hint.
+func renderTextInputStepWithHint(s *strings.Builder, question, inputView, hint string) {
+	s.WriteString(questionStyle.Render(question))
+	s.WriteString("\n")
+	s.WriteString(inputView)
+	s.WriteString("\n\n")
+	s.WriteString(helpStyle.Render(hint))
+}
+
 // renderChoiceStep renders a choice selection step.
 func (m Model) renderChoiceStep(s *strings.Builder, question string, choices []string, selectedIdx int) {
 	s.WriteString(questionStyle.Render(question))
@@ -244,32 +343,97 @@ func (m Model) renderStepContent(s *strings.Builder) {
 	switch m.step {
 	case StepSpecInput:
 		renderTextInputStep(s, "? OpenAPI Specification Source:", m.specInput.View())
+	case StepBaseURL:
+		renderTextInputStep(s, "? Base URL:", m.baseUrlInput.View())
+	case StepTLSSkipVerify:
+		m.renderChoiceStep(s, "? Skip TLS Certificate Verification (insecure):", m.tlsSkipVerifyOptions, m.tlsSkipVerifyIndex)
+	case StepTLSCACert:
+		renderTextInputStepWithHint(s, "? Custom CA Certificate (optional):", m.tlsCACertInput.View(), "(Leave empty to skip, Enter to continue)")
+	case StepTLSClientCert:
+		m.renderTLSClientCertStep(s)
+	case StepAuthType:
+		m.renderChoiceStep(s, "? Authentication Type:", m.authOptions, m.authIndex)
+	case StepAuthDetails:
+		m.renderAuthDetailsStep(s)
 	case StepLoading:
 		fmt.Fprintf(s, "%s Loading specification...", m.spinner.View())
 	case StepDescription:
 		renderTextInputStep(s, "? Description:", m.descInput.View())
-	case StepBaseURL:
-		renderTextInputStep(s, "? Base URL:", m.baseUrlInput.View())
-	case StepAuthType:
-		m.renderChoiceStep(s, "? Authentication Type:", m.authOptions, m.authIndex)
 	case StepShim:
 		m.renderChoiceStep(s, "? Create Shim Executable:", m.shimOptions, m.shimIndex)
-	case StepAuthDetails:
-		m.renderAuthDetailsStep(s)
 	case StepAddHeadersConfirm:
-		s.WriteString(questionStyle.Render("? Add Custom HTTP Headers:"))
-		s.WriteString("\n")
-		s.WriteString(m.renderChoice("", m.addHeadersOptions, m.addHeadersIndex))
-		s.WriteString("\n\n")
+		m.renderAddHeadersConfirmStep(s)
 	case StepHeaderInput:
 		m.renderHeaderInputStep(s)
+	case StepMCPAdvancedConfirm:
+		m.renderMCPAdvancedConfirmStep(s)
+	case StepMCPProgressiveDisclosure:
+		m.renderMCPProgressiveStep(s)
+	case StepMCPSearchEngine:
+		m.renderChoiceStep(s, "? Search Engine for Progressive Disclosure:", m.mcpSearchEngineOptions, m.mcpSearchEngineIndex)
+	case StepMCPReadOnlyMode:
+		m.renderChoiceStep(s, "? Enable Read-Only Mode (GET operations only):", m.mcpReadOnlyOptions, m.mcpReadOnlyIndex)
 	case StepOverwriteConfirm:
-		fmt.Fprintf(s, "App '%s' already exists.\n\n", m.appName)
-		s.WriteString(m.renderChoice("Overwrite?", m.confirmOptions, m.confirmIndex))
-		s.WriteString("\n\n")
+		m.renderOverwriteConfirmStep(s)
 	default:
 		// StepDone or unknown step - nothing to render
 	}
+}
+
+// renderAddHeadersConfirmStep renders the add headers confirm step.
+func (m Model) renderAddHeadersConfirmStep(s *strings.Builder) {
+	s.WriteString(questionStyle.Render("? Add Custom HTTP Headers:"))
+	s.WriteString("\n")
+	s.WriteString(m.renderChoice("", m.addHeadersOptions, m.addHeadersIndex))
+	s.WriteString("\n\n")
+}
+
+// renderOverwriteConfirmStep renders the overwrite confirm step.
+func (m Model) renderOverwriteConfirmStep(s *strings.Builder) {
+	fmt.Fprintf(s, "App '%s' already exists.\n\n", m.appName)
+	s.WriteString(m.renderChoice("Overwrite?", m.confirmOptions, m.confirmIndex))
+	s.WriteString("\n\n")
+}
+
+// renderDualInputStep renders a step with two input fields.
+func (m Model) renderDualInputStep(s *strings.Builder, title, label1, label2, help string, input1, input2 textinput.Model) {
+	s.WriteString(questionStyle.Render(title))
+	s.WriteString("\n")
+	s.WriteString(m.renderInput(label1, input1, m.focusIndex == 0))
+	s.WriteString("\n")
+	s.WriteString(m.renderInput(label2, input2, m.focusIndex == 1))
+	s.WriteString("\n\n")
+	s.WriteString(helpStyle.Render(help))
+}
+
+// renderTLSClientCertStep renders the TLS client certificate step.
+func (m Model) renderTLSClientCertStep(s *strings.Builder) {
+	m.renderDualInputStep(s,
+		"? TLS Client Certificate & Key (optional):",
+		"Client Certificate", "Client Key",
+		"(Tab to switch, Enter to continue, leave empty to skip)",
+		m.tlsClientCertInput, m.tlsClientKeyInput)
+}
+
+// renderMCPAdvancedConfirmStep renders the MCP advanced options confirm step.
+func (m Model) renderMCPAdvancedConfirmStep(s *strings.Builder) {
+	s.WriteString(questionStyle.Render("? Configure MCP Advanced Options:"))
+	s.WriteString("\n")
+	if m.progressiveRecommendation != "" {
+		s.WriteString(blurredStyle.Render(m.progressiveRecommendation))
+		s.WriteString("\n")
+	}
+	s.WriteString(m.renderChoice("", m.mcpAdvancedOptions, m.mcpAdvancedIndex))
+	s.WriteString("\n\n(Left/Right to select, Enter to confirm)")
+}
+
+// renderMCPProgressiveStep renders the MCP progressive disclosure step.
+func (m Model) renderMCPProgressiveStep(s *strings.Builder) {
+	question := "? Enable Progressive Disclosure:"
+	if m.progressiveRecommendation != "" {
+		question = fmt.Sprintf("? Enable Progressive Disclosure (%s):", m.progressiveRecommendation)
+	}
+	m.renderChoiceStep(s, question, m.mcpProgressiveOptions, m.mcpProgressiveIndex)
 }
 
 // renderAuthDetailsStep renders the auth details step.
@@ -285,13 +449,11 @@ func (m Model) renderAuthDetailsStep(s *strings.Builder) {
 
 // renderHeaderInputStep renders the header input step.
 func (m Model) renderHeaderInputStep(s *strings.Builder) {
-	s.WriteString(questionStyle.Render("? Custom HTTP Headers:"))
-	s.WriteString("\n")
-	s.WriteString(m.renderInput("Header Name (Leave empty to finish)", m.headerNameInput, m.focusIndex == 0))
-	s.WriteString("\n")
-	s.WriteString(m.renderInput("Header Value", m.headerValueInput, m.focusIndex == 1))
-	s.WriteString("\n\n")
-	s.WriteString(helpStyle.Render("(Enter to add/next)"))
+	m.renderDualInputStep(s,
+		"? Custom HTTP Headers:",
+		"Header Name (Leave empty to finish)", "Header Value",
+		"(Enter to add/next)",
+		m.headerNameInput, m.headerValueInput)
 }
 
 func (m Model) View() string {
@@ -336,8 +498,9 @@ func (m Model) updateSpecInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.options.SpecSource = val
 		m.err = nil
 		m.addHistory("Spec Source", val)
-		m.step = StepLoading
-		return m, tea.Batch(m.spinner.Tick, m.loadSpecCmd())
+		m.step = StepBaseURL
+		m.baseUrlInput.Focus()
+		return m, textinput.Blink
 	}
 
 	var cmd tea.Cmd
@@ -355,23 +518,30 @@ func (m Model) updateLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 			m.step = StepSpecInput
-			// Remove last history (SpecSource) if failed? Or just error.
 			return m, nil
 		}
 
-		m.addHistory("Loaded Spec", msg.info.Title)
-		m.specDoc = msg.info
-		m.addHistory("Loaded Spec", msg.info.Title)
+		m.addHistory("Loaded Spec", fmt.Sprintf("%s (%d operations)", msg.info.Title, msg.info.Operations))
 		m.specDoc = msg.info
 		if m.defaultDescription == "" && m.specDoc.Title != "" {
 			m.defaultDescription = m.specDoc.Title
 			m.descInput.Placeholder = m.specDoc.Title
 		}
-		if m.defaultBaseURL == "" && msg.baseURL != "" {
-			m.defaultBaseURL = msg.baseURL
-			m.baseUrlInput.Placeholder = msg.baseURL
+
+		// Set progressive disclosure recommendation based on operation count
+		threshold := m.options.ProgressiveThreshold
+		if threshold <= 0 {
+			threshold = config.DefaultProgressiveThreshold
+		}
+		if msg.info.Operations > threshold {
+			m.progressiveRecommendation = fmt.Sprintf("Recommended: %d operations detected", msg.info.Operations)
+			m.mcpProgressiveIndex = 1 // Default to Yes
+			m.mcpAdvancedIndex = 1    // Default to Configure
+		} else {
+			m.progressiveRecommendation = fmt.Sprintf("%d operations detected", msg.info.Operations)
 		}
 
+		// Continue to description step
 		m.step = StepDescription
 		m.descInput.Focus()
 		m.err = nil
@@ -388,9 +558,8 @@ func (m Model) updateDescription(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.options.Description = val
 		m.addHistory("Description", val)
-		m.step = StepBaseURL
-		m.baseUrlInput.Focus()
-		return m, textinput.Blink
+		m.step = StepShim
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.descInput, cmd = m.descInput.Update(msg)
@@ -404,21 +573,174 @@ func (m Model) updateBaseURL(msg tea.Msg) (tea.Model, tea.Cmd) {
 			val = m.defaultBaseURL
 		}
 
-		// Validate URL
-		u, err := url.Parse(val)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			m.err = fmt.Errorf("invalid Base URL: must start with http:// or https:// and have a host")
-			return m, nil
+		// Validate URL if not empty
+		if val != "" {
+			u, err := url.Parse(val)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				m.err = fmt.Errorf("invalid Base URL: must start with http:// or https:// and have a host")
+				return m, nil
+			}
 		}
 
 		m.options.BaseURL = val
 		m.err = nil
-		m.addHistory("Base URL", val)
-		m.step = StepAuthType
+		if val != "" {
+			m.addHistory("Base URL", val)
+		}
+
+		// Only show TLS skip verify option if HTTPS is involved (spec URL or base URL)
+		if m.needsTLSConfiguration() {
+			m.step = StepTLSSkipVerify
+		} else {
+			// Skip TLS configuration steps for non-HTTPS URLs
+			m.step = StepAuthType
+		}
 		return m, nil
 	}
 	var cmd tea.Cmd
 	m.baseUrlInput, cmd = m.baseUrlInput.Update(msg)
+	return m, cmd
+}
+
+// needsTLSConfiguration checks if TLS configuration is needed.
+// Returns true if either the spec source or base URL uses HTTPS.
+func (m *Model) needsTLSConfiguration() bool {
+	// Check spec source
+	if strings.HasPrefix(strings.ToLower(m.options.SpecSource), "https://") {
+		return true
+	}
+	// Check base URL
+	if strings.HasPrefix(strings.ToLower(m.options.BaseURL), "https://") {
+		return true
+	}
+	return false
+}
+
+// updateTLSSkipVerify handles the TLS skip verify step.
+func (m Model) updateTLSSkipVerify(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "left", "h":
+			m.tlsSkipVerifyIndex = 0
+		case "right", "l":
+			m.tlsSkipVerifyIndex = 1
+		case "enter":
+			m.options.TLSSkipVerify = (m.tlsSkipVerifyIndex == 1)
+			if m.options.TLSSkipVerify {
+				m.addHistory("TLS Skip Verify", "Yes (insecure)")
+			}
+			m.step = StepTLSCACert
+			m.tlsCACertInput.Focus()
+			return m, textinput.Blink
+		default:
+			// Ignore other keys
+		}
+	}
+	return m, nil
+}
+
+// updateTLSCACert handles the TLS CA certificate step.
+func (m Model) updateTLSCACert(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
+		val := m.tlsCACertInput.Value()
+		if val != "" {
+			// Validate path
+			absPath, err := config.ValidateTLSCACertFile(val)
+			if err != nil {
+				m.err = fmt.Errorf("invalid CA certificate: %w", err)
+				return m, nil
+			}
+			m.options.TLSCACert = absPath
+			m.addHistory("TLS CA Cert", absPath)
+		}
+		m.err = nil
+		m.step = StepTLSClientCert
+		m.focusIndex = 0
+		m.tlsClientCertInput.Focus()
+		return m, textinput.Blink
+	}
+	var cmd tea.Cmd
+	m.tlsCACertInput, cmd = m.tlsCACertInput.Update(msg)
+	return m, cmd
+}
+
+// validateTLSClientCert validates and sets the TLS client certificate and key.
+func (m *Model) validateTLSClientCert() error {
+	certVal := m.tlsClientCertInput.Value()
+	keyVal := m.tlsClientKeyInput.Value()
+
+	// Both must be provided or both empty
+	if (certVal != "" && keyVal == "") || (certVal == "" && keyVal != "") {
+		return fmt.Errorf("client certificate and key must be provided together")
+	}
+
+	if certVal == "" && keyVal == "" {
+		return nil // Both empty is valid (skip)
+	}
+
+	// Validate certificate
+	absPath, err := config.ValidateTLSCertFile(certVal)
+	if err != nil {
+		return fmt.Errorf("invalid client certificate: %w", err)
+	}
+	m.options.TLSClientCert = absPath
+
+	// Validate key
+	absKeyPath, err := config.ValidateTLSKeyFile(keyVal)
+	if err != nil {
+		return fmt.Errorf("invalid client key: %w", err)
+	}
+	m.options.TLSClientKey = absKeyPath
+	m.addHistory("TLS Client Cert", absPath)
+	m.addHistory("TLS Client Key", absKeyPath)
+	return nil
+}
+
+// updateTLSClientCert handles the TLS client certificate step.
+func (m Model) updateTLSClientCert(msg tea.Msg) (tea.Model, tea.Cmd) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m.updateTLSClientCertInput(msg)
+	}
+
+	switch keyMsg.Type {
+	case tea.KeyEnter:
+		if err := m.validateTLSClientCert(); err != nil {
+			m.err = err
+			return m, nil
+		}
+		m.err = nil
+		m.step = StepAuthType
+		return m, nil
+	case tea.KeyTab, tea.KeyShiftTab:
+		return m.toggleTLSClientInputFocus()
+	default:
+		return m.updateTLSClientCertInput(msg)
+	}
+}
+
+// toggleTLSClientInputFocus toggles focus between cert and key inputs.
+func (m Model) toggleTLSClientInputFocus() (tea.Model, tea.Cmd) {
+	if m.focusIndex == 0 {
+		m.focusIndex = 1
+		m.tlsClientCertInput.Blur()
+		m.tlsClientKeyInput.Focus()
+	} else {
+		m.focusIndex = 0
+		m.tlsClientKeyInput.Blur()
+		m.tlsClientCertInput.Focus()
+	}
+	return m, textinput.Blink
+}
+
+// updateTLSClientCertInput updates the focused TLS client cert input.
+func (m Model) updateTLSClientCertInput(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	if m.focusIndex == 0 {
+		m.tlsClientCertInput, cmd = m.tlsClientCertInput.Update(msg)
+	} else {
+		m.tlsClientKeyInput, cmd = m.tlsClientKeyInput.Update(msg)
+	}
 	return m, cmd
 }
 
@@ -462,8 +784,9 @@ func (m Model) handleAuthTypeEnter() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	m.step = StepShim
-	return m, nil
+	// Start loading spec after auth configuration
+	m.step = StepLoading
+	return m, tea.Batch(m.spinner.Tick, m.loadSpecCmd())
 }
 
 func (m Model) updateShim(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -597,8 +920,9 @@ func (m Model) updateAuthDetails(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.focusIndex == len(m.authInputs)-1 {
 			m.collectAuthParams()
 			m.addHistory("Auth Details", "Provided")
-			m.step = StepShim
-			return m, nil
+			// Start loading spec after auth details
+			m.step = StepLoading
+			return m, tea.Batch(m.spinner.Tick, m.loadSpecCmd())
 		}
 		m.focusIndex++
 		return m, m.updateAuthInputFocus()
@@ -712,15 +1036,139 @@ func (m Model) updateHeaderInputFields(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// checkOverwriteOrFinish checks if app exists and needs overwrite confirmation,
+// or proceeds to MCP advanced options. The tea.Cmd return is always nil but
+// kept for consistency with the Update pattern.
+//
+//nolint:unparam // tea.Cmd is kept for Update pattern consistency
 func (m Model) checkOverwriteOrFinish() (Model, tea.Cmd) {
 	if m.appExists && !m.options.Force {
 		m.step = StepOverwriteConfirm
 		m.confirmIndex = 0 // Default No
 		return m, nil
 	}
+	// Go to MCP advanced options
+	m.step = StepMCPAdvancedConfirm
+	m.mcpAdvancedIndex = 0 // Default to No (skip)
+	return m, nil
+}
+
+// finishInstall completes the installation process.
+func (m Model) finishInstall() (Model, tea.Cmd) {
 	m.result = &m.options
 	m.options.Headers = m.collectedHeaders // Save headers
 	return m, tea.Quit
+}
+
+// updateMCPAdvancedConfirm handles the MCP advanced configuration confirm step.
+func (m Model) updateMCPAdvancedConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "left", "h":
+			m.mcpAdvancedIndex = 0
+		case "right", "l":
+			m.mcpAdvancedIndex = 1
+		case "enter":
+			if m.mcpAdvancedIndex == 1 { // Yes - configure MCP
+				m.step = StepMCPProgressiveDisclosure
+				return m, nil
+			}
+			// No - skip MCP config, use defaults
+			m.addHistory("MCP Advanced Options", "Skipped (using defaults)")
+			return m.finishInstall()
+		default:
+			// Ignore other keys
+		}
+	}
+	return m, nil
+}
+
+// updateMCPProgressiveDisclosure handles the progressive disclosure configuration step.
+func (m Model) updateMCPProgressiveDisclosure(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "left", "h":
+			m.mcpProgressiveIndex = 0
+		case "right", "l":
+			m.mcpProgressiveIndex = 1
+		case "enter":
+			return m.confirmMCPProgressiveDisclosure()
+		default:
+			// Ignore other keys
+		}
+	}
+	return m, nil
+}
+
+// confirmMCPProgressiveDisclosure processes the progressive disclosure selection and determines the next step.
+func (m Model) confirmMCPProgressiveDisclosure() (tea.Model, tea.Cmd) {
+	enabled := (m.mcpProgressiveIndex == 1) // Yes is 1
+	m.options.ProgressiveDisclosure = &enabled
+	if enabled {
+		m.addHistory("Progressive Disclosure", "Enabled")
+	} else {
+		m.addHistory("Progressive Disclosure", "Disabled")
+	}
+	// Only show search engine selection if there are >= 2 options
+	if len(m.mcpSearchEngineOptions) >= 2 {
+		m.step = StepMCPSearchEngine
+		return m, nil
+	}
+	// Auto-select the first (and only) search engine if available
+	if len(m.mcpSearchEngineOptions) == 1 {
+		m.options.SearchEngine = m.mcpSearchEngineOptions[0]
+	}
+	m.step = StepMCPReadOnlyMode
+	return m, nil
+}
+
+// updateMCPSearchEngine handles the search engine configuration step.
+func (m Model) updateMCPSearchEngine(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "left", "h":
+			m.mcpSearchEngineIndex--
+			if m.mcpSearchEngineIndex < 0 {
+				m.mcpSearchEngineIndex = len(m.mcpSearchEngineOptions) - 1
+			}
+		case "right", "l":
+			m.mcpSearchEngineIndex++
+			if m.mcpSearchEngineIndex >= len(m.mcpSearchEngineOptions) {
+				m.mcpSearchEngineIndex = 0
+			}
+		case "enter":
+			m.options.SearchEngine = m.mcpSearchEngineOptions[m.mcpSearchEngineIndex]
+			m.addHistory("Search Engine", m.options.SearchEngine)
+			m.step = StepMCPReadOnlyMode
+			return m, nil
+		default:
+			// Ignore other keys
+		}
+	}
+	return m, nil
+}
+
+// updateMCPReadOnlyMode handles the read-only mode configuration step.
+func (m Model) updateMCPReadOnlyMode(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "left", "h":
+			m.mcpReadOnlyIndex = 0
+		case "right", "l":
+			m.mcpReadOnlyIndex = 1
+		case "enter":
+			m.options.ReadOnlyMode = (m.mcpReadOnlyIndex == 1) // Yes is 1
+			if m.options.ReadOnlyMode {
+				m.addHistory("Read-Only Mode", "Enabled")
+			} else {
+				m.addHistory("Read-Only Mode", "Disabled")
+			}
+			return m.finishInstall()
+		default:
+			// Ignore other keys
+		}
+	}
+	return m, nil
 }
 
 func (m Model) updateOverwriteConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -733,10 +1181,11 @@ func (m Model) updateOverwriteConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if m.confirmIndex == 1 { // Yes
 				m.options.Force = true
-				m.result = &m.options
 				m.addHistory("Overwrite App", "Yes")
-				// Done
-				return m, tea.Quit
+				// Go to MCP advanced options
+				m.step = StepMCPAdvancedConfirm
+				m.mcpAdvancedIndex = 0 // Default to No (skip)
+				return m, nil
 			} else {
 				m.err = fmt.Errorf("installation aborted by user")
 				return m, tea.Quit
