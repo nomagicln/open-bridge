@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/nomagicln/open-bridge/pkg/codegen"
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/request"
 	"github.com/nomagicln/open-bridge/pkg/semantic"
@@ -143,6 +145,57 @@ func (h *Handler) executeAPIRequest(appName string, op *semantic.Operation, opSp
 	return body, nil
 }
 
+// generateCode generates code for the API request and outputs it to stdout or a file.
+func (h *Handler) generateCode(appName string, op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile, format string, outputFile string) error {
+	// Validate format
+	if !codegen.ValidateFormat(format) {
+		return fmt.Errorf("unsupported code format: %s (valid formats: curl, nodejs, go, python)", format)
+	}
+
+	// Build the HTTP request (same as executeAPIRequest)
+	var requestBody *openapi3.RequestBody
+	if opSpec.RequestBody != nil && opSpec.RequestBody.Value != nil {
+		requestBody = opSpec.RequestBody.Value
+	}
+
+	req, err := h.reqBuilder.BuildRequest(op.Method, op.Path, profile.BaseURL, params, opSpec.Parameters, requestBody)
+	if err != nil {
+		return fmt.Errorf("failed to build request: %w", err)
+	}
+
+	if err := h.reqBuilder.InjectAuth(req, appName, profile.Name, &profile.Auth); err != nil {
+		return fmt.Errorf("failed to inject auth: %w", err)
+	}
+
+	// Create code generator with masking option
+	maskSecrets := profile.ProtectSensitiveInfo
+	generator, err := codegen.NewGenerator(codegen.OutputFormat(format), codegen.Options{MaskSecrets: maskSecrets})
+	if err != nil {
+		return fmt.Errorf("failed to create code generator: %w", err)
+	}
+
+	// Generate code
+	code, err := generator.Generate(req)
+	if err != nil {
+		return fmt.Errorf("failed to generate code: %w", err)
+	}
+
+	// Check if output file is specified
+	if outputFile == "" {
+		// Output to stdout
+		fmt.Print(code)
+		return nil
+	}
+
+	// Output to file
+	if err := os.WriteFile(outputFile, []byte(code), 0600); err != nil {
+		return fmt.Errorf("failed to write to file %s: %w", outputFile, err)
+	}
+
+	fmt.Printf("Code generated successfully and saved to: %s\n", outputFile)
+	return nil
+}
+
 // resolveOperation finds the resource and operation for the given command.
 func (h *Handler) resolveOperation(specDoc *openapi3.T, resource, verb string) (*semantic.Resource, *semantic.Operation, error) {
 	tree := h.mapper.BuildCommandTree(specDoc)
@@ -168,6 +221,58 @@ func getOperationRequestBody(opSpec *openapi3.Operation) *openapi3.RequestBody {
 }
 
 // ExecuteCommand parses and executes a CLI command.
+// resolveOperationSpec loads spec and resolves operation details.
+func (h *Handler) resolveOperationSpec(appName string, appConfig *config.AppConfig, resource, verb string) (*openapi3.PathItem, *openapi3.Operation, *semantic.Operation, error) {
+	specDoc, err := h.loadAndCacheSpec(appName, appConfig)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	_, op, err := h.resolveOperation(specDoc, resource, verb)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	pathItem := specDoc.Paths.Find(op.Path)
+	if pathItem == nil {
+		return nil, nil, nil, fmt.Errorf("path not found: %s", op.Path)
+	}
+
+	opSpec := getOperationSpec(pathItem, op.Method)
+	if opSpec == nil {
+		return nil, nil, nil, fmt.Errorf("operation not found for %s %s", op.Method, op.Path)
+	}
+
+	return pathItem, opSpec, op, nil
+}
+
+// parseAndMergeParams parses CLI and request arguments and merges them into a unified map.
+// The `--` delimiter separates CLI flags (before) from request parameters (after):
+//   - With delimiter: args before -- are CLI flags, args after -- are request parameters
+//   - Without delimiter: all args are parsed as CLI flags, no request parameters
+//
+// Returns a merged map containing CLI flags and request parameters for building the API request.
+func (h *Handler) parseAndMergeParams(flagArgs []string, opSpec *openapi3.Operation) (map[string]any, error) {
+	cliArgs, requestArgs, hasDelimiter := SplitArgs(flagArgs)
+
+	var cliParams map[string]any
+	if hasDelimiter {
+		// Delimiter mode: split between CLI flags and request parameters
+		cliParams = h.parseCLIFlags(cliArgs)
+	} else {
+		// No delimiter: all arguments are CLI flags
+		cliParams = h.parseCLIFlags(flagArgs)
+		requestArgs = nil
+	}
+
+	requestParams, err := ParseRequestParams(requestArgs, opSpec, hasDelimiter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse request parameters: %w", err)
+	}
+
+	return h.mergeRequestParams(cliParams, requestParams), nil
+}
+
 func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, args []string) error {
 	if handled, err := h.handleHelpCommands(appName, appConfig, args); handled {
 		return err
@@ -175,29 +280,37 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 
 	resource, verb, flagArgs := args[0], args[1], args[2:]
 
-	specDoc, err := h.loadAndCacheSpec(appName, appConfig)
+	_, opSpec, op, err := h.resolveOperationSpec(appName, appConfig, resource, verb)
 	if err != nil {
 		return err
 	}
 
-	_, op, err := h.resolveOperation(specDoc, resource, verb)
+	params, err := h.parseAndMergeParams(flagArgs, opSpec)
 	if err != nil {
 		return err
 	}
 
-	pathItem := specDoc.Paths.Find(op.Path)
-	if pathItem == nil {
-		return fmt.Errorf("path not found: %s", op.Path)
-	}
+	// Extract and remove CLI-only flags before validation
+	generateFormat, hasGenerate := params["generate"].(string)
+	generateOutput, _ := params["generate-output"].(string)
 
-	opSpec := getOperationSpec(pathItem, op.Method)
-	if opSpec == nil {
-		return fmt.Errorf("operation not found for %s %s", op.Method, op.Path)
-	}
+	// Remove CLI flags from params map so they don't get sent as request parameters
+	delete(params, "generate")
+	delete(params, "generate-output")
+	delete(params, "output")
+	delete(params, "json")
+	delete(params, "yaml")
 
-	params := h.parseFlags(flagArgs)
+	// Get request body spec
 	requestBody := getOperationRequestBody(opSpec)
 
+	// Handle code generation or API request execution
+	if hasGenerate && generateFormat != "" {
+		// Code generation: no parameter validation (user might generate partial requests)
+		return h.generateCode(appName, op, opSpec, params, h.getProfile(appConfig), generateFormat, generateOutput)
+	}
+
+	// API request path: strict parameter validation required
 	if err := h.reqBuilder.ValidateParams(params, opSpec.Parameters, requestBody); err != nil {
 		return h.showParameterValidationError(err, appName, resource, verb, opSpec.Parameters)
 	}
@@ -268,8 +381,9 @@ func (h *Handler) findResourceRecursive(parent *semantic.Resource, name string) 
 	return nil
 }
 
-// parseFlags parses command line flags into a map.
-func (h *Handler) parseFlags(args []string) map[string]any {
+// parseCLIFlags parses CLI-only flags (like --generate, --output, etc.)
+// These are flags not related to API parameters.
+func (h *Handler) parseCLIFlags(args []string) map[string]any {
 	params := make(map[string]any)
 
 	for i := 0; i < len(args); i++ {
@@ -284,11 +398,11 @@ func (h *Handler) parseFlags(args []string) map[string]any {
 		if idx := strings.Index(key, "="); idx != -1 {
 			value := key[idx+1:]
 			key = key[:idx]
-			h.addFlagValue(params, key, value)
+			params[key] = value
 			continue
 		}
 
-		// Check for boolean flag (no value)
+		// Check for boolean flag
 		if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
 			params[key] = true
 			continue
@@ -297,58 +411,34 @@ func (h *Handler) parseFlags(args []string) map[string]any {
 		// Get value
 		value := args[i+1]
 		i++
-
-		h.addFlagValue(params, key, value)
+		params[key] = value
 	}
 
 	return params
 }
 
-// addFlagValue adds a flag value to params, handling nested objects and arrays.
-func (h *Handler) addFlagValue(params map[string]any, key, value string) {
-	// Handle dot notation for nested objects
-	if strings.Contains(key, ".") {
-		h.setNestedValue(params, key, value)
-		return
+// mergeRequestParams merges request parameters from RequestParams struct into a unified map.
+// This consolidates Headers, Query, Path, and Body into one map for request building.
+func (h *Handler) mergeRequestParams(cliParams map[string]any, reqParams *RequestParams) map[string]any {
+	merged := cliParams
+
+	// Merge Header, Query, and Path parameters with their values (not prefixed)
+	for key, value := range reqParams.Headers {
+		merged[key] = value
 	}
 
-	// Check if key already exists (array values from repeated flags)
-	if existing, ok := params[key]; ok {
-		switch v := existing.(type) {
-		case []string:
-			params[key] = append(v, value)
-		case []any:
-			params[key] = append(v, value)
-		default:
-			// Convert to array
-			params[key] = []string{fmt.Sprintf("%v", v), value}
-		}
-	} else {
-		params[key] = value
-	}
-}
-
-// setNestedValue sets a nested value using dot notation.
-func (h *Handler) setNestedValue(params map[string]any, key, value string) {
-	parts := strings.Split(key, ".")
-	current := params
-
-	for i, part := range parts[:len(parts)-1] {
-		if _, ok := current[part]; !ok {
-			current[part] = make(map[string]any)
-		}
-		next, ok := current[part].(map[string]any)
-		if !ok {
-			// Conflict - can't nest under non-map
-			// Fallback to using full key
-			params[key] = value
-			return
-		}
-		current = next
-		_ = i
+	for key, value := range reqParams.Query {
+		merged[key] = value
 	}
 
-	current[parts[len(parts)-1]] = value
+	for key, value := range reqParams.Path {
+		merged[key] = value
+	}
+
+	// Merge Body parameters
+	maps.Copy(merged, reqParams.Body)
+
+	return merged
 }
 
 // getProfile returns the profile to use for the request.
@@ -525,10 +615,7 @@ func (h *Handler) showAppHelp(appName string, appConfig *config.AppConfig) error
 		var err error
 		specDoc, err = h.specParser.LoadSpec(appConfig.SpecSource)
 		if err != nil {
-			sb.WriteString("(Unable to load API specification)\n\n")
-			sb.WriteString("Examples:\n")
-			fmt.Fprintf(&sb, "  %s <resource> <verb> [flags]\n", appName)
-			fmt.Print(sb.String())
+			h.writeHelpWhenSpecLoadFails(&sb, appName)
 			return nil
 		}
 		h.specParser.CacheSpec(appName, specDoc)
@@ -536,30 +623,55 @@ func (h *Handler) showAppHelp(appName string, appConfig *config.AppConfig) error
 
 	tree := h.mapper.BuildCommandTree(specDoc)
 
+	h.writeResourcesSection(&sb, tree)
+	h.writeGlobalFlagsSection(&sb)
+	h.writeExamplesSection(&sb, appName, tree)
+
+	fmt.Print(sb.String())
+	return nil
+}
+
+func (h *Handler) writeHelpWhenSpecLoadFails(sb *strings.Builder, appName string) {
+	sb.WriteString("(Unable to load API specification)\n\n")
+	sb.WriteString("Examples:\n")
+	fmt.Fprintf(sb, "  %s <resource> <verb> [flags]\n", appName)
+	fmt.Print(sb.String())
+}
+
+func (h *Handler) writeResourcesSection(sb *strings.Builder, tree *semantic.CommandTree) {
 	sb.WriteString("Available Resources:\n")
 	for resourceName, res := range tree.RootResources {
-		fmt.Fprintf(&sb, "  %s\n", resourceName)
+		fmt.Fprintf(sb, "  %s\n", resourceName)
 		// List sub-resources
 		for subName := range res.SubResources {
-			fmt.Fprintf(&sb, "    %s\n", subName)
+			fmt.Fprintf(sb, "    %s\n", subName)
 		}
 	}
 
 	sb.WriteString("\nCommon Verbs:\n")
 	sb.WriteString("  create, list, get, update, delete, apply\n\n")
+}
 
+func (h *Handler) writeGlobalFlagsSection(sb *strings.Builder) {
 	sb.WriteString("Global Flags:\n")
 	sb.WriteString("  --help, -h       Show help\n")
 	sb.WriteString("  --json           Output in JSON format\n")
 	sb.WriteString("  --yaml           Output in YAML format (default)\n")
 	sb.WriteString("  --output, -o     Output format: json, yaml (default: yaml)\n")
-	sb.WriteString("  --profile, -p    Profile to use\n\n")
+	sb.WriteString("  --profile, -p    Profile to use\n")
+	sb.WriteString("  --generate, -g   Generate code instead of sending request\n")
+	sb.WriteString("                   Formats: curl, nodejs, go, python\n")
+	sb.WriteString("  --generate-output, -O  Save generated code to file (default: stdout)\n\n")
 
+	sb.WriteString("Code Generation Note:\n")
+	sb.WriteString("  When using --generate, no actual request is sent. Instead, code is generated\n")
+	sb.WriteString("  in the specified language. Sensitive information (API keys, tokens) can be\n")
+	sb.WriteString("  masked based on the 'protect_sensitive_info' profile setting.\n\n")
+}
+
+func (h *Handler) writeExamplesSection(sb *strings.Builder, appName string, tree *semantic.CommandTree) {
 	sb.WriteString("Examples:\n")
-	h.writeResourceExamples(&sb, appName, tree)
-
-	fmt.Print(sb.String())
-	return nil
+	h.writeResourceExamples(sb, appName, tree)
 }
 
 // writeResourceExamples writes dynamic examples based on actual resources.

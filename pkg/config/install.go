@@ -98,6 +98,11 @@ type InstallOptions struct {
 	// OperationCount is populated after loading the spec, used for
 	// determining progressive disclosure recommendation.
 	OperationCount int
+
+	// ProtectSensitiveInfo controls whether sensitive information should be masked
+	// when generating code. When true, credentials are replaced with placeholders
+	// like <YOUR_API_KEY>. Default is false (not protected).
+	ProtectSensitiveInfo bool
 }
 
 // InstallResult contains the result of an app installation.

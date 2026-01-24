@@ -33,6 +33,7 @@ const (
 	StepMCPProgressiveDisclosure
 	StepMCPSearchEngine
 	StepMCPReadOnlyMode
+	StepProtectSensitiveInfo
 	StepOverwriteConfirm
 	StepDone
 )
@@ -116,6 +117,10 @@ type Model struct {
 	mcpReadOnlyOptions        []string
 	mcpReadOnlyIndex          int
 	progressiveRecommendation string
+
+	// Protect Sensitive Info Choice
+	protectSensitiveInfoOptions []string
+	protectSensitiveInfoIndex   int
 
 	// Focus index for forms
 	focusIndex int
@@ -216,21 +221,22 @@ func (m *Model) initializeSpinner() {
 
 func NewModel(appName string, opts config.InstallOptions, appExists bool) Model {
 	m := Model{
-		step:                   StepSpecInput,
-		appName:                appName,
-		options:                opts,
-		appExists:              appExists,
-		collectedHeaders:       make(map[string]string),
-		authOptions:            []string{"none", "bearer", "api_key", "basic"},
-		shimOptions:            []string{"Yes", "No"},
-		confirmOptions:         []string{"No", "Yes"},
-		addHeadersOptions:      []string{"No", "Yes"},
-		tlsSkipVerifyOptions:   []string{"No", "Yes"},
-		mcpAdvancedOptions:     []string{"Skip", "Configure"},
-		mcpProgressiveOptions:  []string{"No", "Yes"},
-		mcpSearchEngineOptions: []string{"predicate"},
-		mcpReadOnlyOptions:     []string{"No", "Yes"},
-		history:                []string{},
+		step:                        StepSpecInput,
+		appName:                     appName,
+		options:                     opts,
+		appExists:                   appExists,
+		collectedHeaders:            make(map[string]string),
+		authOptions:                 []string{"none", "bearer", "api_key", "basic"},
+		shimOptions:                 []string{"Yes", "No"},
+		confirmOptions:              []string{"No", "Yes"},
+		addHeadersOptions:           []string{"No", "Yes"},
+		tlsSkipVerifyOptions:        []string{"No", "Yes"},
+		mcpAdvancedOptions:          []string{"Skip", "Configure"},
+		mcpProgressiveOptions:       []string{"No", "Yes"},
+		mcpSearchEngineOptions:      []string{"predicate"},
+		mcpReadOnlyOptions:          []string{"No", "Yes"},
+		protectSensitiveInfoOptions: []string{"No", "Yes"},
+		history:                     []string{},
 	}
 
 	m.initializeTextInputs(opts)
@@ -273,6 +279,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	return m.handleStepUpdate(msg)
+}
+
+func (m Model) handleStepUpdate(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:funlen // Step routing requires many cases
 	switch m.step {
 	case StepSpecInput:
 		return m.updateSpecInput(msg)
@@ -306,6 +316,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMCPSearchEngine(msg)
 	case StepMCPReadOnlyMode:
 		return m.updateMCPReadOnlyMode(msg)
+	case StepProtectSensitiveInfo:
+		return m.updateProtectSensitiveInfo(msg)
 	case StepOverwriteConfirm:
 		return m.updateOverwriteConfirm(msg)
 	}
@@ -373,6 +385,8 @@ func (m Model) renderStepContent(s *strings.Builder) {
 		m.renderChoiceStep(s, "? Search Engine for Progressive Disclosure:", m.mcpSearchEngineOptions, m.mcpSearchEngineIndex)
 	case StepMCPReadOnlyMode:
 		m.renderChoiceStep(s, "? Enable Read-Only Mode (GET operations only):", m.mcpReadOnlyOptions, m.mcpReadOnlyIndex)
+	case StepProtectSensitiveInfo:
+		m.renderChoiceStep(s, "? Protect Sensitive Information (mask API keys in generated code):", m.protectSensitiveInfoOptions, m.protectSensitiveInfoIndex)
 	case StepOverwriteConfirm:
 		m.renderOverwriteConfirmStep(s)
 	default:
@@ -1162,6 +1176,28 @@ func (m Model) updateMCPReadOnlyMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.addHistory("Read-Only Mode", "Enabled")
 			} else {
 				m.addHistory("Read-Only Mode", "Disabled")
+			}
+			m.step = StepProtectSensitiveInfo
+		default:
+			// Ignore other keys
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateProtectSensitiveInfo(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "left", "h":
+			m.protectSensitiveInfoIndex = 0
+		case "right", "l":
+			m.protectSensitiveInfoIndex = 1
+		case "enter":
+			m.options.ProtectSensitiveInfo = (m.protectSensitiveInfoIndex == 1) // Yes is 1
+			if m.options.ProtectSensitiveInfo {
+				m.addHistory("Protect Sensitive Info", "Enabled")
+			} else {
+				m.addHistory("Protect Sensitive Info", "Disabled")
 			}
 			return m.finishInstall()
 		default:

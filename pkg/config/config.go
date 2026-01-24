@@ -95,6 +95,11 @@ type Profile struct {
 	// SpecFetchHeaders contains custom headers to send when fetching remote specs.
 	// These headers are applied in addition to default Accept and User-Agent headers.
 	SpecFetchHeaders map[string]string `yaml:"spec_fetch_headers,omitempty"`
+
+	// ProtectSensitiveInfo controls whether sensitive information (API keys, tokens, etc.)
+	// should be masked when generating code. When true, credentials are replaced with
+	// placeholders like <YOUR_API_KEY>. Default is false (not protected).
+	ProtectSensitiveInfo bool `yaml:"protect_sensitive_info,omitempty"`
 }
 
 // SpecFetchAuthConfig contains authentication configuration for fetching remote specs.
