@@ -188,7 +188,7 @@ func (h *ProgressiveHandler) buildSearchToolDefinition() mcp.Tool {
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "Predicate expression to filter tools. Use the search strategy documented above for precise filtering. Strongly prefer using a query over listing all tools.",
+					"description": "Search query to filter tools. Refer to the search strategy documented above for the appropriate query syntax and best practices. Strongly prefer using a focused query over listing all tools.",
 				},
 			},
 			"required": []string{},
