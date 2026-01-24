@@ -888,6 +888,15 @@ func setNestedValue(obj map[string]any, path string, value any) error {
 	if finalKey == "" {
 		return fmt.Errorf("invalid path: empty final key")
 	}
+
+	// If the key already exists and is a map, we have a conflict
+	// (trying to overwrite a nested structure with a value)
+	if existing, exists := current[finalKey]; exists {
+		if _, ok := existing.(map[string]any); ok {
+			return fmt.Errorf("conflicting types at path '%s': expected value, got map", path)
+		}
+	}
+
 	current[finalKey] = value
 	return nil
 }
