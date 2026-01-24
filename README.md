@@ -1,7 +1,7 @@
 # OpenBridge
 
 <p align="center">
-  <img src="docs/images/logo.jpeg" alt="OpenBridge Logo" width="600">
+  <img src="docs/public/logo.jpeg" alt="OpenBridge Logo" width="600">
 </p>
 
 [![CI](https://github.com/nomagicln/open-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/nomagicln/open-bridge/actions/workflows/ci.yml)
@@ -61,12 +61,44 @@ myapi user create --name "John"
 
 ### 3. Use with AI (MCP Mode)
 
+OpenBridge implements the Model Context Protocol (MCP) to serve as a bridge between your API and AI agents (like Claude).
+
+#### Progressive Disclosure
+
+To handle large APIs efficiently, OpenBridge uses a **Progressive Disclosure** strategy. Instead of overwhelming the AI context with hundreds of tools at once, it exposes three meta-tools:
+
+1. **`SearchTools`**: Find relevant tools using a powerful query language.
+2. **`LoadTool`**: Load the full schema for a specific tool.
+3. **`InvokeTool`**: Execute the tool.
+
+#### Search Syntax
+
+The `SearchTools` capability supports a predicate-based query language for precise filtering:
+
+- **Methods**: `MethodIs("GET")`, `MethodIs("POST")`
+- **Paths**: `PathContains("/users")`, `PathStartsWith("/api/v1")`
+- **Tags**: `HasTag("admin")`
+- **Logical Operators**: `&&` (AND), `||` (OR), `!` (NOT)
+
+**Examples:**
+
+- Find read-only user operations:
+  ```
+  MethodIs("GET") && PathContains("/users")
+  ```
+- Find operations tagged with 'pet' or 'store':
+  ```
+  HasTag("pet") || HasTag("store")
+  ```
+
+#### Starting the Server
+
 ```bash
 # Start MCP server
 myapi --mcp
 ```
 
-Then configure your AI agent (Claude, etc.) to connect to the MCP server.
+Then configure your AI agent to connect to this server (stdio transport).
 
 ## Configuration
 
