@@ -154,6 +154,15 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 * **Types:** `feat`, `fix`, `refactor`, `test`, `chore`, `docs`.
 * **Scopes:** `spec`, `config`, `cli`, `tui`, `mcp`.
+* **Sign-off:** All commits **MUST** include DCO sign-off (`-s` flag).
+
+**Example:**
+
+```bash
+git commit -m "feat(cli): add code generation support" -s
+```
+
+All commits without sign-off will be rejected by the DCO check.
 
 ---
 
