@@ -407,9 +407,22 @@ func (p *Parser) parseOpenAPI3WithBaseURL(ctx context.Context, data []byte, base
 // parseSwagger parses an OpenAPI 2.0 (Swagger) specification.
 func (p *Parser) parseSwagger(ctx context.Context, data []byte) (*openapi3.T, error) {
 	var swagger openapi2.T
-	if err := json.Unmarshal(data, &swagger); err != nil {
-		// Try YAML format by using the loader's yaml support
+
+	// Use ContentDetector to handle format detection and conversion
+	detector := NewContentDetector()
+
+	// Convert to JSON (handles both JSON and YAML input)
+	// This is necessary because some nested types (e.g., openapi3.Types) only implement
+	// UnmarshalJSON but not UnmarshalYAML, causing YAML parsing to fail with type errors
+	// like "cannot unmarshal !!str `string` into openapi3.Types"
+	jsonData, err := detector.ToJSONWithFallback(data)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse Swagger 2.0 spec: %w", err)
+	}
+
+	// Unmarshal the JSON data
+	if err := json.Unmarshal(jsonData, &swagger); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal Swagger 2.0 spec: %w", err)
 	}
 
 	// Convert Swagger 2.0 to OpenAPI 3.0
