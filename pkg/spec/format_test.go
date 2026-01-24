@@ -287,7 +287,7 @@ info:
 	}
 
 	// Verify it's valid JSON with expected structure
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal(output, &result); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
@@ -296,7 +296,7 @@ info:
 		t.Errorf("expected swagger '2.0', got '%v'", result["swagger"])
 	}
 
-	info, ok := result["info"].(map[string]interface{})
+	info, ok := result["info"].(map[string]any)
 	if !ok {
 		t.Fatal("expected info to be a map")
 	}
@@ -337,41 +337,44 @@ func TestContentDetector_UnmarshalWithFallback_YAML(t *testing.T) {
 	}
 }
 
-func TestContentDetector_ToJSONWithFallback_JSON(t *testing.T) {
-	detector := NewContentDetector()
-
-	input := []byte(`{"key": "value"}`)
-	output, err := detector.ToJSONWithFallback(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestContentDetector_ToJSONWithFallback(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         []byte
+		expectedKey   string
+		expectedValue string
+	}{
+		{
+			name:          "JSON input",
+			input:         []byte(`{"key": "value"}`),
+			expectedKey:   "key",
+			expectedValue: "value",
+		},
+		{
+			name:          "YAML input",
+			input:         []byte("key: value"),
+			expectedKey:   "key",
+			expectedValue: "value",
+		},
 	}
 
-	var result map[string]string
-	if err := json.Unmarshal(output, &result); err != nil {
-		t.Fatalf("output is not valid JSON: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			detector := NewContentDetector()
+			output, err := detector.ToJSONWithFallback(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
-	if result["key"] != "value" {
-		t.Errorf("expected 'value', got '%s'", result["key"])
-	}
-}
+			var result map[string]string
+			if err := json.Unmarshal(output, &result); err != nil {
+				t.Fatalf("output is not valid JSON: %v", err)
+			}
 
-func TestContentDetector_ToJSONWithFallback_YAML(t *testing.T) {
-	detector := NewContentDetector()
-
-	input := []byte("key: value")
-	output, err := detector.ToJSONWithFallback(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var result map[string]string
-	if err := json.Unmarshal(output, &result); err != nil {
-		t.Fatalf("output is not valid JSON: %v", err)
-	}
-
-	if result["key"] != "value" {
-		t.Errorf("expected 'value', got '%s'", result["key"])
+			if result[tt.expectedKey] != tt.expectedValue {
+				t.Errorf("expected '%s', got '%s'", tt.expectedValue, result[tt.expectedKey])
+			}
+		})
 	}
 }
 

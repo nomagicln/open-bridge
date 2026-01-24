@@ -958,9 +958,9 @@ func TestComplexOpenAPI3SharedResponses(t *testing.T) {
 // Swagger 2.0 (OpenAPI 2.x) Tests
 // =============================================================================
 
-func TestLoadSwagger20Spec(t *testing.T) {
-	// Load the Swagger 2.0 spec from testdata
-	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+func verifySwaggerSpecLoading(t *testing.T, filename, expectedTitle string) {
+	t.Helper()
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", filename)
 	p := NewParser()
 	spec, err := p.LoadSpec(specPath)
 	if err != nil {
@@ -968,8 +968,8 @@ func TestLoadSwagger20Spec(t *testing.T) {
 	}
 
 	// Verify basic info (should be preserved after conversion)
-	if spec.Info.Title != "Swagger 2.0 Pet Store" {
-		t.Errorf("expected title 'Swagger 2.0 Pet Store', got '%s'", spec.Info.Title)
+	if spec.Info.Title != expectedTitle {
+		t.Errorf("expected title '%s', got '%s'", expectedTitle, spec.Info.Title)
 	}
 
 	if spec.Info.Version != "1.0.0" {
@@ -979,6 +979,10 @@ func TestLoadSwagger20Spec(t *testing.T) {
 	if spec.Info.Description == "" {
 		t.Error("description should not be empty after conversion")
 	}
+}
+
+func TestLoadSwagger20Spec(t *testing.T) {
+	verifySwaggerSpecLoading(t, "swagger20.json", "Swagger 2.0 Pet Store")
 }
 
 func TestSwagger20ServerConversion(t *testing.T) {
@@ -1409,26 +1413,7 @@ func TestSwagger20SpecInfo(t *testing.T) {
 // =============================================================================
 
 func TestLoadSwagger20YAMLSpec(t *testing.T) {
-	// Load the Swagger 2.0 YAML spec from testdata
-	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.yaml")
-	p := NewParser()
-	spec, err := p.LoadSpec(specPath)
-	if err != nil {
-		t.Fatalf("failed to load Swagger 2.0 YAML spec: %v", err)
-	}
-
-	// Verify basic info (should be preserved after conversion)
-	if spec.Info.Title != "Swagger 2.0 YAML Test" {
-		t.Errorf("expected title 'Swagger 2.0 YAML Test', got '%s'", spec.Info.Title)
-	}
-
-	if spec.Info.Version != "1.0.0" {
-		t.Errorf("expected version '1.0.0', got '%s'", spec.Info.Version)
-	}
-
-	if spec.Info.Description == "" {
-		t.Error("description should not be empty after conversion")
-	}
+	verifySwaggerSpecLoading(t, "swagger20.yaml", "Swagger 2.0 YAML Test")
 }
 
 func TestSwagger20YAMLServerConversion(t *testing.T) {
