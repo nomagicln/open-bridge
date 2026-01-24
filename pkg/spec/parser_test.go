@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -957,9 +958,9 @@ func TestComplexOpenAPI3SharedResponses(t *testing.T) {
 // Swagger 2.0 (OpenAPI 2.x) Tests
 // =============================================================================
 
-func TestLoadSwagger20Spec(t *testing.T) {
-	// Load the Swagger 2.0 spec from testdata
-	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.json")
+func verifySwaggerSpecLoading(t *testing.T, filename, expectedTitle string) {
+	t.Helper()
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", filename)
 	p := NewParser()
 	spec, err := p.LoadSpec(specPath)
 	if err != nil {
@@ -967,8 +968,8 @@ func TestLoadSwagger20Spec(t *testing.T) {
 	}
 
 	// Verify basic info (should be preserved after conversion)
-	if spec.Info.Title != "Swagger 2.0 Pet Store" {
-		t.Errorf("expected title 'Swagger 2.0 Pet Store', got '%s'", spec.Info.Title)
+	if spec.Info.Title != expectedTitle {
+		t.Errorf("expected title '%s', got '%s'", expectedTitle, spec.Info.Title)
 	}
 
 	if spec.Info.Version != "1.0.0" {
@@ -978,6 +979,10 @@ func TestLoadSwagger20Spec(t *testing.T) {
 	if spec.Info.Description == "" {
 		t.Error("description should not be empty after conversion")
 	}
+}
+
+func TestLoadSwagger20Spec(t *testing.T) {
+	verifySwaggerSpecLoading(t, "swagger20.json", "Swagger 2.0 Pet Store")
 }
 
 func TestSwagger20ServerConversion(t *testing.T) {
@@ -1400,6 +1405,155 @@ func TestSwagger20SpecInfo(t *testing.T) {
 	// Should have multiple operations
 	if info.Operations < 10 {
 		t.Errorf("expected at least 10 operations, got %d", info.Operations)
+	}
+}
+
+// =============================================================================
+// Swagger 2.0 YAML Format Tests
+// =============================================================================
+
+func TestLoadSwagger20YAMLSpec(t *testing.T) {
+	verifySwaggerSpecLoading(t, "swagger20.yaml", "Swagger 2.0 YAML Test")
+}
+
+func TestSwagger20YAMLServerConversion(t *testing.T) {
+	// Swagger 2.0 YAML host + basePath + schemes should be converted to servers
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.yaml")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// After conversion, servers should be populated from host/basePath/schemes
+	if len(spec.Servers) == 0 {
+		t.Error("expected at least one server after conversion from Swagger 2.0 YAML")
+	}
+
+	// The first server should contain the host and basePath
+	if len(spec.Servers) > 0 {
+		serverURL := spec.Servers[0].URL
+		if serverURL == "" {
+			t.Error("server URL should not be empty")
+		}
+		// Should contain the host and basePath
+		if !strings.Contains(serverURL, "api.example.com") {
+			t.Errorf("server URL should contain 'api.example.com', got '%s'", serverURL)
+		}
+	}
+}
+
+func TestSwagger20YAMLPathsConversion(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.yaml")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify paths are preserved
+	expectedPaths := []string{
+		"/pets",
+		"/pets/{petId}",
+	}
+
+	for _, path := range expectedPaths {
+		if spec.Paths.Find(path) == nil {
+			t.Errorf("path '%s' not found after conversion", path)
+		}
+	}
+}
+
+func TestSwagger20YAMLOperationsConversion(t *testing.T) {
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.yaml")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Check /pets operations
+	petsPath := spec.Paths.Find("/pets")
+	if petsPath == nil {
+		t.Fatal("/pets path not found")
+	}
+
+	if petsPath.Get == nil {
+		t.Error("GET /pets operation not found")
+	} else {
+		if petsPath.Get.OperationID != "listPets" {
+			t.Errorf("expected operationId 'listPets', got '%s'", petsPath.Get.OperationID)
+		}
+	}
+
+	if petsPath.Post == nil {
+		t.Error("POST /pets operation not found")
+	} else {
+		if petsPath.Post.OperationID != "createPet" {
+			t.Errorf("expected operationId 'createPet', got '%s'", petsPath.Post.OperationID)
+		}
+	}
+
+	// Check /pets/{petId} operations
+	petByIdPath := spec.Paths.Find("/pets/{petId}")
+	if petByIdPath == nil {
+		t.Fatal("/pets/{petId} path not found")
+	}
+
+	if petByIdPath.Get == nil {
+		t.Error("GET /pets/{petId} operation not found")
+	}
+	if petByIdPath.Delete == nil {
+		t.Error("DELETE /pets/{petId} operation not found")
+	}
+}
+
+func TestSwagger20YAMLDefinitionsConversion(t *testing.T) {
+	// Swagger 2.0 YAML definitions should be converted to components/schemas
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.yaml")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	// Verify schemas exist in components
+	if spec.Components == nil || spec.Components.Schemas == nil {
+		t.Fatal("Components.Schemas not found after conversion")
+	}
+
+	expectedSchemas := []string{"Pet", "NewPet", "Error"}
+	for _, name := range expectedSchemas {
+		if spec.Components.Schemas[name] == nil {
+			t.Errorf("schema '%s' not found after conversion", name)
+		}
+	}
+}
+
+func TestSwagger20YAMLSecurityDefinitionsConversion(t *testing.T) {
+	// Swagger 2.0 YAML securityDefinitions should be converted to components/securitySchemes
+	specPath := filepath.Join("..", "..", "internal", "integration", "testdata", "swagger20.yaml")
+	p := NewParser()
+	spec, err := p.LoadSpec(specPath)
+	if err != nil {
+		t.Fatalf("failed to load spec: %v", err)
+	}
+
+	if spec.Components == nil || spec.Components.SecuritySchemes == nil {
+		t.Fatal("Components.SecuritySchemes not found after conversion")
+	}
+
+	// Check api_key conversion
+	apiKey := spec.Components.SecuritySchemes["api_key"]
+	if apiKey == nil {
+		t.Error("api_key security scheme not found")
+	} else {
+		if apiKey.Value.Type != "apiKey" {
+			t.Errorf("expected api_key type 'apiKey', got '%s'", apiKey.Value.Type)
+		}
+		if apiKey.Value.In != "header" {
+			t.Errorf("expected api_key in 'header', got '%s'", apiKey.Value.In)
+		}
 	}
 }
 

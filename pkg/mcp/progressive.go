@@ -24,15 +24,24 @@ const (
 )
 
 // searchToolDescTemplate is the template for building the SearchTools description.
-const searchToolDescTemplate = `Search for available API tools in {{.AppName}} using intelligent tool discovery.{{if .AppDescription}}
+const searchToolDescTemplate = `Search for available API tools in {{.AppName}} using intelligent tool discovery.
+
+⚠️ IMPORTANT: Always use specific search queries to filter results efficiently. Avoid listing all tools - use the search strategy below to find exactly what you need.{{if .AppDescription}}
 
 {{.AppName}} Description: {{.AppDescription}}{{end}}
 
-Searching Strategy: {{.SearchStrategy}}
+Searching Strategy:
+{{.SearchStrategy}}
 
-Example: {{.Example}}
+Best Practices:
+{{.BestPractices}}
 
-Returns a list of matching tools from {{.AppName}} with their ID, name, and description.
+Examples:
+{{- range .Examples}}
+- {{.}}
+{{- end}}
+
+Returns a list of matching tools with their ID, name, and description.
 Use Load{{.AppName}}Tool to get the full definition of a specific {{.AppName}} tool before invoking it with Invoke{{.AppName}}Tool.`
 
 // loadToolDescTemplate is the template for building the LoadTool description.
@@ -151,7 +160,8 @@ func (h *ProgressiveHandler) buildSearchToolDefinition() mcp.Tool {
 		"AppName":        appName,
 		"AppDescription": "",
 		"SearchStrategy": h.searchEngine.GetDescription(),
-		"Example":        h.searchEngine.GetQueryExample(),
+		"BestPractices":  h.searchEngine.GetBestPractices(),
+		"Examples":       h.searchEngine.GetExamples(),
 	}
 
 	if h.appConfig != nil && h.appConfig.Description != "" {
@@ -178,7 +188,7 @@ func (h *ProgressiveHandler) buildSearchToolDefinition() mcp.Tool {
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "Search query to find matching tools. Leave empty to list all available tools.",
+					"description": "Search query to filter tools. Refer to the search strategy documented above for the appropriate query syntax and best practices. Strongly prefer using a focused query over listing all tools.",
 				},
 			},
 			"required": []string{},
