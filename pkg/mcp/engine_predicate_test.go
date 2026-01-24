@@ -211,7 +211,7 @@ func TestPredicateSearchEngine_GetDescription(t *testing.T) {
 	defer func() { _ = engine.Close() }()
 
 	desc := engine.GetDescription()
-	assert.Contains(t, desc, "Predicate")
+	assert.Contains(t, desc, "predicate")
 	assert.Contains(t, desc, "MethodIs")
 }
 
@@ -231,4 +231,28 @@ func TestPredicateSearchEngine_Close(t *testing.T) {
 
 	err = engine.Close()
 	assert.NoError(t, err)
+}
+
+func TestPredicateSearchEngine_GetBestPractices(t *testing.T) {
+	engine, err := NewPredicateSearchEngine()
+	require.NoError(t, err)
+	defer func() { _ = engine.Close() }()
+
+	practices := engine.GetBestPractices()
+	assert.NotEmpty(t, practices)
+	assert.Contains(t, practices, "MethodIs")
+	assert.Contains(t, practices, "prefer")
+}
+
+func TestPredicateSearchEngine_GetExamples(t *testing.T) {
+	engine, err := NewPredicateSearchEngine()
+	require.NoError(t, err)
+	defer func() { _ = engine.Close() }()
+
+	examples := engine.GetExamples()
+	assert.NotEmpty(t, examples)
+	assert.GreaterOrEqual(t, len(examples), 2)
+	for _, ex := range examples {
+		assert.NotEmpty(t, ex)
+	}
 }

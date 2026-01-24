@@ -52,6 +52,13 @@ type ToolSearchEngine interface {
 	// GetQueryExample returns an example query for the engine type.
 	GetQueryExample() string
 
+	// GetBestPractices returns usage best practices for this search engine.
+	// Used to guide AI to use search queries effectively instead of listing all tools.
+	GetBestPractices() string
+
+	// GetExamples returns multiple example queries showing different use cases.
+	GetExamples() []string
+
 	// Index adds or updates tools in the search index.
 	Index(tools []ToolMetadata) error
 

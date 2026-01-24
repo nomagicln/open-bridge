@@ -180,9 +180,6 @@ func (e *PredicateSearchEngine) Search(query string) ([]ToolMetadata, error) {
 	for _, tool := range e.tools {
 		if matcher(tool) {
 			results = append(results, tool)
-			if len(results) >= 50 {
-				break
-			}
 		}
 	}
 
@@ -191,21 +188,17 @@ func (e *PredicateSearchEngine) Search(query string) ([]ToolMetadata, error) {
 
 // getAllTools returns all indexed tools.
 func (e *PredicateSearchEngine) getAllTools() []ToolMetadata {
-	if len(e.tools) > 100 {
-		return e.tools[:100]
-	}
 	return e.tools
 }
 
 // GetDescription returns a description of the predicate search engine.
 func (e *PredicateSearchEngine) GetDescription() string {
-	return `Predicate expression search engine. Supports:
-- Method: MethodIs("GET")
+	return `Use predicate expressions to find tools precisely:
+- Method: MethodIs("GET"), MethodIs("POST"), MethodIs("PUT"), MethodIs("DELETE")
 - Path: PathContains("/users"), PathStartsWith("/api"), PathEndsWith("/list"), PathIs("/exact")
 - Name: NameContains("user"), NameStartsWith("list"), NameEndsWith("Pet"), NameIs("exact")
 - Description: DescriptionContains("create")
 - Tags: HasTag("tagname")
-
 - Logical operators: && (and), || (or), ! (not)
 - Parentheses for grouping: (expr1 || expr2) && expr3`
 }
@@ -213,6 +206,24 @@ func (e *PredicateSearchEngine) GetDescription() string {
 // GetQueryExample returns an example query.
 func (e *PredicateSearchEngine) GetQueryExample() string {
 	return `MethodIs("GET") && PathContains("/users")`
+}
+
+// GetBestPractices returns usage guidance for the predicate engine.
+func (e *PredicateSearchEngine) GetBestPractices() string {
+	return `- Use MethodIs("GET") to find read operations, MethodIs("POST") for create operations
+- Use PathContains("/resource") to find APIs related to specific resources
+- Use HasTag("tagname") to filter by OpenAPI tags
+- Combine expressions with && (and) or || (or) for precision
+- Always prefer specific queries over listing all tools`
+}
+
+// GetExamples returns multiple example queries.
+func (e *PredicateSearchEngine) GetExamples() []string {
+	return []string{
+		`MethodIs("GET") && PathContains("/users")`,
+		`HasTag("pets") || HasTag("store")`,
+		`MethodIs("POST") && !PathContains("/admin")`,
+	}
 }
 
 // Index adds or updates tools in the search index.
