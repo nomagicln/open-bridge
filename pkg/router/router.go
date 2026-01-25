@@ -46,8 +46,9 @@ func (r *Router) Execute(args []string) error {
 		return fmt.Errorf("no command provided")
 	}
 
+	var appName string
 	// Detect app name from invocation
-	appName := r.detectAppName()
+	appName, args = r.detectAppName(args)
 
 	// Handle ob-level commands
 	if appName == "ob" {
@@ -66,23 +67,32 @@ func (r *Router) Execute(args []string) error {
 	}
 
 	// Default to CLI mode
-	return r.cliHandler.ExecuteCommand(appName, appConfig, args[1:])
+	return r.cliHandler.ExecuteCommand(appName, appConfig, args)
 }
 
 // detectAppName determines the app name from args or binary name.
-func (r *Router) detectAppName() string {
+func (r *Router) detectAppName(args []string) (string, []string) {
 	// Get binary name
-	binaryPath := os.Args[0]
+	binaryPath := args[0]
 	binaryName := filepath.Base(binaryPath)
 	binaryName = strings.TrimSuffix(binaryName, filepath.Ext(binaryName))
 
 	// If binary is 'ob', first arg is app name or ob command
 	if binaryName == "ob" {
-		return "ob"
+		return "ob", args[1:]
+	}
+
+	if strings.HasPrefix(binaryName, "__debug_") {
+		// In debug mode, use second arg as app name if available
+		// Example: __debug_ob run myapp
+		if len(os.Args) > 2 {
+			return os.Args[2], args[3:]
+		}
+		return "ob", args[1:]
 	}
 
 	// Binary name is the app name (shim mode)
-	return binaryName
+	return binaryName, args[1:]
 }
 
 // IsMCPMode checks if we should run in MCP server mode.

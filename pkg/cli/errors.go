@@ -318,17 +318,17 @@ func (f *ErrorFormatter) FormatUsageHelp(appName, resource, verb string, operati
 }
 
 // extractBodySchema extracts body properties and required fields from request body.
-func extractBodySchema(requestBody *openapi3.RequestBody) (map[string]*openapi3.SchemaRef, []string) {
+func extractBodySchema(requestBody *openapi3.RequestBody) (map[string]*openapi3.SchemaRef, []string, bool) {
 	if requestBody == nil {
-		return nil, nil
+		return nil, nil, false
 	}
 	for _, mediaType := range requestBody.Content {
 		if mediaType.Schema != nil && mediaType.Schema.Value != nil {
 			schema := mediaType.Schema.Value
-			return schema.Properties, schema.Required
+			return schema.Properties, schema.Required, requestBody.Required
 		}
 	}
-	return nil, nil
+	return nil, nil, false
 }
 
 // getOptionalBodyProps returns body properties that are not required.
@@ -400,9 +400,9 @@ func (f *ErrorFormatter) FormatUsageHelpWithBody(appName, resource, verb string,
 	}
 
 	hasRequiredParams, hasOptionalParams := checkParamTypes(opParams)
-	bodyProperties, requiredBodyProps := extractBodySchema(requestBody)
+	bodyProperties, requiredBodyProps, bodyRequired := extractBodySchema(requestBody)
 
-	f.writeParamSections(&sb, opParams, bodyProperties, requiredBodyProps, hasRequiredParams, hasOptionalParams)
+	f.writeParamSections(&sb, opParams, bodyProperties, requiredBodyProps, hasRequiredParams, hasOptionalParams, bodyRequired)
 
 	writeOutputFlags(&sb)
 
@@ -413,32 +413,61 @@ func (f *ErrorFormatter) FormatUsageHelpWithBody(appName, resource, verb string,
 }
 
 // writeParamSections writes all parameter sections (required/optional URL and body params).
-func (f *ErrorFormatter) writeParamSections(sb *strings.Builder, opParams openapi3.Parameters, bodyProperties map[string]*openapi3.SchemaRef, requiredBodyProps []string, hasRequiredParams, hasOptionalParams bool) {
+func (f *ErrorFormatter) writeParamSections(sb *strings.Builder, opParams openapi3.Parameters, bodyProperties map[string]*openapi3.SchemaRef, requiredBodyProps []string, hasRequiredParams, hasOptionalParams bool, bodyRequired bool) {
 	if hasRequiredParams {
 		sb.WriteString("Required Parameters:\n")
 		f.writeURLParameters(sb, opParams, true)
 		sb.WriteString("\n")
 	}
 
-	if len(requiredBodyProps) > 0 && bodyProperties != nil {
-		sb.WriteString("Required Body Parameters:\n")
-		f.writeBodyParameters(sb, requiredBodyProps, bodyProperties, true)
-		sb.WriteString("\n")
-	}
+	// Handle body parameters
+	f.writeBodyParamSections(sb, bodyProperties, requiredBodyProps, bodyRequired)
 
 	if hasOptionalParams {
 		sb.WriteString("Optional Parameters:\n")
 		f.writeURLParameters(sb, opParams, false)
 		sb.WriteString("\n")
 	}
+}
 
-	if bodyProperties != nil {
+// writeBodyParamSections writes body parameter sections based on whether body is required.
+func (f *ErrorFormatter) writeBodyParamSections(sb *strings.Builder, bodyProperties map[string]*openapi3.SchemaRef, requiredBodyProps []string, bodyRequired bool) {
+	if bodyRequired {
+		f.writeRequiredBodyParams(sb, bodyProperties, requiredBodyProps)
+	} else if bodyProperties != nil {
+		f.writeOptionalBodyParams(sb, bodyProperties, requiredBodyProps)
+	}
+}
+
+// writeRequiredBodyParams writes required body parameters section.
+func (f *ErrorFormatter) writeRequiredBodyParams(sb *strings.Builder, bodyProperties map[string]*openapi3.SchemaRef, requiredBodyProps []string) {
+	if len(requiredBodyProps) > 0 {
+		sb.WriteString("Required Body Parameters:\n")
+		f.writeBodyParameters(sb, requiredBodyProps, bodyProperties, true)
+		sb.WriteString("\n")
+	} else if bodyProperties != nil {
 		optionalBodyProps := getOptionalBodyProps(bodyProperties, requiredBodyProps)
 		if len(optionalBodyProps) > 0 {
-			sb.WriteString("Optional Body Parameters:\n")
+			sb.WriteString("Required Body Parameters:\n")
+			sb.WriteString("  (body is required, but no specific properties are marked as required)\n")
 			f.writeBodyParameters(sb, optionalBodyProps, bodyProperties, false)
 			sb.WriteString("\n")
 		}
+	}
+}
+
+// writeOptionalBodyParams writes optional body parameters section.
+func (f *ErrorFormatter) writeOptionalBodyParams(sb *strings.Builder, bodyProperties map[string]*openapi3.SchemaRef, requiredBodyProps []string) {
+	if len(requiredBodyProps) > 0 {
+		sb.WriteString("Optional Body Parameters:\n")
+		f.writeBodyParameters(sb, requiredBodyProps, bodyProperties, true)
+		sb.WriteString("\n")
+	}
+	optionalBodyProps := getOptionalBodyProps(bodyProperties, requiredBodyProps)
+	if len(optionalBodyProps) > 0 {
+		sb.WriteString("Optional Body Parameters:\n")
+		f.writeBodyParameters(sb, optionalBodyProps, bodyProperties, false)
+		sb.WriteString("\n")
 	}
 }
 
@@ -487,27 +516,122 @@ func (f *ErrorFormatter) formatBodyProperty(name string, schemaRef *openapi3.Sch
 // formatExampleWithBody formats an example command including body parameters.
 func (f *ErrorFormatter) formatExampleWithBody(appName, resource, verb string, opParams openapi3.Parameters, bodyProps map[string]*openapi3.SchemaRef, requiredBodyProps []string) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "  %s %s %s", appName, resource, verb)
 
-	// Add example values for required URL parameters
-	for _, paramRef := range opParams {
-		param := paramRef.Value
-		if param.Required {
-			exampleValue := f.getExampleValue(param)
-			fmt.Fprintf(&sb, " --%s %s", param.Name, exampleValue)
-		}
-	}
+	// Primary example with automatic parameter classification (required params only)
+	f.formatBasicExample(&sb, appName, resource, verb, opParams, bodyProps, requiredBodyProps)
 
-	// Add example values for required body parameters
-	for _, propName := range requiredBodyProps {
-		if propSchema, ok := bodyProps[propName]; ok {
-			exampleValue := f.getExampleValueForSchema(propName, propSchema)
-			fmt.Fprintf(&sb, " --%s %s", propName, exampleValue)
-		}
+	// Alternative example with explicit '--' separator (using prefixes, required params only)
+	f.formatPrefixedExample(&sb, appName, resource, verb, opParams, bodyProps, requiredBodyProps)
+
+	// Add example with all parameters (required + optional) if there are optional params
+	optionalBodyProps := getOptionalBodyProps(bodyProps, requiredBodyProps)
+	hasOptionalParams := hasOptionalParams(opParams)
+	if len(optionalBodyProps) > 0 || hasOptionalParams {
+		f.formatFullExample(&sb, appName, resource, verb, opParams, bodyProps, requiredBodyProps, optionalBodyProps)
 	}
 
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// formatBasicExample formats the basic example with required parameters only.
+func (f *ErrorFormatter) formatBasicExample(sb *strings.Builder, appName, resource, verb string, opParams openapi3.Parameters, bodyProps map[string]*openapi3.SchemaRef, requiredBodyProps []string) {
+	fmt.Fprintf(sb, "  %s %s %s", appName, resource, verb)
+	for _, paramRef := range opParams {
+		param := paramRef.Value
+		if param.Required {
+			exampleValue := f.getExampleValue(param)
+			fmt.Fprintf(sb, " --%s %s", param.Name, exampleValue)
+		}
+	}
+	for _, propName := range requiredBodyProps {
+		if propSchema, ok := bodyProps[propName]; ok {
+			exampleValue := f.getExampleValueForSchema(propName, propSchema)
+			fmt.Fprintf(sb, " --%s %s", propName, exampleValue)
+		}
+	}
+	sb.WriteString("\n")
+}
+
+// formatPrefixedExample formats the example with parameter prefixes.
+func (f *ErrorFormatter) formatPrefixedExample(sb *strings.Builder, appName, resource, verb string, opParams openapi3.Parameters, bodyProps map[string]*openapi3.SchemaRef, requiredBodyProps []string) {
+	fmt.Fprintf(sb, "  %s %s %s --", appName, resource, verb)
+	for _, paramRef := range opParams {
+		param := paramRef.Value
+		if param.Required {
+			exampleValue := f.getExampleValue(param)
+			prefix := f.getPrefixForParam(param)
+			fmt.Fprintf(sb, " --%s:%s %s", prefix, param.Name, exampleValue)
+		}
+	}
+	for _, propName := range requiredBodyProps {
+		if propSchema, ok := bodyProps[propName]; ok {
+			exampleValue := f.getExampleValueForSchema(propName, propSchema)
+			fmt.Fprintf(sb, " --body:%s %s", propName, exampleValue)
+		}
+	}
+}
+
+// formatFullExample formats the full example with all parameters including optional ones.
+func (f *ErrorFormatter) formatFullExample(sb *strings.Builder, appName, resource, verb string, opParams openapi3.Parameters, bodyProps map[string]*openapi3.SchemaRef, requiredBodyProps, optionalBodyProps []string) {
+	sb.WriteString("\n")
+
+	// Full example with all parameters
+	fmt.Fprintf(sb, "  %s %s %s", appName, resource, verb)
+
+	// First add all required parameters
+	for _, paramRef := range opParams {
+		param := paramRef.Value
+		if param.Required {
+			exampleValue := f.getExampleValue(param)
+			fmt.Fprintf(sb, " --%s %s", param.Name, exampleValue)
+		}
+	}
+	for _, propName := range requiredBodyProps {
+		if propSchema, ok := bodyProps[propName]; ok {
+			exampleValue := f.getExampleValueForSchema(propName, propSchema)
+			fmt.Fprintf(sb, " --%s %s", propName, exampleValue)
+		}
+	}
+
+	// Then add all optional parameters as comments
+	for _, paramRef := range opParams {
+		param := paramRef.Value
+		if !param.Required {
+			exampleValue := f.getExampleValue(param)
+			fmt.Fprintf(sb, "\n  # --%s %s (optional)", param.Name, exampleValue)
+		}
+	}
+	for _, propName := range optionalBodyProps {
+		if propSchema, ok := bodyProps[propName]; ok {
+			exampleValue := f.getExampleValueForSchema(propName, propSchema)
+			fmt.Fprintf(sb, "\n  # --body:%s %s (optional)", propName, exampleValue)
+		}
+	}
+}
+
+// hasOptionalParams checks if there are any optional parameters
+func hasOptionalParams(opParams openapi3.Parameters) bool {
+	for _, paramRef := range opParams {
+		if paramRef != nil && paramRef.Value != nil && !paramRef.Value.Required {
+			return true
+		}
+	}
+	return false
+}
+
+// getPrefixForParam returns the parameter prefix based on its location
+func (f *ErrorFormatter) getPrefixForParam(param *openapi3.Parameter) string {
+	switch param.In {
+	case "path":
+		return "path"
+	case "query":
+		return "query"
+	case "header":
+		return "header"
+	default:
+		return "body"
+	}
 }
 
 // getExampleValueForSchema returns an example value for a schema property.

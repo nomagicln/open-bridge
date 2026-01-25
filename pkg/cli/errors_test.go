@@ -321,3 +321,152 @@ func TestErrorFormatter_FormatErrorMessages(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractBodySchema(t *testing.T) {
+	tests := []struct {
+		name            string
+		requestBody     *openapi3.RequestBody
+		expectedProps   map[string]*openapi3.SchemaRef
+		expectedReq     []string
+		expectedBodyReq bool
+	}{
+		{
+			name:            "nil request body",
+			requestBody:     nil,
+			expectedProps:   nil,
+			expectedReq:     nil,
+			expectedBodyReq: false,
+		},
+		{
+			name: "body optional with required properties",
+			requestBody: &openapi3.RequestBody{
+				Required: false,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Properties: map[string]*openapi3.SchemaRef{
+									"name": {
+										Value: &openapi3.Schema{
+											Type: &openapi3.Types{"string"},
+										},
+									},
+									"email": {
+										Value: &openapi3.Schema{
+											Type: &openapi3.Types{"string"},
+										},
+									},
+								},
+								Required: []string{"name"},
+							},
+						},
+					},
+				},
+			},
+			expectedProps: map[string]*openapi3.SchemaRef{
+				"name": {
+					Value: &openapi3.Schema{
+						Type: &openapi3.Types{"string"},
+					},
+				},
+				"email": {
+					Value: &openapi3.Schema{
+						Type: &openapi3.Types{"string"},
+					},
+				},
+			},
+			expectedReq:     []string{"name"},
+			expectedBodyReq: false,
+		},
+		{
+			name: "body optional without required properties",
+			requestBody: &openapi3.RequestBody{
+				Required: false,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Properties: map[string]*openapi3.SchemaRef{
+									"name": {
+										Value: &openapi3.Schema{
+											Type: &openapi3.Types{"string"},
+										},
+									},
+									"email": {
+										Value: &openapi3.Schema{
+											Type: &openapi3.Types{"string"},
+										},
+									},
+								},
+								Required: []string{},
+							},
+						},
+					},
+				},
+			},
+			expectedProps: map[string]*openapi3.SchemaRef{
+				"name": {
+					Value: &openapi3.Schema{
+						Type: &openapi3.Types{"string"},
+					},
+				},
+				"email": {
+					Value: &openapi3.Schema{
+						Type: &openapi3.Types{"string"},
+					},
+				},
+			},
+			expectedReq:     []string{},
+			expectedBodyReq: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			props, reqProps, bodyReq := extractBodySchema(tt.requestBody)
+
+			// Compare properties
+			if len(props) != len(tt.expectedProps) {
+				t.Errorf("Expected %d properties, got %d", len(tt.expectedProps), len(props))
+			} else {
+				for key, expectedSchema := range tt.expectedProps {
+					actualSchema, ok := props[key]
+					if !ok {
+						t.Errorf("Expected property %q not found", key)
+						continue
+					}
+					// Compare Types by checking their slice representation
+					expectedTypeSlice := expectedSchema.Value.Type.Slice()
+					actualTypeSlice := actualSchema.Value.Type.Slice()
+					if len(expectedTypeSlice) != len(actualTypeSlice) {
+						t.Errorf("Expected property %q type length %d, got %d", key, len(expectedTypeSlice), len(actualTypeSlice))
+						continue
+					}
+					for i, expectedType := range expectedTypeSlice {
+						if i >= len(actualTypeSlice) || actualTypeSlice[i] != expectedType {
+							t.Errorf("Expected property %q type %v, got %v", key, expectedTypeSlice, actualTypeSlice)
+							break
+						}
+					}
+				}
+			}
+
+			// Compare required properties
+			if len(reqProps) != len(tt.expectedReq) {
+				t.Errorf("Expected %d required properties, got %d", len(tt.expectedReq), len(reqProps))
+			} else {
+				for _, expectedReq := range tt.expectedReq {
+					found := slices.Contains(reqProps, expectedReq)
+					if !found {
+						t.Errorf("Expected required property %q not found in %v", expectedReq, reqProps)
+					}
+				}
+			}
+
+			// Compare body required flag
+			if bodyReq != tt.expectedBodyReq {
+				t.Errorf("Expected bodyRequired %v, got %v", tt.expectedBodyReq, bodyReq)
+			}
+		})
+	}
+}

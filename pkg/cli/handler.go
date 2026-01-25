@@ -855,6 +855,9 @@ func (h *Handler) showParameterValidationError(
 	// Show required parameters
 	var requiredParams []string
 	for _, paramRef := range opParams {
+		if paramRef == nil || paramRef.Value == nil {
+			continue
+		}
 		param := paramRef.Value
 		if param.Required {
 			requiredParams = append(requiredParams, param.Name)
@@ -864,6 +867,9 @@ func (h *Handler) showParameterValidationError(
 	if len(requiredParams) > 0 {
 		sb.WriteString("Required parameters:\n")
 		for _, paramRef := range opParams {
+			if paramRef == nil || paramRef.Value == nil {
+				continue
+			}
 			param := paramRef.Value
 			if param.Required {
 				fmt.Fprintf(&sb, "  --%s", param.Name)

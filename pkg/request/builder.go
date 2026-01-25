@@ -157,7 +157,7 @@ func injectBasicAuth(req *http.Request, username, password string) error {
 
 // substitutePathParams replaces path parameters with actual values.
 func (b *Builder) substitutePathParams(path string, params map[string]any, opParams openapi3.Parameters) string {
-	result := path
+	result, _ := url.PathUnescape(path)
 	for _, paramRef := range opParams {
 		if paramRef == nil || paramRef.Value == nil {
 			continue
@@ -168,7 +168,12 @@ func (b *Builder) substitutePathParams(path string, params map[string]any, opPar
 		}
 		if val, ok := params[param.Name]; ok {
 			placeholder := "{" + param.Name + "}"
-			result = strings.Replace(result, placeholder, fmt.Sprintf("%v", val), 1)
+			// Decode URL-encoded values
+			paramValue := fmt.Sprintf("%v", val)
+			if decoded, err := url.QueryUnescape(paramValue); err == nil {
+				paramValue = decoded
+			}
+			result = strings.Replace(result, placeholder, paramValue, 1)
 		}
 	}
 	return result
@@ -541,6 +546,36 @@ func (b *Builder) hasRequiredBody(params map[string]any, opParams openapi3.Param
 	return len(bodyParams) > 0
 }
 
+// checkRequiredBodyFields validates that all required body fields are present.
+func (b *Builder) checkRequiredBodyFields(params map[string]any, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) error {
+	if requestBody == nil || requestBody.Content == nil {
+		return nil
+	}
+
+	// Get JSON content schema
+	jsonContent, ok := requestBody.Content["application/json"]
+	if !ok || jsonContent.Schema == nil || jsonContent.Schema.Value == nil {
+		return nil
+	}
+
+	schema := jsonContent.Schema.Value
+	if schema.Properties == nil || len(schema.Required) == 0 {
+		return nil
+	}
+
+	// Extract body parameters
+	bodyParams := b.extractBodyParams(params, opParams)
+
+	// Check if all required fields are present
+	for _, requiredField := range schema.Required {
+		if _, exists := bodyParams[requiredField]; !exists {
+			return fmt.Errorf("required body parameter '%s' is missing", requiredField)
+		}
+	}
+
+	return nil
+}
+
 // ValidateParams validates parameters against the operation schema.
 func (b *Builder) ValidateParams(params map[string]any, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) error {
 	if err := b.checkRequiredParams(params, opParams); err != nil {
@@ -551,7 +586,7 @@ func (b *Builder) ValidateParams(params map[string]any, opParams openapi3.Parame
 		return fmt.Errorf("request body is required for this operation")
 	}
 
-	return nil
+	return b.checkRequiredBodyFields(params, opParams, requestBody)
 }
 
 // typeMatchesAny checks if the actual type matches any of the expected schema types.
