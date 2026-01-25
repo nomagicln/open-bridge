@@ -59,8 +59,11 @@ func init() {
 		os.Exit(1)
 	}
 
+	// Get config directory for persistent caching
+	configDir := configMgr.ConfigDir()
+
 	// Spec parser
-	specParser = spec.NewParser()
+	specParser = spec.NewParser(spec.WithBaseDir(configDir))
 
 	// Credential manager
 	credMgr, err = credential.NewManager()

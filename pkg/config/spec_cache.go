@@ -15,10 +15,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/getkin/kin-openapi/openapi3"
 )
 
 // DefaultCacheTTL is the default time-to-live for cached specs when no HTTP cache headers are present.
 const DefaultCacheTTL = 24 * time.Hour
+
+// ParserVersion is the version of the parser used for persistent caching.
+const ParserVersion = "1.0"
 
 // SpecCacheMeta contains metadata about a cached spec file.
 type SpecCacheMeta struct {
@@ -58,6 +63,15 @@ type SpecCacheMeta struct {
 
 	// FetchAuthLocation is where api_key auth was sent: "header" or "query".
 	FetchAuthLocation string `json:"fetch_auth_location,omitempty"`
+
+	// ParsedSpecPath is the file path where the parsed spec is stored.
+	ParsedSpecPath string `json:"parsed_spec_path,omitempty"`
+
+	// ParsedAt is when the spec was last parsed and saved.
+	ParsedAt time.Time `json:"parsed_at,omitzero"`
+
+	// ParserVersion is the version of the parser used to generate the cached spec.
+	ParserVersion string `json:"parser_version,omitempty"`
 }
 
 // IsStale returns true if the cached spec has expired.
@@ -630,4 +644,128 @@ func (c *SpecCacheManager) ListCachedApps() ([]string, error) {
 		}
 	}
 	return apps, nil
+}
+
+// SaveParsedSpec saves the parsed spec to disk for persistent caching.
+func (c *SpecCacheManager) SaveParsedSpec(appName string, spec *openapi3.T) error {
+	cacheDir := c.getCacheDir(appName)
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return fmt.Errorf("failed to create cache directory: %w", err)
+	}
+
+	parsedPath := c.getParsedSpecPath(appName)
+
+	// Marshal the spec to JSON
+	data, err := json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal parsed spec: %w", err)
+	}
+
+	// Write to temporary file first, then rename (atomic write)
+	tmpPath := parsedPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write parsed spec: %w", err)
+	}
+	if err := os.Rename(tmpPath, parsedPath); err != nil {
+		return fmt.Errorf("failed to move parsed spec: %w", err)
+	}
+
+	// Update metadata
+	meta, err := c.LoadMeta(appName)
+	if err != nil {
+		// If meta doesn't exist, create a new one
+		meta = &SpecCacheMeta{
+			SourceURL: "",
+			Format:    "",
+		}
+	}
+
+	meta.ParsedSpecPath = parsedPath
+	meta.ParsedAt = time.Now()
+	meta.ParserVersion = ParserVersion
+
+	if err := c.SaveMeta(appName, meta); err != nil {
+		return fmt.Errorf("failed to save metadata: %w", err)
+	}
+
+	return nil
+}
+
+// LoadParsedSpec loads the parsed spec from disk if available.
+func (c *SpecCacheManager) LoadParsedSpec(appName string) (*openapi3.T, bool, error) {
+	meta, err := c.LoadMeta(appName)
+	if err != nil {
+		return nil, false, nil // No cached metadata
+	}
+
+	// Check if parsed spec path exists
+	if meta.ParsedSpecPath == "" {
+		return nil, false, nil // No parsed spec cached
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(meta.ParsedSpecPath); err != nil {
+		return nil, false, nil // File doesn't exist
+	}
+
+	// Read and unmarshal the parsed spec
+	data, err := os.ReadFile(meta.ParsedSpecPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to read parsed spec: %w", err)
+	}
+
+	var spec openapi3.T
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return nil, false, fmt.Errorf("failed to unmarshal parsed spec: %w", err)
+	}
+
+	return &spec, true, nil
+}
+
+// ValidateParsedSpec validates that the parsed spec cache is still valid.
+func (c *SpecCacheManager) ValidateParsedSpec(appName string) (bool, error) {
+	meta, err := c.LoadMeta(appName)
+	if err != nil {
+		return false, nil
+	}
+
+	// Check if parsed spec is cached
+	if meta.ParsedSpecPath == "" {
+		return false, nil
+	}
+
+	// Check if parsed spec file exists
+	if _, err := os.Stat(meta.ParsedSpecPath); err != nil {
+		return false, nil
+	}
+
+	// Check parser version compatibility
+	if meta.ParserVersion != ParserVersion {
+		return false, nil
+	}
+
+	// Check if the source document has changed
+	if !isWebURL(meta.SourceURL) {
+		// For local files, verify the content hash matches
+		content, err := os.ReadFile(meta.SourceURL)
+		if err != nil {
+			return false, nil
+		}
+		currentHash := computeHash(content)
+		if currentHash != meta.ContentHash {
+			return false, nil
+		}
+	}
+
+	// Check if cache is stale
+	if meta.IsStale() {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// getParsedSpecPath returns the file path for the parsed spec cache.
+func (c *SpecCacheManager) getParsedSpecPath(appName string) string {
+	return filepath.Join(c.getCacheDir(appName), "parsed.json")
 }

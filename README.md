@@ -1,8 +1,6 @@
 # OpenBridge
 
-<p align="center">
-  <img src="docs/public/logo.jpeg" alt="OpenBridge Logo" width="600">
-</p>
+![OpenBridge Logo](docs/public/logo.jpeg)
 
 [![CI](https://github.com/nomagicln/open-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/nomagicln/open-bridge/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nomagicln/open-bridge/graph/badge.svg)](https://codecov.io/gh/nomagicln/open-bridge)
@@ -83,11 +81,14 @@ The `SearchTools` capability supports a predicate-based query language for preci
 **Examples:**
 
 - Find read-only user operations:
-  ```
+
+  ```predicate
   MethodIs("GET") && PathContains("/users")
   ```
+
 - Find operations tagged with 'pet' or 'store':
-  ```
+
+  ```predicate
   HasTag("pet") || HasTag("store")
   ```
 
@@ -140,7 +141,7 @@ myapi users list --profile prod
 ### ob Commands
 
 | Command | Description |
-|---------|-------------|
+| --- | --- |
 | `ob install <name> --spec <path>` | Install an API as a CLI application |
 | `ob uninstall <name>` | Remove an installed application |
 | `ob list` | List all installed applications |
@@ -154,7 +155,7 @@ myapi users list --profile prod
 Once installed, each app provides semantic commands:
 
 | Pattern | Example |
-|---------|---------|
+| --- | --- |
 | `<app> <resource> list` | `myapi users list` |
 | `<app> <resource> get --id <id>` | `myapi user get --id 123` |
 | `<app> <resource> create [flags]` | `myapi user create --name "John"` |
@@ -274,7 +275,7 @@ go test -race ./...
 
 ### Project Structure
 
-```
+```text
 .
 ├── cmd/
 │   └── ob/              # Main entry point
@@ -304,4 +305,4 @@ Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details.
 
 ---
 
-*OpenBridge is a proud member of the Cat Alliance. 🐱 🐾*
+## OpenBridge is a proud member of the Cat Alliance. 🐱 🐾

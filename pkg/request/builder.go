@@ -119,6 +119,9 @@ func (b *Builder) InjectAuth(req *http.Request, appName, profileName string, aut
 func (b *Builder) substitutePathParams(path string, params map[string]any, opParams openapi3.Parameters) string {
 	result := path
 	for _, paramRef := range opParams {
+		if paramRef == nil || paramRef.Value == nil {
+			continue
+		}
 		param := paramRef.Value
 		if param.In != "path" {
 			continue
@@ -135,6 +138,9 @@ func (b *Builder) substitutePathParams(path string, params map[string]any, opPar
 func (b *Builder) buildQueryString(params map[string]any, opParams openapi3.Parameters) string {
 	values := url.Values{}
 	for _, paramRef := range opParams {
+		if paramRef == nil || paramRef.Value == nil {
+			continue
+		}
 		param := paramRef.Value
 		if param.In != "query" {
 			continue
@@ -149,6 +155,9 @@ func (b *Builder) buildQueryString(params map[string]any, opParams openapi3.Para
 // addHeaderParams adds header parameters to the request.
 func (b *Builder) addHeaderParams(req *http.Request, params map[string]any, opParams openapi3.Parameters) {
 	for _, paramRef := range opParams {
+		if paramRef == nil || paramRef.Value == nil {
+			continue
+		}
 		param := paramRef.Value
 		if param.In != "header" {
 			continue
@@ -235,6 +244,9 @@ func (b *Builder) extractBodyParams(params map[string]any, opParams openapi3.Par
 
 	paramNames := make(map[string]bool)
 	for _, paramRef := range opParams {
+		if paramRef == nil || paramRef.Value == nil {
+			continue
+		}
 		paramNames[paramRef.Value.Name] = true
 	}
 
@@ -421,6 +433,9 @@ func (b *Builder) ValidateParams(params map[string]any, opParams openapi3.Parame
 	// Check required parameters
 	// Check required parameters
 	for _, paramRef := range opParams {
+		if paramRef == nil || paramRef.Value == nil {
+			continue
+		}
 		param := paramRef.Value
 
 		// Get parameter value

@@ -1420,3 +1420,87 @@ func TestValidateParameterType_UnionTypes(t *testing.T) {
 		})
 	}
 }
+
+// TestBuilder_NilParamRefHandling tests that nil parameter references are handled gracefully.
+// This simulates scenarios where OpenAPI specs have unresolvable or malformed parameter references.
+func TestBuilder_NilParamRefHandling(t *testing.T) {
+	b := NewBuilder(nil)
+
+	// Create parameters with both nil paramRef and paramRef with nil Value
+	opParams := openapi3.Parameters{
+		// Valid path param
+		{
+			Value: &openapi3.Parameter{
+				Name:     "userId",
+				In:       "path",
+				Required: true,
+				Schema: &openapi3.SchemaRef{
+					Value: intSchema(),
+				},
+			},
+		},
+		// Nil paramRef (entire reference is nil)
+		nil,
+		// ParamRef with nil Value (simulating unresolvable reference)
+		{
+			Value: nil,
+		},
+		// Valid query param
+		{
+			Value: &openapi3.Parameter{
+				Name:     "limit",
+				In:       "query",
+				Required: false,
+				Schema: &openapi3.SchemaRef{
+					Value: intSchema(),
+				},
+			},
+		},
+		// Valid header param
+		{
+			Value: &openapi3.Parameter{
+				Name:     "X-Api-Key",
+				In:       "header",
+				Required: false,
+				Schema: &openapi3.SchemaRef{
+					Value: stringSchema(),
+				},
+			},
+		},
+	}
+
+	// Test substitutePathParams with nil paramRef and nil paramRef.Value
+	t.Run("substitutePathParams", func(t *testing.T) {
+		params := map[string]any{"userId": 123, "limit": 10}
+		result := b.substitutePathParams("/users/{userId}", params, opParams)
+		assert.Equal(t, "/users/123", result)
+	})
+
+	// Test buildQueryString with nil paramRef and nil paramRef.Value
+	t.Run("buildQueryString", func(t *testing.T) {
+		params := map[string]any{"userId": 123, "limit": 10}
+		queryString := b.buildQueryString(params, opParams)
+		assert.Contains(t, queryString, "limit=10")
+	})
+
+	// Test addHeaderParams with nil paramRef and nil paramRef.Value
+	t.Run("addHeaderParams", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
+		require.NoError(t, err)
+		b.addHeaderParams(req, map[string]any{"X-Api-Key": "test"}, opParams)
+		assert.Equal(t, "test", req.Header.Get("X-Api-Key"))
+	})
+
+	// Test extractBodyParams with nil paramRef and nil paramRef.Value
+	t.Run("extractBodyParams", func(t *testing.T) {
+		bodyParams := b.extractBodyParams(map[string]any{"extra": "field"}, opParams)
+		assert.Contains(t, bodyParams, "extra")
+	})
+
+	// Test ValidateParams with nil paramRef and nil paramRef.Value
+	t.Run("ValidateParams", func(t *testing.T) {
+		params := map[string]any{"userId": 123, "limit": 10}
+		err := b.ValidateParams(params, opParams, nil)
+		assert.NoError(t, err)
+	})
+}

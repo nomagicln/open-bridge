@@ -186,7 +186,8 @@ func (r *Router) registerProgressiveHandler(
 
 // startMCPServer starts the MCP server for the given app.
 func (r *Router) startMCPServer(appConfig *config.AppConfig, args []string) error {
-	specDoc, err := r.specParser.LoadSpec(appConfig.SpecSource)
+	ctx := context.Background()
+	specDoc, err := r.specParser.LoadSpecWithPersistentCache(ctx, appConfig.SpecSource, appConfig.Name)
 	if err != nil {
 		return fmt.Errorf("failed to load spec: %w", err)
 	}
