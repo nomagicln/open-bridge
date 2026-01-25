@@ -43,24 +43,42 @@ func getActiveProfile(appConfig *config.AppConfig, profileNameOverride string) (
 func formatMCPResult(statusCode int, bodyBytes []byte) *mcp.CallToolResult {
 	isError := statusCode >= 400
 
-	var bodyJSON any
-	if err := json.Unmarshal(bodyBytes, &bodyJSON); err != nil {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{Text: string(bodyBytes)},
-			},
-			IsError: isError,
-		}
+	if jsonData, ok := parseJSON(bodyBytes); ok {
+		return formatJSONResult(jsonData, isError)
 	}
 
+	return formatTextResult(bodyBytes, isError)
+}
+
+// parseJSON attempts to parse body bytes as JSON.
+func parseJSON(bodyBytes []byte) (any, bool) {
+	var bodyJSON any
+	if err := json.Unmarshal(bodyBytes, &bodyJSON); err != nil {
+		return nil, false
+	}
+	return bodyJSON, true
+}
+
+// formatJSONResult formats JSON data into an MCP result.
+func formatJSONResult(bodyJSON any, isError bool) *mcp.CallToolResult {
 	prettyJSON, err := json.MarshalIndent(bodyJSON, "", "  ")
 	if err != nil {
-		prettyJSON = bodyBytes
+		prettyJSON = []byte{}
 	}
 
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: string(prettyJSON)},
+		},
+		IsError: isError,
+	}
+}
+
+// formatTextResult formats plain text into an MCP result.
+func formatTextResult(bodyBytes []byte, isError bool) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: string(bodyBytes)},
 		},
 		IsError: isError,
 	}

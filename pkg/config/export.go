@@ -127,6 +127,56 @@ type ExportMetadata struct {
 }
 
 // cleanProfileForExport creates a clean copy of a profile for export.
+// copyHeadersForExport copies headers, filtering out credential headers.
+func copyHeadersForExport(profile Profile) map[string]string {
+	if len(profile.Headers) == 0 {
+		return nil
+	}
+	headers := make(map[string]string)
+	for k, v := range profile.Headers {
+		if !isCredentialHeader(k) {
+			headers[k] = v
+		}
+	}
+	return headers
+}
+
+// copyQueryParamsForExport copies query params, filtering out credential params.
+func copyQueryParamsForExport(profile Profile) map[string]string {
+	if len(profile.QueryParams) == 0 {
+		return nil
+	}
+	params := make(map[string]string)
+	for k, v := range profile.QueryParams {
+		if !isCredentialParam(k) {
+			params[k] = v
+		}
+	}
+	return params
+}
+
+// parseTimeout exports timeout string if duration is set.
+func parseTimeout(profile Profile) string {
+	if profile.Timeout.Duration > 0 {
+		return profile.Timeout.String()
+	}
+	return ""
+}
+
+// includeOptionalConfig includes optional configurations based on export options.
+func includeOptionalConfig(opts ExportOptions, profile Profile) (tls *TLSConfig, safety *SafetyConfig, retry *RetryConfig) {
+	if opts.IncludeTLS {
+		tls = &profile.TLSConfig
+	}
+	if opts.IncludeSafety {
+		safety = &profile.SafetyConfig
+	}
+	if opts.IncludeRetry {
+		retry = &profile.RetryConfig
+	}
+	return
+}
+
 func cleanProfileForExport(profile Profile, opts ExportOptions) ExportedProfile {
 	exported := ExportedProfile{
 		Name:        profile.Name,
@@ -137,52 +187,13 @@ func cleanProfileForExport(profile Profile, opts ExportOptions) ExportedProfile 
 			Location: profile.Auth.Location,
 			KeyName:  profile.Auth.KeyName,
 			Scheme:   profile.Auth.Scheme,
-			// Credentials are NOT exported
 		},
+		Headers:     copyHeadersForExport(profile),
+		QueryParams: copyQueryParamsForExport(profile),
+		Timeout:     parseTimeout(profile),
 	}
 
-	// Copy headers (make a copy to avoid modifying original)
-	if len(profile.Headers) > 0 {
-		exported.Headers = make(map[string]string)
-		for k, v := range profile.Headers {
-			// Skip any headers that might contain credentials
-			if !isCredentialHeader(k) {
-				exported.Headers[k] = v
-			}
-		}
-	}
-
-	// Copy query params (skip any that look like credentials)
-	if len(profile.QueryParams) > 0 {
-		exported.QueryParams = make(map[string]string)
-		for k, v := range profile.QueryParams {
-			if !isCredentialParam(k) {
-				exported.QueryParams[k] = v
-			}
-		}
-	}
-
-	// Timeout
-	if profile.Timeout.Duration > 0 {
-		exported.Timeout = profile.Timeout.String()
-	}
-
-	// Optional configs
-	if opts.IncludeTLS {
-		tls := profile.TLSConfig
-		exported.TLSConfig = &tls
-	}
-
-	if opts.IncludeSafety {
-		safety := profile.SafetyConfig
-		exported.SafetyConfig = &safety
-	}
-
-	if opts.IncludeRetry {
-		retry := profile.RetryConfig
-		exported.RetryConfig = &retry
-	}
-
+	exported.TLSConfig, exported.SafetyConfig, exported.RetryConfig = includeOptionalConfig(opts, profile)
 	return exported
 }
 
@@ -257,6 +268,28 @@ type ImportValidationResult struct {
 }
 
 // validateImportData validates the export data and populates the result.
+// validateImportProfileName validates the profile name for import and adds error if invalid.
+func validateImportProfileName(profileName string, result *ImportValidationResult) bool {
+	if profileName == "" {
+		result.Errors = append(result.Errors, "profile name is required")
+		return false
+	}
+	if err := validateProfileName(profileName); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("invalid profile name: %v", err))
+		return false
+	}
+	return true
+}
+
+// validateBaseURL validates that base URL is present.
+func validateBaseURL(exportData *ProfileExportV2, result *ImportValidationResult) bool {
+	if exportData.Profile.BaseURL == "" {
+		result.Errors = append(result.Errors, "base URL is required")
+		return false
+	}
+	return true
+}
+
 func (m *Manager) validateImportData(appName string, exportData *ProfileExportV2, result *ImportValidationResult) string {
 	result.Profile = &exportData.Profile
 
@@ -265,19 +298,7 @@ func (m *Manager) validateImportData(appName string, exportData *ProfileExportV2
 		profileName = exportData.Profile.Name
 	}
 
-	if profileName == "" {
-		result.Valid = false
-		result.Errors = append(result.Errors, "profile name is required")
-	} else if err := validateProfileName(profileName); err != nil {
-		result.Valid = false
-		result.Errors = append(result.Errors, fmt.Sprintf("invalid profile name: %v", err))
-	}
-
-	if exportData.Profile.BaseURL == "" {
-		result.Valid = false
-		result.Errors = append(result.Errors, "base URL is required")
-	}
-
+	result.Valid = validateImportProfileName(profileName, result) && validateBaseURL(exportData, result)
 	m.addImportWarnings(appName, exportData, profileName, result)
 	return profileName
 }
@@ -359,6 +380,33 @@ func mergeProfileHeaders(profile *Profile, existingProfile Profile) {
 }
 
 // ImportProfileWithOptions imports a profile with the given options.
+// checkProfileExists checks if profile exists and handles overwrite logic.
+func checkProfileExists(config *AppConfig, profileName string, opts ImportOptions) (Profile, bool, error) {
+	existingProfile, exists := config.Profiles[profileName]
+	if exists && !opts.Overwrite {
+		return Profile{}, false, &ProfileExistsError{AppName: config.Name, ProfileName: profileName}
+	}
+	return existingProfile, exists, nil
+}
+
+// updateConfigWithProfile updates the app config with the new profile.
+func updateConfigWithProfile(config *AppConfig, profileName string, profile Profile, opts ImportOptions, existingProfile Profile, exists bool) {
+	if opts.MergeHeaders && exists {
+		mergeProfileHeaders(&profile, existingProfile)
+	}
+
+	if config.Profiles == nil {
+		config.Profiles = make(map[string]Profile)
+	}
+	config.Profiles[profileName] = profile
+
+	if opts.SetAsDefault {
+		config.DefaultProfile = profileName
+	}
+
+	config.UpdatedAt = time.Now()
+}
+
 func (m *Manager) ImportProfileWithOptions(appName string, data []byte, opts ImportOptions) error {
 	exportData, err := parseImportData(data)
 	if err != nil {
@@ -375,27 +423,14 @@ func (m *Manager) ImportProfileWithOptions(appName string, data []byte, opts Imp
 		return err
 	}
 
-	existingProfile, exists := config.Profiles[profileName]
-	if exists && !opts.Overwrite {
-		return &ProfileExistsError{AppName: appName, ProfileName: profileName}
+	existingProfile, exists, err := checkProfileExists(config, profileName, opts)
+	if err != nil {
+		return err
 	}
 
 	profile := convertExportedToProfile(exportData.Profile, profileName)
+	updateConfigWithProfile(config, profileName, profile, opts, existingProfile, exists)
 
-	if opts.MergeHeaders && exists {
-		mergeProfileHeaders(&profile, existingProfile)
-	}
-
-	if config.Profiles == nil {
-		config.Profiles = make(map[string]Profile)
-	}
-	config.Profiles[profileName] = profile
-
-	if opts.SetAsDefault {
-		config.DefaultProfile = profileName
-	}
-
-	config.UpdatedAt = time.Now()
 	return m.SaveAppConfig(config)
 }
 
@@ -489,6 +524,35 @@ func convertLegacyToV2(legacy map[string]any) (*ProfileExportV2, error) {
 }
 
 // convertExportedToProfile converts ExportedProfile to Profile.
+// parseTimeoutValue parses timeout from string to Duration.
+func parseTimeoutValue(exported ExportedProfile) Duration {
+	if exported.Timeout == "" {
+		return Duration{}
+	}
+	if d, err := time.ParseDuration(exported.Timeout); err == nil {
+		return Duration{Duration: d}
+	}
+	return Duration{}
+}
+
+// copyOptionalConfigs copies optional configurations from exported profile.
+func copyOptionalConfigs(exported ExportedProfile) (TLSConfig, SafetyConfig, RetryConfig) {
+	var tls TLSConfig
+	var safety SafetyConfig
+	var retry RetryConfig
+
+	if exported.TLSConfig != nil {
+		tls = *exported.TLSConfig
+	}
+	if exported.SafetyConfig != nil {
+		safety = *exported.SafetyConfig
+	}
+	if exported.RetryConfig != nil {
+		retry = *exported.RetryConfig
+	}
+	return tls, safety, retry
+}
+
 func convertExportedToProfile(exported ExportedProfile, name string) Profile {
 	profile := Profile{
 		Name:        name,
@@ -502,28 +566,10 @@ func convertExportedToProfile(exported ExportedProfile, name string) Profile {
 		},
 		Headers:     exported.Headers,
 		QueryParams: exported.QueryParams,
+		Timeout:     parseTimeoutValue(exported),
 	}
 
-	// Parse timeout
-	if exported.Timeout != "" {
-		if d, err := time.ParseDuration(exported.Timeout); err == nil {
-			profile.Timeout = Duration{Duration: d}
-		}
-	}
-
-	// Copy optional configs
-	if exported.TLSConfig != nil {
-		profile.TLSConfig = *exported.TLSConfig
-	}
-
-	if exported.SafetyConfig != nil {
-		profile.SafetyConfig = *exported.SafetyConfig
-	}
-
-	if exported.RetryConfig != nil {
-		profile.RetryConfig = *exported.RetryConfig
-	}
-
+	profile.TLSConfig, profile.SafetyConfig, profile.RetryConfig = copyOptionalConfigs(exported)
 	return profile
 }
 

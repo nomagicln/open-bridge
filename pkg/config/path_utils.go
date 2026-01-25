@@ -33,46 +33,85 @@ func (e *PathValidationError) Unwrap() error {
 // ValidateAndResolvePath validates that a file exists and is readable,
 // then returns its absolute path.
 func ValidateAndResolvePath(path string) (string, error) {
-	if path == "" {
-		return "", &PathValidationError{Path: path, Reason: "path cannot be empty"}
+	if err := validatePathNotEmpty(path); err != nil {
+		return "", err
 	}
 
-	// Expand home directory
+	path = expandHomeDirectory(path)
+
+	absPath, err := resolveAbsolutePath(path)
+	if err != nil {
+		return "", err
+	}
+
+	if err := checkFileExists(absPath); err != nil {
+		return "", err
+	}
+
+	if err := checkNotDirectory(absPath); err != nil {
+		return "", err
+	}
+
+	return checkFileReadable(absPath)
+}
+
+// validatePathNotEmpty checks that the path is not empty.
+func validatePathNotEmpty(path string) error {
+	if path == "" {
+		return &PathValidationError{Path: path, Reason: "path cannot be empty"}
+	}
+	return nil
+}
+
+// expandHomeDirectory expands ~ in the path to the user's home directory.
+func expandHomeDirectory(path string) string {
 	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", &PathValidationError{Path: path, Reason: "failed to expand home directory", Wrapped: err}
-		}
+		home, _ := os.UserHomeDir()
 		path = filepath.Join(home, path[2:])
 	}
+	return path
+}
 
-	// Resolve to absolute path
+// resolveAbsolutePath resolves the path to an absolute path.
+func resolveAbsolutePath(path string) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", &PathValidationError{Path: path, Reason: "failed to resolve absolute path", Wrapped: err}
 	}
+	return absPath, nil
+}
 
-	// Check if file exists
-	info, err := os.Stat(absPath)
+// checkFileExists checks if the file exists.
+func checkFileExists(absPath string) error {
+	_, err := os.Stat(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", &PathValidationError{Path: path, Reason: "file does not exist"}
+			return &PathValidationError{Path: absPath, Reason: "file does not exist"}
 		}
-		return "", &PathValidationError{Path: path, Reason: "failed to stat file", Wrapped: err}
+		return &PathValidationError{Path: absPath, Reason: "failed to stat file", Wrapped: err}
 	}
+	return nil
+}
 
-	// Check if it's a regular file (not a directory)
+// checkNotDirectory checks if the path is not a directory.
+func checkNotDirectory(absPath string) error {
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return err
+	}
 	if info.IsDir() {
-		return "", &PathValidationError{Path: path, Reason: "path is a directory, not a file"}
+		return &PathValidationError{Path: absPath, Reason: "path is a directory, not a file"}
 	}
+	return nil
+}
 
-	// Check if file is readable
+// checkFileReadable checks if the file is readable.
+func checkFileReadable(absPath string) (string, error) {
 	file, err := os.Open(absPath)
 	if err != nil {
-		return "", &PathValidationError{Path: path, Reason: "file is not readable", Wrapped: err}
+		return "", &PathValidationError{Path: absPath, Reason: "file is not readable", Wrapped: err}
 	}
 	_ = file.Close()
-
 	return absPath, nil
 }
 

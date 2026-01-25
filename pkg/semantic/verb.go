@@ -35,10 +35,9 @@ func NewVerbMapper() *VerbMapper {
 	}
 }
 
-// defaultPathPatternRules returns the default path pattern rules.
-func defaultPathPatternRules() []PathPatternRule {
+// createActionRules creates path pattern rules for action endpoints.
+func createActionRules() []PathPatternRule {
 	return []PathPatternRule{
-		// Action endpoints
 		{regexp.MustCompile(`/activate$`), "POST", "activate"},
 		{regexp.MustCompile(`/deactivate$`), "POST", "deactivate"},
 		{regexp.MustCompile(`/enable$`), "POST", "enable"},
@@ -76,6 +75,11 @@ func defaultPathPatternRules() []PathPatternRule {
 		{regexp.MustCompile(`/batch$`), "POST", "batch"},
 		{regexp.MustCompile(`/bulk$`), "POST", "bulk"},
 	}
+}
+
+// defaultPathPatternRules returns the default path pattern rules.
+func defaultPathPatternRules() []PathPatternRule {
+	return createActionRules()
 }
 
 // VerbMapping contains the result of verb mapping.
@@ -120,6 +124,54 @@ const (
 )
 
 // MapVerb maps an HTTP method to a CLI verb.
+// checkExtensionVerb checks for x-cli-verb extension.
+func checkExtensionVerb(operation *openapi3.Operation) (string, bool) {
+	if operation == nil {
+		return "", false
+	}
+	ext, ok := operation.Extensions["x-cli-verb"]
+	if !ok {
+		return "", false
+	}
+	verb, ok := ext.(string)
+	if !ok {
+		return "", false
+	}
+	return verb, true
+}
+
+// checkPathPatternRules checks path pattern rules.
+func (m *VerbMapper) checkPathPatternRules(method, path string) (string, bool) {
+	for _, rule := range m.PathPatternRules {
+		if rule.Method == strings.ToUpper(method) && rule.Pattern.MatchString(path) {
+			return rule.Verb, true
+		}
+	}
+	return "", false
+}
+
+// checkCustomMapping checks custom mappings.
+func (m *VerbMapper) checkCustomMapping(method, path string) (string, bool) {
+	key := method + ":" + path
+	verb, ok := m.CustomMappings[key]
+	if !ok {
+		return "", false
+	}
+	return verb, true
+}
+
+// checkOperationID checks operation ID for verb inference.
+func (m *VerbMapper) checkOperationID(operation *openapi3.Operation) (string, bool) {
+	if operation == nil || operation.OperationID == "" {
+		return "", false
+	}
+	verb := m.inferVerbFromOperationID(operation.OperationID)
+	if verb == "" {
+		return "", false
+	}
+	return verb, true
+}
+
 func (m *VerbMapper) MapVerb(method, path string, operation *openapi3.Operation) *VerbMapping {
 	result := &VerbMapping{
 		Method: method,
@@ -131,41 +183,32 @@ func (m *VerbMapper) MapVerb(method, path string, operation *openapi3.Operation)
 	}
 
 	// Priority 1: Check for x-cli-verb extension
-	if operation != nil {
-		if ext, ok := operation.Extensions["x-cli-verb"]; ok {
-			if verb, ok := ext.(string); ok {
-				result.Verb = verb
-				result.Source = VerbSourceExtension
-				return result
-			}
-		}
+	if verb, ok := checkExtensionVerb(operation); ok {
+		result.Verb = verb
+		result.Source = VerbSourceExtension
+		return result
 	}
 
 	// Priority 2: Check path pattern rules
-	for _, rule := range m.PathPatternRules {
-		if rule.Method == strings.ToUpper(method) && rule.Pattern.MatchString(path) {
-			result.Verb = rule.Verb
-			result.Source = VerbSourcePattern
-			result.IsAction = true
-			return result
-		}
+	if verb, ok := m.checkPathPatternRules(method, path); ok {
+		result.Verb = verb
+		result.Source = VerbSourcePattern
+		result.IsAction = true
+		return result
 	}
 
 	// Priority 3: Check custom mappings
-	key := method + ":" + path
-	if verb, ok := m.CustomMappings[key]; ok {
+	if verb, ok := m.checkCustomMapping(method, path); ok {
 		result.Verb = verb
 		result.Source = VerbSourceDefault
 		return result
 	}
 
 	// Priority 4: Try to infer from operationId
-	if operation != nil && operation.OperationID != "" {
-		if verb := m.inferVerbFromOperationID(operation.OperationID); verb != "" {
-			result.Verb = verb
-			result.Source = VerbSourceOperationID
-			return result
-		}
+	if verb, ok := m.checkOperationID(operation); ok {
+		result.Verb = verb
+		result.Source = VerbSourceOperationID
+		return result
 	}
 
 	// Priority 5: Default HTTP method mapping
@@ -210,14 +253,9 @@ func (m *VerbMapper) defaultMethodMapping(method, path string) string {
 	}
 }
 
-// inferVerbFromOperationID attempts to extract a verb from the operationId.
-func (m *VerbMapper) inferVerbFromOperationID(operationID string) string {
-	if operationID == "" {
-		return ""
-	}
-
-	// Common verb prefixes in operationIds
-	verbMappings := map[string]string{
+// getVerbMappings returns common verb prefixes in operationIds.
+func getVerbMappings() map[string]string {
+	return map[string]string{
 		"list":     "list",
 		"get":      "get",
 		"create":   "create",
@@ -240,7 +278,15 @@ func (m *VerbMapper) inferVerbFromOperationID(operationID string) string {
 		"verify":   "verify",
 		"validate": "validate",
 	}
+}
 
+// inferVerbFromOperationID attempts to extract a verb from the operationId.
+func (m *VerbMapper) inferVerbFromOperationID(operationID string) string {
+	if operationID == "" {
+		return ""
+	}
+
+	verbMappings := getVerbMappings()
 	lower := strings.ToLower(operationID)
 	for prefix, verb := range verbMappings {
 		if strings.HasPrefix(lower, prefix) {

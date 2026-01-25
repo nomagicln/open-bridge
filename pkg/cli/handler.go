@@ -118,7 +118,8 @@ func (h *Handler) printAndWrapError(message string, underlying error) error {
 }
 
 // executeAPIRequest builds and executes the API request.
-func (h *Handler) executeAPIRequest(appName string, op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile) ([]byte, error) {
+// buildRequest builds an HTTP request from operation details.
+func (h *Handler) buildRequest(op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile) (*http.Request, error) {
 	var requestBody *openapi3.RequestBody
 	if opSpec.RequestBody != nil && opSpec.RequestBody.Value != nil {
 		requestBody = opSpec.RequestBody.Value
@@ -129,16 +130,15 @@ func (h *Handler) executeAPIRequest(appName string, op *semantic.Operation, opSp
 		return nil, fmt.Errorf("failed to build request: %w", err)
 	}
 
-	if err := h.reqBuilder.InjectAuth(req, appName, profile.Name, &profile.Auth); err != nil {
+	if err := h.reqBuilder.InjectAuth(req, "", profile.Name, &profile.Auth); err != nil {
 		return nil, fmt.Errorf("failed to inject auth: %w", err)
 	}
 
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		return nil, h.printAndWrapError(h.errorFormatter.FormatError(err), err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+	return req, nil
+}
 
+// readResponse reads and validates the HTTP response.
+func (h *Handler) readResponse(resp *http.Response) ([]byte, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
@@ -151,55 +151,61 @@ func (h *Handler) executeAPIRequest(appName string, op *semantic.Operation, opSp
 	return body, nil
 }
 
-// generateCode generates code for the API request and outputs it to stdout or a file.
-func (h *Handler) generateCode(appName string, op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile, format string, outputFile string) error {
-	// Validate format
+// executeAPIRequest executes an API request and returns the response body.
+func (h *Handler) executeAPIRequest(_ string, op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile) ([]byte, error) {
+	req, err := h.buildRequest(op, opSpec, params, profile)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		return nil, h.printAndWrapError(h.errorFormatter.FormatError(err), err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return h.readResponse(resp)
+}
+
+// createCodeGenerator creates a code generator with the specified format and options.
+func createCodeGenerator(format string, maskSecrets bool) (codegen.Generator, error) {
 	if !codegen.ValidateFormat(format) {
-		return fmt.Errorf("unsupported code format: %s (valid formats: curl, nodejs, go, python)", format)
+		return nil, fmt.Errorf("unsupported code format: %s (valid formats: curl, nodejs, go, python)", format)
 	}
+	return codegen.NewGenerator(codegen.OutputFormat(format), codegen.Options{MaskSecrets: maskSecrets})
+}
 
-	// Build the HTTP request (same as executeAPIRequest)
-	var requestBody *openapi3.RequestBody
-	if opSpec.RequestBody != nil && opSpec.RequestBody.Value != nil {
-		requestBody = opSpec.RequestBody.Value
+// writeCodeOutput writes generated code to stdout or a file.
+func writeCodeOutput(code, outputFile string) error {
+	if outputFile == "" {
+		fmt.Print(code)
+		return nil
 	}
+	if err := os.WriteFile(outputFile, []byte(code), 0600); err != nil {
+		return fmt.Errorf("failed to write to file %s: %w", outputFile, err)
+	}
+	fmt.Printf("Code generated successfully and saved to: %s\n", outputFile)
+	return nil
+}
 
-	req, err := h.reqBuilder.BuildRequest(op.Method, op.Path, profile.BaseURL, params, opSpec.Parameters, requestBody)
+// generateCode generates code for the API request and outputs it to stdout or a file.
+func (h *Handler) generateCode(_ string, op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile, format string, outputFile string) error {
+	req, err := h.buildRequest(op, opSpec, params, profile)
 	if err != nil {
-		return fmt.Errorf("failed to build request: %w", err)
+		return err
 	}
 
-	if err := h.reqBuilder.InjectAuth(req, appName, profile.Name, &profile.Auth); err != nil {
-		return fmt.Errorf("failed to inject auth: %w", err)
-	}
-
-	// Create code generator with masking option
-	maskSecrets := profile.ProtectSensitiveInfo
-	generator, err := codegen.NewGenerator(codegen.OutputFormat(format), codegen.Options{MaskSecrets: maskSecrets})
+	generator, err := createCodeGenerator(format, profile.ProtectSensitiveInfo)
 	if err != nil {
-		return fmt.Errorf("failed to create code generator: %w", err)
+		return err
 	}
 
-	// Generate code
 	code, err := generator.Generate(req)
 	if err != nil {
 		return fmt.Errorf("failed to generate code: %w", err)
 	}
 
-	// Check if output file is specified
-	if outputFile == "" {
-		// Output to stdout
-		fmt.Print(code)
-		return nil
-	}
-
-	// Output to file
-	if err := os.WriteFile(outputFile, []byte(code), 0600); err != nil {
-		return fmt.Errorf("failed to write to file %s: %w", outputFile, err)
-	}
-
-	fmt.Printf("Code generated successfully and saved to: %s\n", outputFile)
-	return nil
+	return writeCodeOutput(code, outputFile)
 }
 
 // resolveOperation finds the resource and operation for the given command.
@@ -279,6 +285,36 @@ func (h *Handler) parseAndMergeParams(flagArgs []string, opSpec *openapi3.Operat
 	return h.mergeRequestParams(cliParams, requestParams), nil
 }
 
+// extractCLIFlags extracts CLI-only flags from parameters.
+func extractCLIFlags(params map[string]any) (string, string, map[string]any) {
+	generateFormat := ""
+	generateOutput := ""
+
+	if val, ok := params["generate"]; ok && val != nil {
+		if str, ok := val.(string); ok {
+			generateFormat = str
+		}
+	}
+	if val, ok := params["generate-output"]; ok && val != nil {
+		if str, ok := val.(string); ok {
+			generateOutput = str
+		}
+	}
+
+	// Remove CLI flags from params map
+	cleanParams := make(map[string]any, len(params))
+	for k, v := range params {
+		switch k {
+		case "generate", "generate-output", "output", "json", "yaml":
+			continue
+		default:
+			cleanParams[k] = v
+		}
+	}
+	return generateFormat, generateOutput, cleanParams
+}
+
+// ExecuteCommand parses and executes a CLI command.
 func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, args []string) error {
 	if handled, err := h.handleHelpCommands(appName, appConfig, args); handled {
 		return err
@@ -296,37 +332,26 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 		return err
 	}
 
-	// Extract and remove CLI-only flags before validation
-	generateFormat, hasGenerate := params["generate"].(string)
-	generateOutput, _ := params["generate-output"].(string)
-
-	// Remove CLI flags from params map so they don't get sent as request parameters
-	delete(params, "generate")
-	delete(params, "generate-output")
-	delete(params, "output")
-	delete(params, "json")
-	delete(params, "yaml")
-
-	// Get request body spec
-	requestBody := getOperationRequestBody(opSpec)
+	generateFormat, generateOutput, cleanParams := extractCLIFlags(params)
+	profile := h.getProfile(appConfig)
 
 	// Handle code generation or API request execution
-	if hasGenerate && generateFormat != "" {
-		// Code generation: no parameter validation (user might generate partial requests)
-		return h.generateCode(appName, op, opSpec, params, h.getProfile(appConfig), generateFormat, generateOutput)
+	if generateFormat != "" {
+		return h.generateCode(appName, op, opSpec, cleanParams, profile, generateFormat, generateOutput)
 	}
 
-	// API request path: strict parameter validation required
-	if err := h.reqBuilder.ValidateParams(params, opSpec.Parameters, requestBody); err != nil {
+	// API request path: validate parameters
+	requestBody := getOperationRequestBody(opSpec)
+	if err := h.reqBuilder.ValidateParams(cleanParams, opSpec.Parameters, requestBody); err != nil {
 		return h.showParameterValidationError(err, appName, resource, verb, opSpec.Parameters)
 	}
 
-	body, err := h.executeAPIRequest(appName, op, opSpec, params, h.getProfile(appConfig))
+	body, err := h.executeAPIRequest(appName, op, opSpec, cleanParams, profile)
 	if err != nil {
 		return err
 	}
 
-	return h.formatAndPrintOutput(body, params)
+	return h.formatAndPrintOutput(body, cleanParams)
 }
 
 // determineOutputFormat extracts the output format from parameters.
@@ -567,7 +592,7 @@ func (h *Handler) showResourceHelpFromResource(appName, resourceName string, res
 		sb.WriteString("  (no operations available)\n")
 	} else {
 		for verbName, op := range res.Operations {
-			sb.WriteString(fmt.Sprintf("  %s %s", resourceName, verbName))
+			fmt.Fprintf(&sb, "  %s %s", resourceName, verbName)
 			if op.Summary != "" {
 				fmt.Fprintf(&sb, " - %s", op.Summary)
 			}
@@ -584,7 +609,7 @@ func (h *Handler) showResourceHelpFromResource(appName, resourceName string, res
 	}
 
 	sb.WriteString("\nFor detailed command help:\n")
-	sb.WriteString(fmt.Sprintf("  %s %s <verb> --help\n", appName, resourceName))
+	fmt.Fprintf(&sb, "  %s %s <verb> --help\n", appName, resourceName)
 
 	fmt.Print(sb.String())
 	return nil
@@ -801,7 +826,7 @@ func (h *Handler) showUnknownResourceError(resource string, tree *semantic.Comma
 // showUnknownVerbError displays error for unknown verb with available verbs.
 func (h *Handler) showUnknownVerbError(verb, resource string, res *semantic.Resource) error {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Error: Unknown verb '%s' for resource '%s'.\n\n", verb, resource))
+	fmt.Fprintf(&sb, "Error: Unknown verb '%s' for resource '%s'.\n\n", verb, resource)
 
 	// List available verbs for this resource
 	fmt.Fprintf(&sb, "Available verbs for '%s':\n", resource)
@@ -855,7 +880,7 @@ func (h *Handler) showParameterValidationError(
 	}
 
 	sb.WriteString("For complete parameter details, use:\n")
-	sb.WriteString(fmt.Sprintf("  %s %s %s --help\n", appName, resource, verb))
+	fmt.Fprintf(&sb, "  %s %s %s --help\n", appName, resource, verb)
 
 	return fmt.Errorf("%s", sb.String())
 }

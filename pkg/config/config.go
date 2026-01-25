@@ -327,6 +327,11 @@ func WithConfigDir(dir string) ManagerOption {
 	}
 }
 
+// ensureDir creates a directory with proper permissions, returning an error if it fails.
+func ensureDir(path string) error {
+	return os.MkdirAll(path, 0755)
+}
+
 // NewManager creates a new configuration manager.
 func NewManager(opts ...ManagerOption) (*Manager, error) {
 	configDir, err := GetConfigDir()
@@ -334,24 +339,19 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 		return nil, fmt.Errorf("failed to get config directory: %w", err)
 	}
 
-	m := &Manager{
-		configDir: configDir,
-	}
+	m := &Manager{configDir: configDir}
 
 	// Apply options
 	for _, opt := range opts {
 		opt(m)
 	}
 
-	// Ensure config directory exists
-	if err := os.MkdirAll(m.configDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create config directory: %w", err)
-	}
-
-	// Ensure apps subdirectory exists
-	appsDir := filepath.Join(m.configDir, "apps")
-	if err := os.MkdirAll(appsDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create apps directory: %w", err)
+	// Ensure directories exist
+	dirs := []string{m.configDir, filepath.Join(m.configDir, "apps")}
+	for _, dir := range dirs {
+		if err := ensureDir(dir); err != nil {
+			return nil, fmt.Errorf("failed to create directory %s: %w", dir, err)
+		}
 	}
 
 	return m, nil
@@ -413,18 +413,12 @@ func (m *Manager) AppsDir() string {
 	return filepath.Join(m.configDir, "apps")
 }
 
-// GetAppConfig retrieves the configuration for an installed app.
-func (m *Manager) GetAppConfig(appName string) (*AppConfig, error) {
-	if err := validateAppName(appName); err != nil {
-		return nil, err
-	}
-
-	configPath := m.getAppConfigPath(appName)
-
+// readAndParseConfig reads and parses a configuration file.
+func readAndParseConfig(configPath string) (*AppConfig, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, &AppNotFoundError{AppName: appName}
+			return nil, &AppNotFoundError{AppName: filepath.Base(filepath.Dir(configPath))}
 		}
 		return nil, fmt.Errorf("failed to read config file '%s': %w", configPath, err)
 	}
@@ -433,13 +427,39 @@ func (m *Manager) GetAppConfig(appName string) (*AppConfig, error) {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config file '%s': %w", configPath, err)
 	}
+	return &config, nil
+}
+
+// GetAppConfig retrieves the configuration for an installed app.
+func (m *Manager) GetAppConfig(appName string) (*AppConfig, error) {
+	if err := validateAppName(appName); err != nil {
+		return nil, err
+	}
+
+	config, err := readAndParseConfig(m.getAppConfigPath(appName))
+	if err != nil {
+		return nil, err
+	}
 
 	// Ensure name matches
 	if config.Name == "" {
 		config.Name = appName
 	}
 
-	return &config, nil
+	return config, nil
+}
+
+// writeConfigAtomically writes configuration data atomically to disk.
+func writeConfigAtomically(configPath string, data []byte) error {
+	tmpPath := configPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+	if err := os.Rename(tmpPath, configPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+	return nil
 }
 
 // SaveAppConfig saves the configuration for an app.
@@ -452,39 +472,24 @@ func (m *Manager) SaveAppConfig(config *AppConfig) error {
 		return err
 	}
 
-	// Update timestamp
-	config.UpdatedAt = time.Now()
-
-	// Set version if not set
+	// Update metadata
+	now := time.Now()
+	config.UpdatedAt = now
 	if config.Version == "" {
 		config.Version = "1.0"
 	}
 
 	// Ensure apps directory exists
-	appsDir := filepath.Join(m.configDir, "apps")
-	if err := os.MkdirAll(appsDir, 0755); err != nil {
-		return fmt.Errorf("failed to create apps directory: %w", err)
+	if err := ensureDir(filepath.Join(m.configDir, "apps")); err != nil {
+		return err
 	}
 
-	configPath := m.getAppConfigPath(config.Name)
-
+	// Serialize and write atomically
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to serialize config: %w", err)
 	}
-
-	// Write atomically by writing to temp file first
-	tmpPath := configPath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, configPath); err != nil {
-		_ = os.Remove(tmpPath) // Clean up temp file
-		return fmt.Errorf("failed to save config: %w", err)
-	}
-
-	return nil
+	return writeConfigAtomically(m.getAppConfigPath(config.Name), data)
 }
 
 // DeleteAppConfig removes the configuration for an app.
@@ -536,6 +541,19 @@ func (m *Manager) ListApps() ([]string, error) {
 	return apps, nil
 }
 
+// toAppInfo converts an AppConfig to AppInfo.
+func toAppInfo(config *AppConfig) AppInfo {
+	return AppInfo{
+		Name:           config.Name,
+		Description:    config.Description,
+		SpecSource:     config.SpecSource,
+		DefaultProfile: config.DefaultProfile,
+		ProfileCount:   len(config.Profiles),
+		CreatedAt:      config.CreatedAt,
+		UpdatedAt:      config.UpdatedAt,
+	}
+}
+
 // ListAppsWithInfo returns a list of all installed apps with their info.
 func (m *Manager) ListAppsWithInfo() ([]AppInfo, error) {
 	appNames, err := m.ListApps()
@@ -550,16 +568,7 @@ func (m *Manager) ListAppsWithInfo() ([]AppInfo, error) {
 			// Skip apps with invalid configs
 			continue
 		}
-
-		apps = append(apps, AppInfo{
-			Name:           config.Name,
-			Description:    config.Description,
-			SpecSource:     config.SpecSource,
-			DefaultProfile: config.DefaultProfile,
-			ProfileCount:   len(config.Profiles),
-			CreatedAt:      config.CreatedAt,
-			UpdatedAt:      config.UpdatedAt,
-		})
+		apps = append(apps, toAppInfo(config))
 	}
 
 	return apps, nil
@@ -617,6 +626,17 @@ type ProfileExport struct {
 	ExportedAt  time.Time `yaml:"exported_at"`
 }
 
+// extractProfileName extracts the profile name from import data.
+func extractProfileName(importData *ProfileExport) (string, error) {
+	if importData.ProfileName != "" {
+		return importData.ProfileName, nil
+	}
+	if importData.Profile.Name != "" {
+		return importData.Profile.Name, nil
+	}
+	return "", fmt.Errorf("profile_name is required in import data")
+}
+
 // ImportProfile imports a profile from exported data.
 func (m *Manager) ImportProfile(appName string, data []byte) error {
 	var importData ProfileExport
@@ -630,12 +650,9 @@ func (m *Manager) ImportProfile(appName string, data []byte) error {
 		return err
 	}
 
-	profileName := importData.ProfileName
-	if profileName == "" {
-		profileName = importData.Profile.Name
-	}
-	if profileName == "" {
-		return fmt.Errorf("profile_name is required in import data")
+	profileName, err := extractProfileName(&importData)
+	if err != nil {
+		return err
 	}
 
 	profile := importData.Profile
@@ -647,6 +664,16 @@ func (m *Manager) ImportProfile(appName string, data []byte) error {
 	config.Profiles[profileName] = profile
 
 	return m.SaveAppConfig(config)
+}
+
+// getStringFromMap extracts a string value from a map with type assertion.
+func getStringFromMap(data map[string]any, key string) (string, bool) {
+	if val, ok := data[key]; ok {
+		if str, ok := val.(string); ok {
+			return str, true
+		}
+	}
+	return "", false
 }
 
 // importProfileLegacy handles legacy import format.
@@ -661,23 +688,22 @@ func (m *Manager) importProfileLegacy(appName string, data []byte) error {
 		return err
 	}
 
-	profileName, ok := importData["profile_name"].(string)
+	profileName, ok := getStringFromMap(importData, "profile_name")
 	if !ok || profileName == "" {
 		return fmt.Errorf("profile_name is required in import data")
 	}
 
-	profile := Profile{
-		Name: profileName,
-	}
+	profile := Profile{Name: profileName}
 
-	if baseURL, ok := importData["base_url"].(string); ok {
+	// Extract optional fields
+	if baseURL, _ := getStringFromMap(importData, "base_url"); baseURL != "" {
 		profile.BaseURL = baseURL
 	}
-
-	if authType, ok := importData["auth_type"].(string); ok {
+	if authType, _ := getStringFromMap(importData, "auth_type"); authType != "" {
 		profile.Auth.Type = authType
 	}
 
+	// Extract headers map
 	if headers, ok := importData["headers"].(map[string]any); ok {
 		profile.Headers = make(map[string]string)
 		for k, v := range headers {
@@ -695,6 +721,33 @@ func (m *Manager) importProfileLegacy(appName string, data []byte) error {
 	return m.SaveAppConfig(config)
 }
 
+// validateProfiles validates all profiles in the configuration.
+func validateProfiles(config *AppConfig) error {
+	for name, profile := range config.Profiles {
+		// Ensure profile has a name
+		if profile.Name == "" {
+			profile.Name = name
+			config.Profiles[name] = profile
+		}
+		// Validate profile has required fields
+		if profile.BaseURL == "" {
+			return fmt.Errorf("profile '%s': base_url is required", name)
+		}
+	}
+	return nil
+}
+
+// validateDefaultProfile validates that the default profile exists.
+func validateDefaultProfile(config *AppConfig) error {
+	if config.DefaultProfile == "" {
+		return nil
+	}
+	if _, ok := config.Profiles[config.DefaultProfile]; !ok {
+		return fmt.Errorf("default_profile '%s' does not exist", config.DefaultProfile)
+	}
+	return nil
+}
+
 // ValidateConfig validates an app configuration.
 func ValidateConfig(config *AppConfig) error {
 	if config == nil {
@@ -709,57 +762,41 @@ func ValidateConfig(config *AppConfig) error {
 		return fmt.Errorf("spec_source or spec_sources is required")
 	}
 
-	// Validate profiles
-	for name, profile := range config.Profiles {
-		if profile.Name == "" {
-			profile.Name = name
-			config.Profiles[name] = profile
-		}
-		if profile.BaseURL == "" {
-			return fmt.Errorf("profile '%s': base_url is required", name)
-		}
+	if err := validateProfiles(config); err != nil {
+		return err
 	}
 
-	// Validate default profile exists
-	if config.DefaultProfile != "" {
-		if _, ok := config.Profiles[config.DefaultProfile]; !ok {
-			return fmt.Errorf("default_profile '%s' does not exist", config.DefaultProfile)
-		}
-	}
+	return validateDefaultProfile(config)
+}
 
-	return nil
+// appNameRegex validates the app name format.
+var appNameRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
+
+// reservedAppNames contains reserved app names.
+var reservedAppNames = map[string]bool{
+	"ob": true, "openbridge": true, "help": true, "version": true,
+	"install": true, "uninstall": true, "list": true, "config": true,
 }
 
 // validateAppName validates an application name.
 func validateAppName(name string) error {
+	return validateAppNameWithRules(name, 64, reservedAppNames)
+}
+
+// validateAppNameWithRules validates an app name with custom rules.
+func validateAppNameWithRules(name string, maxLen int, reserved map[string]bool) error {
 	if name == "" {
 		return fmt.Errorf("app name cannot be empty")
 	}
-
-	// Must start with a letter
-	if !regexp.MustCompile(`^[a-zA-Z]`).MatchString(name) {
-		return fmt.Errorf("app name must start with a letter")
+	if len(name) > maxLen {
+		return fmt.Errorf("app name cannot exceed %d characters", maxLen)
 	}
-
-	// Only alphanumeric, hyphens, and underscores
-	if !regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`).MatchString(name) {
-		return fmt.Errorf("app name can only contain letters, numbers, hyphens, and underscores")
-	}
-
-	// Not too long
-	if len(name) > 64 {
-		return fmt.Errorf("app name cannot exceed 64 characters")
-	}
-
-	// Reserved names
-	reserved := map[string]bool{
-		"ob": true, "openbridge": true, "help": true, "version": true,
-		"install": true, "uninstall": true, "list": true, "config": true,
+	if !appNameRegex.MatchString(name) {
+		return fmt.Errorf("app name must start with a letter and can only contain letters, numbers, hyphens, and underscores")
 	}
 	if reserved[strings.ToLower(name)] {
 		return fmt.Errorf("app name '%s' is reserved", name)
 	}
-
 	return nil
 }
 
@@ -827,14 +864,26 @@ func (c *AppConfig) GetProfile(name string) (*Profile, bool) {
 	return &profile, true
 }
 
+// getFirstProfile returns the first profile from the map.
+func getFirstProfile(profiles map[string]Profile) (*Profile, bool) {
+	for _, profile := range profiles {
+		return &profile, true
+	}
+	return nil, false
+}
+
+// setDefaultToFirstProfile sets the first remaining profile as default.
+func (c *AppConfig) setDefaultToFirstProfile() {
+	for pname := range c.Profiles {
+		c.DefaultProfile = pname
+		break
+	}
+}
+
 // GetDefaultProfile returns the default profile.
 func (c *AppConfig) GetDefaultProfile() (*Profile, bool) {
 	if c.DefaultProfile == "" {
-		// Return first profile if no default set
-		for _, profile := range c.Profiles {
-			return &profile, true
-		}
-		return nil, false
+		return getFirstProfile(c.Profiles)
 	}
 	return c.GetProfile(c.DefaultProfile)
 }
@@ -855,14 +904,10 @@ func (c *AppConfig) DeleteProfile(name string) error {
 	}
 	delete(c.Profiles, name)
 
-	// Clear default profile if it was deleted
+	// Update default if needed
 	if c.DefaultProfile == name {
 		c.DefaultProfile = ""
-		// Set first remaining profile as default
-		for pname := range c.Profiles {
-			c.DefaultProfile = pname
-			break
-		}
+		c.setDefaultToFirstProfile()
 	}
 
 	return nil
@@ -870,7 +915,7 @@ func (c *AppConfig) DeleteProfile(name string) error {
 
 // ListProfiles returns the names of all profiles.
 func (c *AppConfig) ListProfiles() []string {
-	var names []string
+	names := make([]string, 0, len(c.Profiles))
 	for name := range c.Profiles {
 		names = append(names, name)
 	}

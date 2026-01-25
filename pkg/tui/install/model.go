@@ -683,15 +683,27 @@ func (m *Model) validateTLSClientCert() error {
 	certVal := m.tlsClientCertInput.Value()
 	keyVal := m.tlsClientKeyInput.Value()
 
-	// Both must be provided or both empty
-	if (certVal != "" && keyVal == "") || (certVal == "" && keyVal != "") {
-		return fmt.Errorf("client certificate and key must be provided together")
+	if err := validateCertAndKeyPair(certVal, keyVal); err != nil {
+		return err
 	}
 
 	if certVal == "" && keyVal == "" {
 		return nil // Both empty is valid (skip)
 	}
 
+	return m.validateAndSetTLSAssets(certVal, keyVal)
+}
+
+// validateCertAndKeyPair validates that both cert and key are provided together.
+func validateCertAndKeyPair(certVal, keyVal string) error {
+	if (certVal != "" && keyVal == "") || (certVal == "" && keyVal != "") {
+		return fmt.Errorf("client certificate and key must be provided together")
+	}
+	return nil
+}
+
+// validateAndSetTLSAssets validates and sets the TLS certificate and key.
+func (m *Model) validateAndSetTLSAssets(certVal, keyVal string) error {
 	// Validate certificate
 	absPath, err := config.ValidateTLSCertFile(certVal)
 	if err != nil {
@@ -766,21 +778,26 @@ func (m Model) updateAuthType(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch keyMsg.String() {
 	case "left", "h":
-		m.authIndex--
-		if m.authIndex < 0 {
-			m.authIndex = len(m.authOptions) - 1
-		}
+		m.authIndex = cycleOptionIndex(m.authIndex-1, len(m.authOptions))
 	case "right", "l":
-		m.authIndex++
-		if m.authIndex >= len(m.authOptions) {
-			m.authIndex = 0
-		}
+		m.authIndex = cycleOptionIndex(m.authIndex+1, len(m.authOptions))
 	case "enter":
 		return m.handleAuthTypeEnter()
 	default:
 		// Ignore other keys
 	}
 	return m, nil
+}
+
+// cycleOptionIndex calculates the next option index with wrap-around.
+func cycleOptionIndex(newIndex, maxLen int) int {
+	if newIndex < 0 {
+		return maxLen - 1
+	}
+	if newIndex >= maxLen {
+		return 0
+	}
+	return newIndex
 }
 
 // handleAuthTypeEnter handles the enter key press in auth type selection.
@@ -807,26 +824,25 @@ func (m Model) updateShim(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
 		case "left", "h":
-			m.shimIndex--
-			if m.shimIndex < 0 {
-				m.shimIndex = len(m.shimOptions) - 1
-			}
+			m.shimIndex = cycleOptionIndex(m.shimIndex-1, len(m.shimOptions))
 		case "right", "l":
-			m.shimIndex++
-			if m.shimIndex >= len(m.shimOptions) {
-				m.shimIndex = 0
-			}
+			m.shimIndex = cycleOptionIndex(m.shimIndex+1, len(m.shimOptions))
 		case "enter":
-			m.options.CreateShim = (m.shimIndex == 0) // Yes is 0
-			m.addHistory("Create Shim", m.shimOptions[m.shimIndex])
-
-			m.step = StepAddHeadersConfirm
-			m.addHeadersIndex = 0
-			return m, nil
+			return m.handleShimEnter()
 		default:
 			// Ignore other keys
 		}
 	}
+	return m, nil
+}
+
+// handleShimEnter handles the enter key press in shim selection.
+func (m Model) handleShimEnter() (tea.Model, tea.Cmd) {
+	m.options.CreateShim = (m.shimIndex == 0) // Yes is 0
+	m.addHistory("Create Shim", m.shimOptions[m.shimIndex])
+
+	m.step = StepAddHeadersConfirm
+	m.addHeadersIndex = 0
 	return m, nil
 }
 
@@ -1083,18 +1099,23 @@ func (m Model) updateMCPAdvancedConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "l":
 			m.mcpAdvancedIndex = 1
 		case "enter":
-			if m.mcpAdvancedIndex == 1 { // Yes - configure MCP
-				m.step = StepMCPProgressiveDisclosure
-				return m, nil
-			}
-			// No - skip MCP config, use defaults
-			m.addHistory("MCP Advanced Options", "Skipped (using defaults)")
-			return m.finishInstall()
+			return m.handleMCPAdvancedConfirmEnter()
 		default:
 			// Ignore other keys
 		}
 	}
 	return m, nil
+}
+
+// handleMCPAdvancedConfirmEnter handles the enter key press in MCP advanced confirm.
+func (m Model) handleMCPAdvancedConfirmEnter() (tea.Model, tea.Cmd) {
+	if m.mcpAdvancedIndex == 1 { // Yes - configure MCP
+		m.step = StepMCPProgressiveDisclosure
+		return m, nil
+	}
+	// No - skip MCP config, use defaults
+	m.addHistory("MCP Advanced Options", "Skipped (using defaults)")
+	return m.finishInstall()
 }
 
 // updateMCPProgressiveDisclosure handles the progressive disclosure configuration step.
@@ -1123,17 +1144,22 @@ func (m Model) confirmMCPProgressiveDisclosure() (tea.Model, tea.Cmd) {
 	} else {
 		m.addHistory("Progressive Disclosure", "Disabled")
 	}
+
+	m.step = m.determineNextMCPStep()
+	return m, nil
+}
+
+// determineNextMCPStep determines the next step in the MCP configuration flow.
+func (m Model) determineNextMCPStep() Step {
 	// Only show search engine selection if there are >= 2 options
 	if len(m.mcpSearchEngineOptions) >= 2 {
-		m.step = StepMCPSearchEngine
-		return m, nil
+		return StepMCPSearchEngine
 	}
 	// Auto-select the first (and only) search engine if available
 	if len(m.mcpSearchEngineOptions) == 1 {
 		m.options.SearchEngine = m.mcpSearchEngineOptions[0]
 	}
-	m.step = StepMCPReadOnlyMode
-	return m, nil
+	return StepMCPReadOnlyMode
 }
 
 // updateMCPSearchEngine handles the search engine configuration step.
@@ -1141,24 +1167,23 @@ func (m Model) updateMCPSearchEngine(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
 		case "left", "h":
-			m.mcpSearchEngineIndex--
-			if m.mcpSearchEngineIndex < 0 {
-				m.mcpSearchEngineIndex = len(m.mcpSearchEngineOptions) - 1
-			}
+			m.mcpSearchEngineIndex = cycleOptionIndex(m.mcpSearchEngineIndex-1, len(m.mcpSearchEngineOptions))
 		case "right", "l":
-			m.mcpSearchEngineIndex++
-			if m.mcpSearchEngineIndex >= len(m.mcpSearchEngineOptions) {
-				m.mcpSearchEngineIndex = 0
-			}
+			m.mcpSearchEngineIndex = cycleOptionIndex(m.mcpSearchEngineIndex+1, len(m.mcpSearchEngineOptions))
 		case "enter":
-			m.options.SearchEngine = m.mcpSearchEngineOptions[m.mcpSearchEngineIndex]
-			m.addHistory("Search Engine", m.options.SearchEngine)
-			m.step = StepMCPReadOnlyMode
-			return m, nil
+			return m.handleMCPSearchEngineEnter()
 		default:
 			// Ignore other keys
 		}
 	}
+	return m, nil
+}
+
+// handleMCPSearchEngineEnter handles the enter key press in MCP search engine selection.
+func (m Model) handleMCPSearchEngineEnter() (tea.Model, tea.Cmd) {
+	m.options.SearchEngine = m.mcpSearchEngineOptions[m.mcpSearchEngineIndex]
+	m.addHistory("Search Engine", m.options.SearchEngine)
+	m.step = StepMCPReadOnlyMode
 	return m, nil
 }
 
@@ -1171,17 +1196,23 @@ func (m Model) updateMCPReadOnlyMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "l":
 			m.mcpReadOnlyIndex = 1
 		case "enter":
-			m.options.ReadOnlyMode = (m.mcpReadOnlyIndex == 1) // Yes is 1
-			if m.options.ReadOnlyMode {
-				m.addHistory("Read-Only Mode", "Enabled")
-			} else {
-				m.addHistory("Read-Only Mode", "Disabled")
-			}
-			m.step = StepProtectSensitiveInfo
+			return m.handleMCPReadOnlyEnter()
 		default:
 			// Ignore other keys
 		}
 	}
+	return m, nil
+}
+
+// handleMCPReadOnlyEnter handles the enter key press in MCP read-only mode selection.
+func (m Model) handleMCPReadOnlyEnter() (tea.Model, tea.Cmd) {
+	m.options.ReadOnlyMode = (m.mcpReadOnlyIndex == 1) // Yes is 1
+	if m.options.ReadOnlyMode {
+		m.addHistory("Read-Only Mode", "Enabled")
+	} else {
+		m.addHistory("Read-Only Mode", "Disabled")
+	}
+	m.step = StepProtectSensitiveInfo
 	return m, nil
 }
 
@@ -1193,18 +1224,23 @@ func (m Model) updateProtectSensitiveInfo(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "l":
 			m.protectSensitiveInfoIndex = 1
 		case "enter":
-			m.options.ProtectSensitiveInfo = (m.protectSensitiveInfoIndex == 1) // Yes is 1
-			if m.options.ProtectSensitiveInfo {
-				m.addHistory("Protect Sensitive Info", "Enabled")
-			} else {
-				m.addHistory("Protect Sensitive Info", "Disabled")
-			}
-			return m.finishInstall()
+			return m.handleProtectSensitiveInfoEnter()
 		default:
 			// Ignore other keys
 		}
 	}
 	return m, nil
+}
+
+// handleProtectSensitiveInfoEnter handles the enter key press in protect sensitive info selection.
+func (m Model) handleProtectSensitiveInfoEnter() (tea.Model, tea.Cmd) {
+	m.options.ProtectSensitiveInfo = (m.protectSensitiveInfoIndex == 1) // Yes is 1
+	if m.options.ProtectSensitiveInfo {
+		m.addHistory("Protect Sensitive Info", "Enabled")
+	} else {
+		m.addHistory("Protect Sensitive Info", "Disabled")
+	}
+	return m.finishInstall()
 }
 
 func (m Model) updateOverwriteConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1215,22 +1251,26 @@ func (m Model) updateOverwriteConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "l":
 			m.confirmIndex = 1
 		case "enter":
-			if m.confirmIndex == 1 { // Yes
-				m.options.Force = true
-				m.addHistory("Overwrite App", "Yes")
-				// Go to MCP advanced options
-				m.step = StepMCPAdvancedConfirm
-				m.mcpAdvancedIndex = 0 // Default to No (skip)
-				return m, nil
-			} else {
-				m.err = fmt.Errorf("installation aborted by user")
-				return m, tea.Quit
-			}
+			return m.handleOverwriteConfirmEnter()
 		default:
 			// Ignore other keys
 		}
 	}
 	return m, nil
+}
+
+// handleOverwriteConfirmEnter handles the enter key press in overwrite confirmation.
+func (m Model) handleOverwriteConfirmEnter() (tea.Model, tea.Cmd) {
+	if m.confirmIndex == 1 { // Yes
+		m.options.Force = true
+		m.addHistory("Overwrite App", "Yes")
+		m.step = StepMCPAdvancedConfirm
+		m.mcpAdvancedIndex = 0 // Default to No (skip)
+		return m, nil
+	} else {
+		m.err = fmt.Errorf("installation aborted by user")
+		return m, tea.Quit
+	}
 }
 
 // ... (specLoadedMsg and loadSpecCmd are same)

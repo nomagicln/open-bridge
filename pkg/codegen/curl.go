@@ -2,7 +2,6 @@ package codegen
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -22,19 +21,31 @@ func NewCurlGenerator(opts Options) *CurlGenerator {
 func (g *CurlGenerator) Generate(req *http.Request) (string, error) {
 	var buf bytes.Buffer
 
-	// Start with curl command
+	g.writeCurlCommand(&buf, req)
+	g.writeURL(&buf, req)
+	g.writeHeaders(&buf, req)
+	g.writeBody(&buf, req)
+
+	return buf.String(), nil
+}
+
+// writeCurlCommand writes the curl command with method.
+func (g *CurlGenerator) writeCurlCommand(buf *bytes.Buffer, req *http.Request) {
 	buf.WriteString("curl -X ")
 	buf.WriteString(req.Method)
+}
 
-	// Add URL
+// writeURL writes the URL to the buffer.
+func (g *CurlGenerator) writeURL(buf *bytes.Buffer, req *http.Request) {
 	buf.WriteString(" '")
 	buf.WriteString(req.URL.String())
 	buf.WriteString("'")
+}
 
-	// Get masked headers
+// writeHeaders writes all headers to the buffer.
+func (g *CurlGenerator) writeHeaders(buf *bytes.Buffer, req *http.Request) {
 	headers := maskRequestHeaders(req.Header, g.opts.MaskSecrets)
 
-	// Add headers
 	for key := range headers {
 		values := headers[key]
 		for _, value := range values {
@@ -45,25 +56,25 @@ func (g *CurlGenerator) Generate(req *http.Request) (string, error) {
 			buf.WriteString("'")
 		}
 	}
+}
 
-	// Add body if present
-	if req.Body != nil && req.ContentLength != 0 {
-		body, err := io.ReadAll(req.Body)
-		if err != nil {
-			return "", fmt.Errorf("failed to read request body: %w", err)
-		}
-
-		// Restore body for potential future use
-		req.Body = io.NopCloser(bytes.NewBuffer(body))
-
-		bodyStr := maskBody(body, g.opts.MaskSecrets)
-		buf.WriteString(" \\\n  -d '")
-		// Escape single quotes in the body
-		bodyStr = strings.ReplaceAll(bodyStr, "'", "'\\''")
-		buf.WriteString(bodyStr)
-		buf.WriteString("'")
+// writeBody writes the request body to the buffer if present.
+func (g *CurlGenerator) writeBody(buf *bytes.Buffer, req *http.Request) {
+	if req.Body == nil || req.ContentLength == 0 {
+		return
 	}
 
-	buf.WriteString("\n")
-	return buf.String(), nil
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return
+	}
+
+	// Restore body for potential future use
+	req.Body = io.NopCloser(bytes.NewBuffer(body))
+
+	bodyStr := maskBody(body, g.opts.MaskSecrets)
+	buf.WriteString(" \\\n  -d '")
+	bodyStr = strings.ReplaceAll(bodyStr, "'", "'\\''")
+	buf.WriteString(bodyStr)
+	buf.WriteString("'")
 }

@@ -48,6 +48,26 @@ func (pm *ProfileManager) Save() error {
 }
 
 // CreateProfile creates a new profile with the given name and options.
+// buildAuthConfig builds AuthConfig from options.
+func buildAuthConfig(opts ProfileOptions) AuthConfig {
+	if opts.AuthType == "" {
+		return AuthConfig{}
+	}
+	return AuthConfig{
+		Type:     opts.AuthType,
+		Location: opts.AuthLocation,
+		KeyName:  opts.AuthKeyName,
+		Scheme:   opts.AuthScheme,
+	}
+}
+
+// initializeProfileMap initializes the profiles map if it's nil.
+func initializeProfileMap(config *AppConfig) {
+	if config.Profiles == nil {
+		config.Profiles = make(map[string]Profile)
+	}
+}
+
 func (pm *ProfileManager) CreateProfile(name string, opts ProfileOptions) error {
 	if err := validateProfileName(name); err != nil {
 		return err
@@ -63,28 +83,17 @@ func (pm *ProfileManager) CreateProfile(name string, opts ProfileOptions) error 
 		Description: opts.Description,
 		Headers:     opts.Headers,
 		QueryParams: opts.QueryParams,
+		Auth:        buildAuthConfig(opts),
 		Timeout:     Duration{Duration: 30 * time.Second},
-	}
-
-	if opts.AuthType != "" {
-		profile.Auth = AuthConfig{
-			Type:     opts.AuthType,
-			Location: opts.AuthLocation,
-			KeyName:  opts.AuthKeyName,
-			Scheme:   opts.AuthScheme,
-		}
 	}
 
 	if opts.Timeout > 0 {
 		profile.Timeout = Duration{Duration: opts.Timeout}
 	}
 
-	if pm.config.Profiles == nil {
-		pm.config.Profiles = make(map[string]Profile)
-	}
+	initializeProfileMap(pm.config)
 	pm.config.Profiles[name] = profile
 
-	// If this is the first profile, make it the default
 	if len(pm.config.Profiles) == 1 || opts.SetAsDefault {
 		pm.config.DefaultProfile = name
 	}
@@ -106,20 +115,18 @@ type ProfileOptions struct {
 	SetAsDefault bool
 }
 
-// UpdateProfile updates an existing profile.
-func (pm *ProfileManager) UpdateProfile(name string, opts ProfileOptions) error {
-	profile, exists := pm.config.Profiles[name]
-	if !exists {
-		return &ProfileNotFoundError{AppName: pm.appName, ProfileName: name}
-	}
-
-	// Update only non-empty fields
+// updateBasicFields updates basic profile fields.
+func updateBasicFields(profile *Profile, opts ProfileOptions) {
 	if opts.BaseURL != "" {
 		profile.BaseURL = opts.BaseURL
 	}
 	if opts.Description != "" {
 		profile.Description = opts.Description
 	}
+}
+
+// updateAuthFields updates authentication fields.
+func updateAuthFields(profile *Profile, opts ProfileOptions) {
 	if opts.AuthType != "" {
 		profile.Auth.Type = opts.AuthType
 	}
@@ -132,6 +139,10 @@ func (pm *ProfileManager) UpdateProfile(name string, opts ProfileOptions) error 
 	if opts.AuthScheme != "" {
 		profile.Auth.Scheme = opts.AuthScheme
 	}
+}
+
+// updateMaps updates header and query param maps.
+func updateMaps(profile *Profile, opts ProfileOptions) {
 	if opts.Headers != nil {
 		if profile.Headers == nil {
 			profile.Headers = make(map[string]string)
@@ -144,6 +155,19 @@ func (pm *ProfileManager) UpdateProfile(name string, opts ProfileOptions) error 
 		}
 		maps.Copy(profile.QueryParams, opts.QueryParams)
 	}
+}
+
+// UpdateProfile updates an existing profile.
+func (pm *ProfileManager) UpdateProfile(name string, opts ProfileOptions) error {
+	profile, exists := pm.config.Profiles[name]
+	if !exists {
+		return &ProfileNotFoundError{AppName: pm.appName, ProfileName: name}
+	}
+
+	updateBasicFields(&profile, opts)
+	updateAuthFields(&profile, opts)
+	updateMaps(&profile, opts)
+
 	if opts.Timeout > 0 {
 		profile.Timeout = Duration{Duration: opts.Timeout}
 	}
@@ -157,52 +181,61 @@ func (pm *ProfileManager) UpdateProfile(name string, opts ProfileOptions) error 
 	return pm.Save()
 }
 
+// updateDefaultProfileIfNeeded updates the default profile if the current default is being deleted.
+func updateDefaultProfileIfNeeded(config *AppConfig, deletedProfile string) {
+	if config.DefaultProfile == deletedProfile {
+		for pname := range config.Profiles {
+			config.DefaultProfile = pname
+			break
+		}
+	}
+}
+
 // DeleteProfile removes a profile from the configuration.
 func (pm *ProfileManager) DeleteProfile(name string) error {
 	if _, exists := pm.config.Profiles[name]; !exists {
 		return &ProfileNotFoundError{AppName: pm.appName, ProfileName: name}
 	}
 
-	// Don't allow deleting the last profile
 	if len(pm.config.Profiles) == 1 {
 		return fmt.Errorf("cannot delete the last profile; at least one profile is required")
 	}
 
 	delete(pm.config.Profiles, name)
-
-	// Update default profile if needed
-	if pm.config.DefaultProfile == name {
-		// Set the first remaining profile as default
-		for pname := range pm.config.Profiles {
-			pm.config.DefaultProfile = pname
-			break
-		}
-	}
+	updateDefaultProfileIfNeeded(pm.config, name)
 
 	return pm.Save()
 }
 
-// RenameProfile renames a profile.
-func (pm *ProfileManager) RenameProfile(oldName, newName string) error {
+// checkProfileExistence checks if a profile exists and validates new name.
+func (pm *ProfileManager) checkProfileExistence(oldName, newName string) (*Profile, error) {
 	if err := validateProfileName(newName); err != nil {
-		return err
+		return nil, err
 	}
 
 	profile, exists := pm.config.Profiles[oldName]
 	if !exists {
-		return &ProfileNotFoundError{AppName: pm.appName, ProfileName: oldName}
+		return nil, &ProfileNotFoundError{AppName: pm.appName, ProfileName: oldName}
 	}
 
 	if _, exists := pm.config.Profiles[newName]; exists {
-		return &ProfileExistsError{AppName: pm.appName, ProfileName: newName}
+		return nil, &ProfileExistsError{AppName: pm.appName, ProfileName: newName}
 	}
 
-	// Update profile name
+	return &profile, nil
+}
+
+// RenameProfile renames a profile.
+func (pm *ProfileManager) RenameProfile(oldName, newName string) error {
+	profile, err := pm.checkProfileExistence(oldName, newName)
+	if err != nil {
+		return err
+	}
+
 	profile.Name = newName
-	pm.config.Profiles[newName] = profile
+	pm.config.Profiles[newName] = *profile
 	delete(pm.config.Profiles, oldName)
 
-	// Update default profile if renamed
 	if pm.config.DefaultProfile == oldName {
 		pm.config.DefaultProfile = newName
 	}
@@ -210,22 +243,43 @@ func (pm *ProfileManager) RenameProfile(oldName, newName string) error {
 	return pm.Save()
 }
 
-// CopyProfile creates a copy of an existing profile.
-func (pm *ProfileManager) CopyProfile(sourceName, destName string) error {
+// copyProfileMaps copies header and query param maps from source to destination.
+func copyProfileMaps(dest *Profile, source Profile) {
+	if source.Headers != nil {
+		dest.Headers = make(map[string]string)
+		maps.Copy(dest.Headers, source.Headers)
+	}
+	if source.QueryParams != nil {
+		dest.QueryParams = make(map[string]string)
+		maps.Copy(dest.QueryParams, source.QueryParams)
+	}
+}
+
+// checkCopyProfileExistence checks if source exists and destination name is valid.
+func (pm *ProfileManager) checkCopyProfileExistence(sourceName, destName string) (Profile, error) {
 	if err := validateProfileName(destName); err != nil {
-		return err
+		return Profile{}, err
 	}
 
 	source, exists := pm.config.Profiles[sourceName]
 	if !exists {
-		return &ProfileNotFoundError{AppName: pm.appName, ProfileName: sourceName}
+		return Profile{}, &ProfileNotFoundError{AppName: pm.appName, ProfileName: sourceName}
 	}
 
 	if _, exists := pm.config.Profiles[destName]; exists {
-		return &ProfileExistsError{AppName: pm.appName, ProfileName: destName}
+		return Profile{}, &ProfileExistsError{AppName: pm.appName, ProfileName: destName}
 	}
 
-	// Deep copy the profile
+	return source, nil
+}
+
+// CopyProfile creates a copy of an existing profile.
+func (pm *ProfileManager) CopyProfile(sourceName, destName string) error {
+	source, err := pm.checkCopyProfileExistence(sourceName, destName)
+	if err != nil {
+		return err
+	}
+
 	dest := Profile{
 		Name:         destName,
 		BaseURL:      source.BaseURL,
@@ -237,16 +291,7 @@ func (pm *ProfileManager) CopyProfile(sourceName, destName string) error {
 		RetryConfig:  source.RetryConfig,
 	}
 
-	// Copy maps
-	if source.Headers != nil {
-		dest.Headers = make(map[string]string)
-		maps.Copy(dest.Headers, source.Headers)
-	}
-	if source.QueryParams != nil {
-		dest.QueryParams = make(map[string]string)
-		maps.Copy(dest.QueryParams, source.QueryParams)
-	}
-
+	copyProfileMaps(&dest, source)
 	pm.config.Profiles[destName] = dest
 
 	return pm.Save()

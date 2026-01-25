@@ -70,27 +70,52 @@ func (g *GoGenerator) writeImports(buf *bytes.Buffer, hasBody bool) {
 }
 
 func (g *GoGenerator) writeBodyRequest(buf *bytes.Buffer, req *http.Request) error {
+	body, err := g.readAndMaskBody(req)
+	if err != nil {
+		return err
+	}
+
+	g.writePayloadCreation(buf, body)
+	g.writeRequestCreation(buf, req, "payload")
+
+	return nil
+}
+
+// readAndMaskBody reads and masks the request body.
+func (g *GoGenerator) readAndMaskBody(req *http.Request) (string, error) {
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read request body: %w", err)
+		return "", fmt.Errorf("failed to read request body: %w", err)
 	}
 
 	// Restore body for potential future use
 	req.Body = io.NopCloser(bytes.NewBuffer(body))
 
 	bodyStr := maskBody(body, g.opts.MaskSecrets)
+	return escapeBackticks(bodyStr), nil
+}
+
+// escapeBackticks escapes backticks in the body string.
+func escapeBackticks(bodyStr string) string {
+	return strings.ReplaceAll(bodyStr, "`", "` + \"`\" + `")
+}
+
+// writePayloadCreation writes the payload creation line.
+func (g *GoGenerator) writePayloadCreation(buf *bytes.Buffer, bodyStr string) {
 	buf.WriteString("	payload := strings.NewReader(`")
-	// Escape backticks
-	bodyStr = strings.ReplaceAll(bodyStr, "`", "` + \"`\" + `")
 	buf.WriteString(bodyStr)
 	buf.WriteString("`)\n\n")
+}
 
+// writeRequestCreation writes the request creation line.
+func (g *GoGenerator) writeRequestCreation(buf *bytes.Buffer, req *http.Request, payloadVar string) {
 	buf.WriteString("	req, err := http.NewRequest(\"")
 	buf.WriteString(req.Method)
 	buf.WriteString("\", \"")
 	buf.WriteString(req.URL.String())
-	buf.WriteString("\", payload)\n")
-	return nil
+	buf.WriteString("\", ")
+	buf.WriteString(payloadVar)
+	buf.WriteString(")\n")
 }
 
 func (g *GoGenerator) writeHeaders(buf *bytes.Buffer, headers http.Header) {

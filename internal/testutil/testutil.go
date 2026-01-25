@@ -23,17 +23,34 @@ func NewMockServer(t *testing.T) *MockServer {
 		handlers: make(map[string]http.HandlerFunc),
 	}
 
-	m.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := r.Method + " " + r.URL.Path
-		if handler, ok := m.handlers[key]; ok {
+	m.Server = httptest.NewServer(m.createHandler())
+	return m
+}
+
+// createHandler creates the HTTP handler for the mock server.
+func (m *MockServer) createHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if handler := m.findHandler(r); handler != nil {
 			handler(w, r)
 			return
 		}
-		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
-	}))
+		m.writeNotFound(w)
+	}
+}
 
-	return m
+// findHandler looks up a handler for the given request.
+func (m *MockServer) findHandler(r *http.Request) http.HandlerFunc {
+	key := r.Method + " " + r.URL.Path
+	if handler, ok := m.handlers[key]; ok {
+		return handler
+	}
+	return nil
+}
+
+// writeNotFound writes a 404 response.
+func (m *MockServer) writeNotFound(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
 }
 
 // On registers a handler for a specific method and path.

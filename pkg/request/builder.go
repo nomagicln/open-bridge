@@ -43,31 +43,13 @@ func (b *Builder) BuildRequest(
 	queryString := b.buildQueryString(params, opParams)
 
 	// Construct full URL
-	fullURL := baseURL + finalPath
-	if queryString != "" {
-		fullURL += "?" + queryString
-	}
+	fullURL := b.buildFullURL(baseURL, finalPath, queryString)
 
 	// Build request body for non-GET methods
-	var bodyReader *bytes.Reader
-	if method != http.MethodGet && method != http.MethodHead {
-		bodyData, err := b.buildRequestBody(params, opParams, requestBody)
-		if err != nil {
-			return nil, err
-		}
-		if bodyData != nil {
-			bodyReader = bytes.NewReader(bodyData)
-		}
-	}
+	bodyReader := b.createBodyReader(method, params, opParams, requestBody)
 
 	// Create request
-	var req *http.Request
-	var err error
-	if bodyReader != nil {
-		req, err = http.NewRequest(method, fullURL, bodyReader)
-	} else {
-		req, err = http.NewRequest(method, fullURL, nil)
-	}
+	req, err := b.createHTTPRequest(method, fullURL, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -83,6 +65,40 @@ func (b *Builder) BuildRequest(
 	return req, nil
 }
 
+// buildFullURL constructs the full URL from base URL, path, and query string.
+func (b *Builder) buildFullURL(baseURL, path, queryString string) string {
+	fullURL := baseURL + path
+	if queryString != "" {
+		fullURL += "?" + queryString
+	}
+	return fullURL
+}
+
+// createBodyReader creates a body reader for the request.
+func (b *Builder) createBodyReader(method string, params map[string]any, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) *bytes.Reader {
+	if method == http.MethodGet || method == http.MethodHead {
+		return nil
+	}
+
+	bodyData, err := b.buildRequestBody(params, opParams, requestBody)
+	if err != nil {
+		return nil
+	}
+	if bodyData == nil {
+		return nil
+	}
+
+	return bytes.NewReader(bodyData)
+}
+
+// createHTTPRequest creates an HTTP request with or without a body.
+func (b *Builder) createHTTPRequest(method, url string, bodyReader *bytes.Reader) (*http.Request, error) {
+	if bodyReader != nil {
+		return http.NewRequest(method, url, bodyReader)
+	}
+	return http.NewRequest(method, url, nil)
+}
+
 // InjectAuth adds authentication to a request based on configuration.
 func (b *Builder) InjectAuth(req *http.Request, appName, profileName string, authConfig *config.AuthConfig) error {
 	if b.credMgr == nil {
@@ -94,24 +110,44 @@ func (b *Builder) InjectAuth(req *http.Request, appName, profileName string, aut
 		return nil // No credential, skip auth
 	}
 
+	return b.injectAuthCredentials(req, authConfig, cred)
+}
+
+// injectAuthCredentials injects the actual credentials based on auth type.
+func (b *Builder) injectAuthCredentials(req *http.Request, authConfig *config.AuthConfig, cred *credential.Credential) error {
 	switch authConfig.Type {
 	case "bearer":
-		req.Header.Set("Authorization", "Bearer "+cred.Token)
+		return injectBearerToken(req, cred.Token)
 	case "api_key":
-		if authConfig.Location == "query" {
-			q := req.URL.Query()
-			q.Set(authConfig.KeyName, cred.Token)
-			req.URL.RawQuery = q.Encode()
-		} else {
-			// Default to header if location not specified or is "header"
-			req.Header.Set(authConfig.KeyName, cred.Token)
-		}
+		return injectAPIKey(req, authConfig, cred.Token)
 	case "basic":
-		req.SetBasicAuth(cred.Username, cred.Password)
+		return injectBasicAuth(req, cred.Username, cred.Password)
 	default:
-		// Unknown auth type - no authentication applied
+		return nil
 	}
+}
 
+// injectBearerToken adds Bearer token to Authorization header.
+func injectBearerToken(req *http.Request, token string) error {
+	req.Header.Set("Authorization", "Bearer "+token)
+	return nil
+}
+
+// injectAPIKey adds API key to header or query parameter.
+func injectAPIKey(req *http.Request, authConfig *config.AuthConfig, token string) error {
+	if authConfig.Location == "query" {
+		q := req.URL.Query()
+		q.Set(authConfig.KeyName, token)
+		req.URL.RawQuery = q.Encode()
+	} else {
+		req.Header.Set(authConfig.KeyName, token)
+	}
+	return nil
+}
+
+// injectBasicAuth adds Basic authentication to the request.
+func injectBasicAuth(req *http.Request, username, password string) error {
+	req.SetBasicAuth(username, password)
 	return nil
 }
 
@@ -275,23 +311,18 @@ func (b *Builder) buildBodyFromSchema(params map[string]any, schema *openapi3.Sc
 
 // constructFromSchema recursively constructs data structure from schema.
 func (b *Builder) constructFromSchema(params map[string]any, schema *openapi3.Schema) any {
-	if schema == nil {
+	if schema == nil || schema.Type == nil {
 		return params
 	}
 
-	if schema.Type == nil {
-		return params
-	}
-
-	if schema.Type.Is("object") {
+	switch {
+	case schema.Type.Is("object"):
 		return b.constructObject(params, schema)
-	} else if schema.Type.Is("array") {
-		// For array type at top level, params might be the array itself
+	case schema.Type.Is("array"):
 		return b.constructArray(params, schema)
+	default:
+		return params
 	}
-
-	// For primitive types, return params as-is
-	return params
 }
 
 // constructObject constructs an object from parameters according to schema.
@@ -333,6 +364,30 @@ func (b *Builder) constructArray(params any, schema *openapi3.Schema) []any {
 // - Repeated flags: --tags "admin" --tags "developer"
 // - Comma-separated: --tags "admin,developer"
 // - Array values: ["admin", "developer"]
+// parseCommaSeparatedValues parses comma-separated string into array.
+func parseCommaSeparatedValues(v string) []any {
+	parts := strings.Split(v, ",")
+	result := make([]any, len(parts))
+	for i, part := range parts {
+		result[i] = strings.TrimSpace(part)
+	}
+	return result
+}
+
+// convertArrayWithSchema converts array items according to schema.
+func (b *Builder) convertArrayWithSchema(rawItems []any, schema *openapi3.Schema) []any {
+	if schema == nil || schema.Items == nil || schema.Items.Value == nil {
+		return rawItems
+	}
+	itemSchema := schema.Items.Value
+	result := make([]any, len(rawItems))
+	for i, item := range rawItems {
+		result[i] = b.convertToSchemaType(item, itemSchema)
+	}
+	return result
+}
+
+// constructArrayValue converts a value to an array.
 func (b *Builder) constructArrayValue(val any, schema *openapi3.Schema) []any {
 	var rawItems []any
 	switch v := val.(type) {
@@ -344,33 +399,16 @@ func (b *Builder) constructArrayValue(val any, schema *openapi3.Schema) []any {
 			rawItems[i] = s
 		}
 	case string:
-		// Check for comma-separated values
 		if strings.Contains(v, ",") {
-			parts := strings.Split(v, ",")
-			rawItems = make([]any, len(parts))
-			for i, part := range parts {
-				rawItems[i] = strings.TrimSpace(part)
-			}
+			rawItems = parseCommaSeparatedValues(v)
 		} else {
-			// Single value
 			rawItems = []any{v}
 		}
 	default:
-		// Wrap in array
 		rawItems = []any{val}
 	}
 
-	// If we have a schema for items, convert each item
-	if schema != nil && schema.Items != nil && schema.Items.Value != nil {
-		itemSchema := schema.Items.Value
-		result := make([]any, len(rawItems))
-		for i, item := range rawItems {
-			result[i] = b.convertToSchemaType(item, itemSchema)
-		}
-		return result
-	}
-
-	return rawItems
+	return b.convertArrayWithSchema(rawItems, schema)
 }
 
 // convertToSchemaType converts a value to match the schema type.
@@ -379,66 +417,91 @@ func (b *Builder) convertToSchemaType(val any, schema *openapi3.Schema) any {
 		return val
 	}
 
-	// We primarily handle string conversion here because CLI args are strings
-	strVal, isString := val.(string)
-	if !isString {
-		// If it's not a string, we might still need handling for arrays that came in as string slices
-		if schema.Type.Is("array") {
-			// If it's not already an array, try to convert
-			// But for now, array inputs are handled by constructArrayValue or slices
-			return val
-		}
-		// Return as is for other types, assuming they are already correct
-		return val
+	// Handle non-string values
+	if !isStringValue(val) {
+		return handleNonStringValue(val, schema)
 	}
 
 	// Convert string values based on schema type
-	// If conversions fail, return original value and let validation catch it
-	switch {
-	case schema.Type.Is("integer"):
-		v, err := strconv.Atoi(strVal)
-		if err == nil {
-			return v
-		}
-	case schema.Type.Is("number"):
-		v, err := strconv.ParseFloat(strVal, 64)
-		if err == nil {
-			return v
-		}
-	case schema.Type.Is("boolean"):
-		v, err := strconv.ParseBool(strVal)
-		if err == nil {
-			return v
-		}
-	case schema.Type.Is("object"):
-		// Try to parse JSON string to map
-		var m map[string]any
-		if err := json.Unmarshal([]byte(strVal), &m); err == nil {
-			return m
-		}
-	case schema.Type.Is("array"):
-		// This case might not be hit if flags are already parsed as slices,
-		// but if a single string was passed to an array type (e.g. env var or single flag)
-		// we treat it as a single-item array or comma-separated
-		return b.constructArrayValue(strVal, schema)
-	default:
-		// String type or unknown - return original value
-	}
+	return convertStringValue(val.(string), schema, b)
+}
 
+// isStringValue checks if the value is a string.
+func isStringValue(val any) bool {
+	_, ok := val.(string)
+	return ok
+}
+
+// handleNonStringValue handles non-string values.
+func handleNonStringValue(val any, schema *openapi3.Schema) any {
+	if schema.Type.Is("array") {
+		return val
+	}
 	return val
 }
 
-// ValidateParams validates parameters against the operation schema.
-func (b *Builder) ValidateParams(params map[string]any, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) error {
-	// Check required parameters
-	// Check required parameters
+// convertStringValue converts a string value according to schema type.
+func convertStringValue(strVal string, schema *openapi3.Schema, builder *Builder) any {
+	switch {
+	case schema.Type.Is("integer"):
+		return convertToInt(strVal)
+	case schema.Type.Is("number"):
+		return convertToFloat(strVal)
+	case schema.Type.Is("boolean"):
+		return convertToBool(strVal)
+	case schema.Type.Is("object"):
+		return convertToObject(strVal)
+	case schema.Type.Is("array"):
+		return builder.constructArrayValue(strVal, schema)
+	default:
+		return strVal
+	}
+}
+
+// convertToInt converts a string to integer.
+func convertToInt(strVal string) any {
+	v, err := strconv.Atoi(strVal)
+	if err == nil {
+		return v
+	}
+	return strVal
+}
+
+// convertToFloat converts a string to float.
+func convertToFloat(strVal string) any {
+	v, err := strconv.ParseFloat(strVal, 64)
+	if err == nil {
+		return v
+	}
+	return strVal
+}
+
+// convertToBool converts a string to boolean.
+func convertToBool(strVal string) any {
+	v, err := strconv.ParseBool(strVal)
+	if err == nil {
+		return v
+	}
+	return strVal
+}
+
+// convertToObject converts a string to object/map.
+func convertToObject(strVal string) any {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(strVal), &m); err == nil {
+		return m
+	}
+	return strVal
+}
+
+// checkRequiredParams validates that all required parameters are present.
+func (b *Builder) checkRequiredParams(params map[string]any, opParams openapi3.Parameters) error {
 	for _, paramRef := range opParams {
 		if paramRef == nil || paramRef.Value == nil {
 			continue
 		}
 		param := paramRef.Value
 
-		// Get parameter value
 		val, exists := params[param.Name]
 		if !exists {
 			if param.Required {
@@ -447,34 +510,41 @@ func (b *Builder) ValidateParams(params map[string]any, opParams openapi3.Parame
 			continue
 		}
 
-		// Convert value if needed
 		if param.Schema != nil && param.Schema.Value != nil {
 			convertedVal := b.convertToSchemaType(val, param.Schema.Value)
-			params[param.Name] = convertedVal // Update with converted value
+			params[param.Name] = convertedVal
 			val = convertedVal
 		}
 
-		// Validate parameter type
 		if err := b.validateParameterType(param.Name, val, param.Schema); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
-	// Validate request body required properties if present
-	if requestBody != nil && requestBody.Required {
-		// Check if we have body content
-		hasBody := false
-		if _, ok := params["body"]; ok {
-			hasBody = true
-		} else {
-			// Check if we have any body parameters (non-path/query/header params)
-			bodyParams := b.extractBodyParams(params, opParams)
-			hasBody = len(bodyParams) > 0
-		}
+// hasRequiredBody checks if required request body is present.
+func (b *Builder) hasRequiredBody(params map[string]any, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) bool {
+	if requestBody == nil || !requestBody.Required {
+		return true
+	}
 
-		if !hasBody {
-			return fmt.Errorf("request body is required for this operation")
-		}
+	if _, ok := params["body"]; ok {
+		return true
+	}
+
+	bodyParams := b.extractBodyParams(params, opParams)
+	return len(bodyParams) > 0
+}
+
+// ValidateParams validates parameters against the operation schema.
+func (b *Builder) ValidateParams(params map[string]any, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) error {
+	if err := b.checkRequiredParams(params, opParams); err != nil {
+		return err
+	}
+
+	if !b.hasRequiredBody(params, opParams, requestBody) {
+		return fmt.Errorf("request body is required for this operation")
 	}
 
 	return nil

@@ -40,95 +40,10 @@ func NewPredicateSearchEngine() (*PredicateSearchEngine, error) {
 // - HasTag("admin"): check if tool has a specific tag
 // - IDIs("GET_/pets"): exact match on tool ID
 // - Logical operators: && (and), || (or), ! (not)
-//
-//nolint:funlen // This function defines all predicate functions in a single parser configuration.
 func (e *PredicateSearchEngine) createMatcher(query string) (func(ToolMetadata) bool, error) {
-	// Create parser with tool-specific functions
 	parser, err := predicate.NewParser(predicate.Def{
-		Functions: map[string]any{
-			// Method matching
-			"MethodIs": func(method string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return strings.EqualFold(t.Method, method)
-				}
-			},
-			// Path matching
-			"PathContains": func(substr string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return strings.Contains(strings.ToLower(t.Path), strings.ToLower(substr))
-				}
-			},
-			"PathStartsWith": func(prefix string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return strings.HasPrefix(strings.ToLower(t.Path), strings.ToLower(prefix))
-				}
-			},
-			"PathEndsWith": func(suffix string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return strings.HasSuffix(strings.ToLower(t.Path), strings.ToLower(suffix))
-				}
-			},
-			"PathIs": func(path string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return strings.EqualFold(t.Path, path)
-				}
-			},
-			// Name matching
-			"NameContains": func(substr string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return strings.Contains(strings.ToLower(t.Name), strings.ToLower(substr))
-				}
-			},
-			"NameStartsWith": func(prefix string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return strings.HasPrefix(strings.ToLower(t.Name), strings.ToLower(prefix))
-				}
-			},
-			"NameEndsWith": func(suffix string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return strings.HasSuffix(strings.ToLower(t.Name), strings.ToLower(suffix))
-				}
-			},
-			"NameIs": func(name string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return strings.EqualFold(t.Name, name)
-				}
-			},
-			// Description matching
-			"DescriptionContains": func(substr string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return strings.Contains(strings.ToLower(t.Description), strings.ToLower(substr))
-				}
-			},
-			// Tag matching
-			"HasTag": func(tag string) toolPredicate {
-				return func(t ToolMetadata) bool {
-					for _, tt := range t.Tags {
-						if strings.EqualFold(tt, tag) {
-							return true
-						}
-					}
-					return false
-				}
-			},
-		},
-		Operators: predicate.Operators{
-			AND: func(a, b toolPredicate) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return a(t) && b(t)
-				}
-			},
-			OR: func(a, b toolPredicate) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return a(t) || b(t)
-				}
-			},
-			NOT: func(a toolPredicate) toolPredicate {
-				return func(t ToolMetadata) bool {
-					return !a(t)
-				}
-			},
-		},
+		Functions: e.createPredicateFunctions(),
+		Operators: e.createPredicateOperators(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create parser: %w", err)
@@ -145,6 +60,155 @@ func (e *PredicateSearchEngine) createMatcher(query string) (func(ToolMetadata) 
 	}
 
 	return fn, nil
+}
+
+// createPredicateFunctions creates all predicate function definitions.
+func (e *PredicateSearchEngine) createPredicateFunctions() map[string]any {
+	return map[string]any{
+		"MethodIs":            e.createMethodIsPredicate(),
+		"PathContains":        e.createPathContainsPredicate(),
+		"PathStartsWith":      e.createPathStartsWithPredicate(),
+		"PathEndsWith":        e.createPathEndsWithPredicate(),
+		"PathIs":              e.createPathIsPredicate(),
+		"NameContains":        e.createNameContainsPredicate(),
+		"NameStartsWith":      e.createNameStartsWithPredicate(),
+		"NameEndsWith":        e.createNameEndsWithPredicate(),
+		"NameIs":              e.createNameIsPredicate(),
+		"DescriptionContains": e.createDescriptionContainsPredicate(),
+		"HasTag":              e.createHasTagPredicate(),
+	}
+}
+
+// createPredicateOperators creates all logical operator definitions.
+func (e *PredicateSearchEngine) createPredicateOperators() predicate.Operators {
+	return predicate.Operators{
+		AND: e.createAndOperator(),
+		OR:  e.createOrOperator(),
+		NOT: e.createNotOperator(),
+	}
+}
+
+// Method predicates
+func (e *PredicateSearchEngine) createMethodIsPredicate() func(string) toolPredicate {
+	return func(method string) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return strings.EqualFold(t.Method, method)
+		}
+	}
+}
+
+// Path predicates
+func (e *PredicateSearchEngine) createPathContainsPredicate() func(string) toolPredicate {
+	return func(substr string) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return strings.Contains(strings.ToLower(t.Path), strings.ToLower(substr))
+		}
+	}
+}
+
+func (e *PredicateSearchEngine) createPathStartsWithPredicate() func(string) toolPredicate {
+	return func(prefix string) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return strings.HasPrefix(strings.ToLower(t.Path), strings.ToLower(prefix))
+		}
+	}
+}
+
+func (e *PredicateSearchEngine) createPathEndsWithPredicate() func(string) toolPredicate {
+	return func(suffix string) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return strings.HasSuffix(strings.ToLower(t.Path), strings.ToLower(suffix))
+		}
+	}
+}
+
+func (e *PredicateSearchEngine) createPathIsPredicate() func(string) toolPredicate {
+	return func(path string) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return strings.EqualFold(t.Path, path)
+		}
+	}
+}
+
+// Name predicates
+func (e *PredicateSearchEngine) createNameContainsPredicate() func(string) toolPredicate {
+	return func(substr string) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return strings.Contains(strings.ToLower(t.Name), strings.ToLower(substr))
+		}
+	}
+}
+
+func (e *PredicateSearchEngine) createNameStartsWithPredicate() func(string) toolPredicate {
+	return func(prefix string) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return strings.HasPrefix(strings.ToLower(t.Name), strings.ToLower(prefix))
+		}
+	}
+}
+
+func (e *PredicateSearchEngine) createNameEndsWithPredicate() func(string) toolPredicate {
+	return func(suffix string) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return strings.HasSuffix(strings.ToLower(t.Name), strings.ToLower(suffix))
+		}
+	}
+}
+
+func (e *PredicateSearchEngine) createNameIsPredicate() func(string) toolPredicate {
+	return func(name string) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return strings.EqualFold(t.Name, name)
+		}
+	}
+}
+
+// Description predicates
+func (e *PredicateSearchEngine) createDescriptionContainsPredicate() func(string) toolPredicate {
+	return func(substr string) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return strings.Contains(strings.ToLower(t.Description), strings.ToLower(substr))
+		}
+	}
+}
+
+// Tag predicates
+func (e *PredicateSearchEngine) createHasTagPredicate() func(string) toolPredicate {
+	return func(tag string) toolPredicate {
+		return func(t ToolMetadata) bool {
+			for _, tt := range t.Tags {
+				if strings.EqualFold(tt, tag) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+}
+
+// Logical operators
+func (e *PredicateSearchEngine) createAndOperator() func(toolPredicate, toolPredicate) toolPredicate {
+	return func(a, b toolPredicate) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return a(t) && b(t)
+		}
+	}
+}
+
+func (e *PredicateSearchEngine) createOrOperator() func(toolPredicate, toolPredicate) toolPredicate {
+	return func(a, b toolPredicate) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return a(t) || b(t)
+		}
+	}
+}
+
+func (e *PredicateSearchEngine) createNotOperator() func(toolPredicate) toolPredicate {
+	return func(a toolPredicate) toolPredicate {
+		return func(t ToolMetadata) bool {
+			return !a(t)
+		}
+	}
 }
 
 // Search finds tools matching the predicate expression.

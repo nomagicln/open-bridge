@@ -100,25 +100,16 @@ func (h *Handler) getActiveProfile() (string, *config.Profile, error) {
 
 // buildAndExecuteRequest builds and executes the HTTP request.
 func (h *Handler) buildAndExecuteRequest(operation *openapi3.Operation, method, path string, arguments map[string]any, profileName string, profile *config.Profile) (*mcp.CallToolResult, error) {
-	var requestBody *openapi3.RequestBody
-	if operation.RequestBody != nil {
-		requestBody = operation.RequestBody.Value
-	}
-
-	httpReq, err := h.requestBuilder.BuildRequest(method, path, profile.BaseURL, arguments, operation.Parameters, requestBody)
+	httpReq, err := h.buildRequest(method, path, arguments, operation, profile)
 	if err != nil {
 		return errorResult("Failed to build request: %v", err), nil
 	}
 
-	if err := h.requestBuilder.InjectAuth(httpReq, h.appConfig.Name, profileName, &profile.Auth); err != nil {
+	if err := h.injectAuthAndHeaders(httpReq, profileName, profile); err != nil {
 		return nil, fmt.Errorf("failed to inject authentication: %w", err)
 	}
 
-	for key, value := range profile.Headers {
-		httpReq.Header.Set(key, value)
-	}
-
-	httpResp, err := h.httpClient.Do(httpReq)
+	httpResp, err := h.executeRequest(httpReq)
 	if err != nil {
 		return errorResult("Failed to execute API call: %v", err), nil
 	}
@@ -130,6 +121,34 @@ func (h *Handler) buildAndExecuteRequest(operation *openapi3.Operation, method, 
 	}
 
 	return h.FormatMCPResult(httpResp.StatusCode, bodyBytes), nil
+}
+
+// buildRequest builds the HTTP request with parameters.
+func (h *Handler) buildRequest(method, path string, arguments map[string]any, operation *openapi3.Operation, profile *config.Profile) (*http.Request, error) {
+	var requestBody *openapi3.RequestBody
+	if operation.RequestBody != nil {
+		requestBody = operation.RequestBody.Value
+	}
+
+	return h.requestBuilder.BuildRequest(method, path, profile.BaseURL, arguments, operation.Parameters, requestBody)
+}
+
+// injectAuthAndHeaders injects authentication and custom headers into the request.
+func (h *Handler) injectAuthAndHeaders(httpReq *http.Request, profileName string, profile *config.Profile) error {
+	if err := h.requestBuilder.InjectAuth(httpReq, h.appConfig.Name, profileName, &profile.Auth); err != nil {
+		return err
+	}
+
+	for key, value := range profile.Headers {
+		httpReq.Header.Set(key, value)
+	}
+
+	return nil
+}
+
+// executeRequest performs the HTTP request and returns the response.
+func (h *Handler) executeRequest(httpReq *http.Request) (*http.Response, error) {
+	return h.httpClient.Do(httpReq)
 }
 
 // HandleCallTool handles tool execution requests.
@@ -160,33 +179,47 @@ func (h *Handler) MapToolToOperation(toolName string) (*openapi3.Operation, stri
 
 	// Search for operation by operationId or generated tool name
 	for path, pathItem := range h.spec.Paths.Map() {
-		operations := map[string]*openapi3.Operation{
-			"GET":    pathItem.Get,
-			"POST":   pathItem.Post,
-			"PUT":    pathItem.Put,
-			"PATCH":  pathItem.Patch,
-			"DELETE": pathItem.Delete,
-		}
-
-		for method, op := range operations {
-			if op == nil {
-				continue
-			}
-
-			// Match by operationId
-			if op.OperationID == toolName {
-				return op, method, path, nil
-			}
-
-			// Match by generated tool name (same logic as BuildMCPTools)
-			generatedName := GenerateToolName(method, path, op)
-			if generatedName == toolName {
-				return op, method, path, nil
-			}
+		if op, method, found := h.findOperationInPath(path, pathItem, toolName); found {
+			return op, method, path, nil
 		}
 	}
 
 	return nil, "", "", fmt.Errorf("operation not found for tool: %s", toolName)
+}
+
+// findOperationInPath searches for a tool in a specific path item.
+func (h *Handler) findOperationInPath(path string, pathItem *openapi3.PathItem, toolName string) (*openapi3.Operation, string, bool) {
+	operations := map[string]*openapi3.Operation{
+		"GET":    pathItem.Get,
+		"POST":   pathItem.Post,
+		"PUT":    pathItem.Put,
+		"PATCH":  pathItem.Patch,
+		"DELETE": pathItem.Delete,
+	}
+
+	for method, op := range operations {
+		if op == nil {
+			continue
+		}
+
+		if matchesToolName(op, method, path, toolName) {
+			return op, method, true
+		}
+	}
+
+	return nil, "", false
+}
+
+// matchesToolName checks if an operation matches the given tool name.
+func matchesToolName(op *openapi3.Operation, method, path, toolName string) bool {
+	// Match by operationId
+	if op.OperationID == toolName {
+		return true
+	}
+
+	// Match by generated tool name (same logic as BuildMCPTools)
+	generatedName := GenerateToolName(method, path, op)
+	return generatedName == toolName
 }
 
 // FormatMCPResult formats an API response into MCP result format.
@@ -199,32 +232,47 @@ func (h *Handler) BuildMCPTools(spec *openapi3.T, safetyConfig *config.SafetyCon
 	var tools []mcp.Tool
 
 	for path, pathItem := range spec.Paths.Map() {
-		operations := map[string]*openapi3.Operation{
-			"GET":    pathItem.Get,
-			"POST":   pathItem.Post,
-			"PUT":    pathItem.Put,
-			"PATCH":  pathItem.Patch,
-			"DELETE": pathItem.Delete,
+		tools = h.processPathItem(path, pathItem, safetyConfig, tools)
+	}
+
+	return tools
+}
+
+// processPathItem processes operations in a single path item.
+func (h *Handler) processPathItem(path string, pathItem *openapi3.PathItem, safetyConfig *config.SafetyConfig, tools []mcp.Tool) []mcp.Tool {
+	operations := map[string]*openapi3.Operation{
+		"GET":    pathItem.Get,
+		"POST":   pathItem.Post,
+		"PUT":    pathItem.Put,
+		"PATCH":  pathItem.Patch,
+		"DELETE": pathItem.Delete,
+	}
+
+	for method, op := range operations {
+		if op == nil {
+			continue
 		}
 
-		for method, op := range operations {
-			if op == nil {
-				continue
-			}
+		if h.shouldSkipOperation(method, safetyConfig) {
+			continue
+		}
 
-			// Apply safety controls
-			if safetyConfig != nil && safetyConfig.ReadOnlyMode && method != "GET" {
-				continue
-			}
-
-			tool := h.convertOperationToTool(method, path, op)
-			if h.isToolAllowed(tool.Name, safetyConfig) {
-				tools = append(tools, tool)
-			}
+		tool := h.convertOperationToTool(method, path, op)
+		if h.isToolAllowed(tool.Name, safetyConfig) {
+			tools = append(tools, tool)
 		}
 	}
 
 	return tools
+}
+
+// shouldSkipOperation checks if an operation should be skipped based on safety config.
+func (h *Handler) shouldSkipOperation(method string, safetyConfig *config.SafetyConfig) bool {
+	if safetyConfig == nil {
+		return false
+	}
+
+	return safetyConfig.ReadOnlyMode && method != "GET"
 }
 
 // convertOperationToTool converts an OpenAPI operation to an MCP tool.

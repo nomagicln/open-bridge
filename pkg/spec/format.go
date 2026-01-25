@@ -98,31 +98,41 @@ func (s *YAMLStrategy) Format() ContentFormat {
 // CanHandle checks if data appears to be YAML (and not JSON).
 // YAML is a superset of JSON, so we check for YAML-specific patterns.
 func (s *YAMLStrategy) CanHandle(data []byte) bool {
+	if isEmptyOrJSON(data) {
+		return false
+	}
+
+	return hasYAMLIndicators(data)
+}
+
+// isEmptyOrJSON checks if data is empty or looks like JSON.
+func isEmptyOrJSON(data []byte) bool {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
-		return false
+		return true
 	}
 
-	// If it starts with { or [, it's more likely JSON
-	if trimmed[0] == '{' || trimmed[0] == '[' {
-		return false
-	}
+	return trimmed[0] == '{' || trimmed[0] == '['
+}
 
-	// Common YAML indicators:
-	// - Lines with key: value pattern
-	// - Lines starting with - (list items)
-	// - Document separator ---
-	// - Comments starting with #
-	content := string(trimmed)
+// hasYAMLIndicators checks for YAML-specific patterns.
+func hasYAMLIndicators(data []byte) bool {
+	trimmed := bytes.TrimSpace(data)
+
 	return bytes.Contains(trimmed, []byte(": ")) ||
 		bytes.Contains(trimmed, []byte(":\n")) ||
 		bytes.HasPrefix(trimmed, []byte("---")) ||
 		bytes.HasPrefix(trimmed, []byte("-")) ||
 		bytes.HasPrefix(trimmed, []byte("#")) ||
-		// Also check for common OpenAPI/Swagger YAML patterns
-		bytes.Contains(trimmed, []byte("swagger:")) ||
-		bytes.Contains(trimmed, []byte("openapi:")) ||
-		// Check for quoted version strings common in YAML
+		hasOpenAPIIndicators(trimmed)
+}
+
+// hasOpenAPIIndicators checks for OpenAPI/Swagger-specific patterns.
+func hasOpenAPIIndicators(data []byte) bool {
+	content := string(data)
+
+	return bytes.Contains(data, []byte("swagger:")) ||
+		bytes.Contains(data, []byte("openapi:")) ||
 		bytes.Contains([]byte(content), []byte("'2.0'")) ||
 		bytes.Contains([]byte(content), []byte("'3.0"))
 }
@@ -232,23 +242,15 @@ func (d *ContentDetector) GetStrategyForData(data []byte) UnmarshalStrategy {
 // UnmarshalWithFallback attempts to unmarshal data using detected format,
 // with fallback to trying all strategies if detection fails.
 func (d *ContentDetector) UnmarshalWithFallback(data []byte, v any) error {
-	// First, try the detected strategy
-	strategy := d.GetStrategyForData(data)
-	if strategy != nil {
+	if strategy := d.GetStrategyForData(data); strategy != nil {
 		if err := strategy.Unmarshal(data, v); err == nil {
 			return nil
 		}
 	}
 
-	// Fallback: try all strategies in order
-	var lastErr error
-	for _, s := range d.strategies {
-		if err := s.Unmarshal(data, v); err == nil {
-			return nil
-		} else {
-			lastErr = err
-		}
-	}
+	lastErr := d.tryAllStrategies(data, v, func(s UnmarshalStrategy, data []byte, v any) error {
+		return s.Unmarshal(data, v)
+	})
 
 	return fmt.Errorf("failed to unmarshal data with any strategy: %w", lastErr)
 }
@@ -256,23 +258,30 @@ func (d *ContentDetector) UnmarshalWithFallback(data []byte, v any) error {
 // ToJSONWithFallback converts data to JSON using detected format,
 // with fallback to trying all strategies.
 func (d *ContentDetector) ToJSONWithFallback(data []byte) ([]byte, error) {
-	// First, try the detected strategy
-	strategy := d.GetStrategyForData(data)
-	if strategy != nil {
+	if strategy := d.GetStrategyForData(data); strategy != nil {
 		if jsonData, err := strategy.ToJSON(data); err == nil {
 			return jsonData, nil
 		}
 	}
 
-	// Fallback: try all strategies in order
-	var lastErr error
-	for _, s := range d.strategies {
-		if jsonData, err := s.ToJSON(data); err == nil {
-			return jsonData, nil
-		} else {
-			lastErr = err
-		}
-	}
+	lastErr := d.tryAllStrategies(data, nil, func(s UnmarshalStrategy, data []byte, _ any) error {
+		var err error
+		_, err = s.ToJSON(data)
+		return err
+	})
 
 	return nil, fmt.Errorf("failed to convert data to JSON with any strategy: %w", lastErr)
+}
+
+// tryAllStrategies attempts to process data with all available strategies.
+func (d *ContentDetector) tryAllStrategies(data []byte, v any, fn func(UnmarshalStrategy, []byte, any) error) error {
+	var lastErr error
+	for _, strategy := range d.strategies {
+		err := fn(strategy, data, v)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+	}
+	return lastErr
 }

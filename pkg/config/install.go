@@ -113,8 +113,8 @@ type InstallResult struct {
 	SpecInfo   *spec.SpecInfo
 }
 
-// mergeExistingAppConfig merges existing app config into install options if options are empty.
-func mergeExistingAppConfig(opts InstallOptions, existing *AppConfig) InstallOptions {
+// mergeSpecInfo merges spec information into options.
+func mergeSpecInfo(opts InstallOptions, existing *AppConfig) InstallOptions {
 	if opts.SpecSource == "" && len(opts.SpecSources) == 0 {
 		opts.SpecSource = existing.SpecSource
 		opts.SpecSources = existing.SpecSources
@@ -122,37 +122,60 @@ func mergeExistingAppConfig(opts InstallOptions, existing *AppConfig) InstallOpt
 	if opts.Description == "" {
 		opts.Description = existing.Description
 	}
+	return opts
+}
+
+// mergeProfileInfo merges profile information into options.
+func mergeProfileInfo(opts InstallOptions, profile Profile) InstallOptions {
+	if opts.BaseURL == "" {
+		opts.BaseURL = profile.BaseURL
+	}
+	if opts.AuthType == "" {
+		opts.AuthType = profile.Auth.Type
+	}
+	return opts
+}
+
+// mergeTLSInfo merges TLS configuration into options.
+func mergeTLSInfo(opts InstallOptions, profile Profile) InstallOptions {
+	if opts.TLSCACert == "" {
+		opts.TLSCACert = profile.TLSConfig.CAFile
+	}
+	if opts.TLSClientCert == "" {
+		opts.TLSClientCert = profile.TLSConfig.CertFile
+	}
+	if opts.TLSClientKey == "" {
+		opts.TLSClientKey = profile.TLSConfig.KeyFile
+	}
+	if !opts.TLSSkipVerify {
+		opts.TLSSkipVerify = profile.TLSConfig.InsecureSkipVerify
+	}
+	return opts
+}
+
+// mergeSafetyInfo merges safety/MCP configuration into options.
+func mergeSafetyInfo(opts InstallOptions, profile Profile) InstallOptions {
+	if opts.ProgressiveDisclosure == nil && profile.SafetyConfig.ProgressiveDisclosure {
+		progressive := true
+		opts.ProgressiveDisclosure = &progressive
+	}
+	if opts.SearchEngine == "" {
+		opts.SearchEngine = profile.SafetyConfig.SearchEngine
+	}
+	if !opts.ReadOnlyMode {
+		opts.ReadOnlyMode = profile.SafetyConfig.ReadOnlyMode
+	}
+	return opts
+}
+
+// mergeExistingAppConfig merges existing app config into install options if options are empty.
+func mergeExistingAppConfig(opts InstallOptions, existing *AppConfig) InstallOptions {
+	opts = mergeSpecInfo(opts, existing)
+
 	if profile, ok := existing.Profiles[existing.DefaultProfile]; ok {
-		if opts.BaseURL == "" {
-			opts.BaseURL = profile.BaseURL
-		}
-		if opts.AuthType == "" {
-			opts.AuthType = profile.Auth.Type
-		}
-		// Merge TLS configuration
-		if opts.TLSCACert == "" {
-			opts.TLSCACert = profile.TLSConfig.CAFile
-		}
-		if opts.TLSClientCert == "" {
-			opts.TLSClientCert = profile.TLSConfig.CertFile
-		}
-		if opts.TLSClientKey == "" {
-			opts.TLSClientKey = profile.TLSConfig.KeyFile
-		}
-		if !opts.TLSSkipVerify {
-			opts.TLSSkipVerify = profile.TLSConfig.InsecureSkipVerify
-		}
-		// Merge MCP configuration
-		if opts.ProgressiveDisclosure == nil && profile.SafetyConfig.ProgressiveDisclosure {
-			progressive := true
-			opts.ProgressiveDisclosure = &progressive
-		}
-		if opts.SearchEngine == "" {
-			opts.SearchEngine = profile.SafetyConfig.SearchEngine
-		}
-		if !opts.ReadOnlyMode {
-			opts.ReadOnlyMode = profile.SafetyConfig.ReadOnlyMode
-		}
+		opts = mergeProfileInfo(opts, profile)
+		opts = mergeTLSInfo(opts, profile)
+		opts = mergeSafetyInfo(opts, profile)
 	}
 	return opts
 }
