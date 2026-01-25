@@ -301,9 +301,9 @@ func printInstallResult(appName string, result *config.InstallResult) {
 	if result.ShimPath != "" {
 		fmt.Printf("  %s <verb> <resource> [flags]\n", appName)
 	} else {
-		fmt.Printf("  ob %s <verb> <resource> [flags]\n", appName)
+		fmt.Printf("  ob run %s <verb> <resource> [flags]\n", appName)
 	}
-	fmt.Printf("  ob %s --help\n", appName)
+	fmt.Printf("  ob run %s --help\n", appName)
 }
 
 // installCmdFlags holds the flag values for the install command.

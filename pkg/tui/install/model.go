@@ -506,6 +506,10 @@ func (m Model) updateSpecInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
 		val := m.specInput.Value()
 		if val == "" {
+			val = m.specInput.Placeholder
+		}
+
+		if val == "" {
 			m.err = fmt.Errorf("spec source cannot be empty")
 			return m, nil
 		}
@@ -567,11 +571,17 @@ func (m Model) updateLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) updateDescription(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
 		val := m.descInput.Value()
-		if val == "" && m.defaultDescription != "" {
+		if val == "" {
 			val = m.defaultDescription
 		}
+		if val == "" {
+			val = m.descInput.Placeholder
+		}
+
 		m.options.Description = val
-		m.addHistory("Description", val)
+		if val != "" {
+			m.addHistory("Description", val)
+		}
 		m.step = StepShim
 		return m, nil
 	}
@@ -583,17 +593,24 @@ func (m Model) updateDescription(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) updateBaseURL(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
 		val := m.baseUrlInput.Value()
-		if val == "" && m.defaultBaseURL != "" {
+		if val == "" {
 			val = m.defaultBaseURL
 		}
 
-		// Validate URL if not empty
-		if val != "" {
-			u, err := url.Parse(val)
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-				m.err = fmt.Errorf("invalid Base URL: must start with http:// or https:// and have a host")
-				return m, nil
-			}
+		if val == "" {
+			val = m.baseUrlInput.Placeholder
+		}
+
+		if val == "" {
+			//nolint:staticcheck
+			m.err = fmt.Errorf("Base URL is required")
+			return m, nil
+		}
+
+		u, err := url.Parse(val)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			m.err = fmt.Errorf("invalid Base URL: must start with http:// or https:// and have a host")
+			return m, nil
 		}
 
 		m.options.BaseURL = val
