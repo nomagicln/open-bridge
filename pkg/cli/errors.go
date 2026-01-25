@@ -287,6 +287,8 @@ func writeStatusExplanation(sb *strings.Builder, statusCode int) {
 		sb.WriteString("The service is temporarily unavailable.\n")
 	case http.StatusGatewayTimeout:
 		sb.WriteString("The server did not receive a timely response from an upstream server.\n")
+	default:
+		sb.WriteString("An unexpected error occurred.\n")
 	}
 }
 

@@ -56,17 +56,7 @@ func (g *PythonGenerator) writeHeaders(buf *bytes.Buffer, headers http.Header) {
 
 // writePythonHeaderValues writes header key-value pairs in Python format.
 func (g *PythonGenerator) writePythonHeaderValues(buf *bytes.Buffer, headers http.Header) {
-	for key := range headers {
-		values := headers[key]
-		for _, value := range values {
-			buf.WriteString("    '")
-			buf.WriteString(key)
-			buf.WriteString("': '")
-			escapedValue := escapePythonString(value)
-			buf.WriteString(escapedValue)
-			buf.WriteString("',\n")
-		}
-	}
+	writeHeaderValues(buf, headers, escapePythonString)
 }
 
 func (g *PythonGenerator) writeBody(buf *bytes.Buffer, req *http.Request) error {

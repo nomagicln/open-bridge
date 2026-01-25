@@ -209,11 +209,12 @@ func parseExpiresAt(resp *http.Response) time.Time {
 
 	// Check Cache-Control header
 	if cacheControl := resp.Header.Get("Cache-Control"); cacheControl != "" {
-		if seconds, ok := parseCacheControl(cacheControl); ok {
+		seconds, ok := parseCacheControl(cacheControl)
+		if ok {
 			return now.Add(time.Duration(seconds) * time.Second)
 		}
 		// If no-cache/no-store, return already expired
-		if seconds, ok := parseCacheControl(cacheControl); !ok && seconds == 0 {
+		if strings.Contains(cacheControl, "no-cache") || strings.Contains(cacheControl, "no-store") {
 			return now
 		}
 	}

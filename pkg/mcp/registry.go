@@ -96,7 +96,7 @@ func (r *ToolRegistry) processOperation(path, method string, op *openapi3.Operat
 		return
 	}
 
-	if !r.isOperationAllowed(method, op, safetyConfig) {
+	if !r.isOperationAllowed(method, safetyConfig) {
 		return
 	}
 
@@ -110,7 +110,7 @@ func (r *ToolRegistry) processOperation(path, method string, op *openapi3.Operat
 }
 
 // isOperationAllowed checks if an operation is allowed by safety config.
-func (r *ToolRegistry) isOperationAllowed(method string, op *openapi3.Operation, safetyConfig *config.SafetyConfig) bool {
+func (r *ToolRegistry) isOperationAllowed(method string, safetyConfig *config.SafetyConfig) bool {
 	if safetyConfig != nil && safetyConfig.ReadOnlyMode && method != "GET" {
 		return false
 	}

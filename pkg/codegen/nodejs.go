@@ -9,6 +9,21 @@ import (
 	"strings"
 )
 
+// writeHeaderValues通用函数，将HTTP头部写入缓冲区
+func writeHeaderValues(buf *bytes.Buffer, headers http.Header, escapeFunc func(string) string) {
+	for key := range headers {
+		values := headers[key]
+		for _, value := range values {
+			buf.WriteString("    '")
+			buf.WriteString(key)
+			buf.WriteString("': '")
+			escapedValue := escapeFunc(value)
+			buf.WriteString(escapedValue)
+			buf.WriteString("',\n")
+		}
+	}
+}
+
 // NodeJSGenerator generates Node.js fetch API code from HTTP requests.
 type NodeJSGenerator struct {
 	opts Options
@@ -64,17 +79,7 @@ func (g *NodeJSGenerator) writeHeaders(buf *bytes.Buffer, headers http.Header) {
 
 // writeHeaderValues writes header key-value pairs.
 func (g *NodeJSGenerator) writeHeaderValues(buf *bytes.Buffer, headers http.Header) {
-	for key := range headers {
-		values := headers[key]
-		for _, value := range values {
-			buf.WriteString("    '")
-			buf.WriteString(key)
-			buf.WriteString("': '")
-			escapedValue := escapeString(value)
-			buf.WriteString(escapedValue)
-			buf.WriteString("',\n")
-		}
-	}
+	writeHeaderValues(buf, headers, escapeString)
 }
 
 func (g *NodeJSGenerator) writeBody(buf *bytes.Buffer, req *http.Request) error {

@@ -46,7 +46,10 @@ func (b *Builder) BuildRequest(
 	fullURL := b.buildFullURL(baseURL, finalPath, queryString)
 
 	// Build request body for non-GET methods
-	bodyReader := b.createBodyReader(method, params, opParams, requestBody)
+	bodyReader, err := b.createBodyReader(method, params, opParams, requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build request body: %w", err)
+	}
 
 	// Create request
 	req, err := b.createHTTPRequest(method, fullURL, bodyReader)
@@ -75,28 +78,29 @@ func (b *Builder) buildFullURL(baseURL, path, queryString string) string {
 }
 
 // createBodyReader creates a body reader for the request.
-func (b *Builder) createBodyReader(method string, params map[string]any, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) *bytes.Reader {
+func (b *Builder) createBodyReader(method string, params map[string]any, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) (*bytes.Reader, error) {
 	if method == http.MethodGet || method == http.MethodHead {
-		return nil
+		return nil, nil
 	}
 
 	bodyData, err := b.buildRequestBody(params, opParams, requestBody)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	if bodyData == nil {
-		return nil
+		return nil, nil
 	}
 
-	return bytes.NewReader(bodyData)
+	reader := bytes.NewReader(bodyData)
+	return reader, nil
 }
 
 // createHTTPRequest creates an HTTP request with or without a body.
-func (b *Builder) createHTTPRequest(method, url string, bodyReader *bytes.Reader) (*http.Request, error) {
+func (b *Builder) createHTTPRequest(method, urlStr string, bodyReader *bytes.Reader) (*http.Request, error) {
 	if bodyReader != nil {
-		return http.NewRequest(method, url, bodyReader)
+		return http.NewRequest(method, urlStr, bodyReader)
 	}
-	return http.NewRequest(method, url, nil)
+	return http.NewRequest(method, urlStr, nil)
 }
 
 // InjectAuth adds authentication to a request based on configuration.

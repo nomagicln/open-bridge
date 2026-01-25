@@ -415,10 +415,10 @@ func unquoteString(value string) (string, error) {
 
 	unquoted := value[1 : len(value)-1]
 	replacements := map[string]string{
-		"\\n": "\n",
-		"\\t": "\t",
+		"\\n":  "\n",
+		"\\t":  "\t",
 		"\\\"": "\"",
-		"\\'": "'",
+		"\\'":  "'",
 		"\\\\": "\\",
 	}
 

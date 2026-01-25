@@ -174,7 +174,7 @@ func includeOptionalConfig(opts ExportOptions, profile Profile) (tls *TLSConfig,
 	if opts.IncludeRetry {
 		retry = &profile.RetryConfig
 	}
-	return
+	return tls, safety, retry
 }
 
 func cleanProfileForExport(profile Profile, opts ExportOptions) ExportedProfile {

@@ -601,8 +601,8 @@ func NewOAuth2Credential(accessToken, refreshToken, tokenType string, expiresAt 
 }
 
 // getPlatformBackend returns platform-specific backend information.
-func getPlatformBackend(os string) (bool, string, BackendType) {
-	switch os {
+func getPlatformBackend(osName string) (bool, string, BackendType) {
+	switch osName {
 	case "darwin":
 		return true, "macOS Keychain", BackendKeychain
 	case "windows":

@@ -486,13 +486,12 @@ func (p *Parser) parseOpenAPI3(ctx context.Context, data []byte) (*openapi3.T, e
 }
 
 // parseOpenAPI3WithBaseURL parses OpenAPI 3.x with a base URL.
-func (p *Parser) parseOpenAPI3WithBaseURL(_ context.Context, data []byte, baseURL *url.URL) (*openapi3.T, error) {
+func (p *Parser) parseOpenAPI3WithBaseURL(ctx context.Context, data []byte, baseURL *url.URL) (*openapi3.T, error) {
 	doc, err := p.loader.LoadFromDataWithPath(data, baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse OpenAPI 3.x spec: %w", err)
 	}
 
-	ctx := context.Background()
 	if err := doc.Validate(ctx); err != nil {
 		// Workaround for kin-openapi validation issue with OpenAPI 3.1 type: "null"
 		if strings.Contains(err.Error(), `unsupported 'type' value "null"`) {
@@ -505,7 +504,7 @@ func (p *Parser) parseOpenAPI3WithBaseURL(_ context.Context, data []byte, baseUR
 }
 
 // parseSwagger parses an OpenAPI 2.0 (Swagger) specification.
-func (p *Parser) parseSwagger(_ context.Context, data []byte) (*openapi3.T, error) {
+func (p *Parser) parseSwagger(ctx context.Context, data []byte) (*openapi3.T, error) {
 	var swagger openapi2.T
 
 	// Use ContentDetector to handle format detection and conversion
@@ -532,7 +531,6 @@ func (p *Parser) parseSwagger(_ context.Context, data []byte) (*openapi3.T, erro
 	}
 
 	// Validate the converted specification
-	ctx := context.Background()
 	if err := doc.Validate(ctx); err != nil {
 		return nil, fmt.Errorf("converted OpenAPI 3.0 validation failed: %w", err)
 	}
@@ -541,9 +539,8 @@ func (p *Parser) parseSwagger(_ context.Context, data []byte) (*openapi3.T, erro
 }
 
 // parseSwaggerWithBaseURL parses Swagger 2.0 with a base URL.
-func (p *Parser) parseSwaggerWithBaseURL(_ context.Context, data []byte) (*openapi3.T, error) {
+func (p *Parser) parseSwaggerWithBaseURL(ctx context.Context, data []byte) (*openapi3.T, error) {
 	// Base URL does not change Swagger 2.0 conversion behavior here.
-	ctx := context.Background()
 	return p.parseSwagger(ctx, data)
 }
 

@@ -821,16 +821,20 @@ func (m Model) handleAuthTypeEnter() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateShim(msg tea.Msg) (tea.Model, tea.Cmd) {
+	return m.updateOptionSelection(msg, &m.shimIndex, len(m.shimOptions), m.handleShimEnter)
+}
+
+// updateOptionSelection is a generic function to handle option selection with arrow keys.
+func (m Model) updateOptionSelection(msg tea.Msg, indexPtr *int, optionsLen int, enterHandler func() (tea.Model, tea.Cmd)) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
 		case "left", "h":
-			m.shimIndex = cycleOptionIndex(m.shimIndex-1, len(m.shimOptions))
+			*indexPtr = cycleOptionIndex(*indexPtr-1, optionsLen)
 		case "right", "l":
-			m.shimIndex = cycleOptionIndex(m.shimIndex+1, len(m.shimOptions))
+			*indexPtr = cycleOptionIndex(*indexPtr+1, optionsLen)
 		case "enter":
-			return m.handleShimEnter()
+			return enterHandler()
 		default:
-			// Ignore other keys
 		}
 	}
 	return m, nil
@@ -1164,19 +1168,7 @@ func (m Model) determineNextMCPStep() Step {
 
 // updateMCPSearchEngine handles the search engine configuration step.
 func (m Model) updateMCPSearchEngine(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if keyMsg, ok := msg.(tea.KeyMsg); ok {
-		switch keyMsg.String() {
-		case "left", "h":
-			m.mcpSearchEngineIndex = cycleOptionIndex(m.mcpSearchEngineIndex-1, len(m.mcpSearchEngineOptions))
-		case "right", "l":
-			m.mcpSearchEngineIndex = cycleOptionIndex(m.mcpSearchEngineIndex+1, len(m.mcpSearchEngineOptions))
-		case "enter":
-			return m.handleMCPSearchEngineEnter()
-		default:
-			// Ignore other keys
-		}
-	}
-	return m, nil
+	return m.updateOptionSelection(msg, &m.mcpSearchEngineIndex, len(m.mcpSearchEngineOptions), m.handleMCPSearchEngineEnter)
 }
 
 // handleMCPSearchEngineEnter handles the enter key press in MCP search engine selection.
