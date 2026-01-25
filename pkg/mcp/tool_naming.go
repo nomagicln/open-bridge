@@ -45,37 +45,34 @@ func GenerateToolName(method, path string, op *openapi3.Operation) string {
 // hasRedundancy checks if an operationId contains redundant information.
 // It detects patterns like "list_todos_todos_get" where the resource name appears multiple times.
 func hasRedundancy(operationID string) bool {
-	// Convert to lowercase for case-insensitive matching
-	lower := strings.ToLower(operationID)
-
-	// Split by underscore
-	parts := strings.Split(lower, "_")
-	if len(parts) < 3 {
+	if len(operationID) < 3 {
 		return false
 	}
 
-	// Check for repeated resource names in different positions
-	// Example: "list_todos_todos_get" has "todos" appearing twice
+	lower := strings.ToLower(operationID)
+
+	hasDuplicate := hasDuplicateResourceNames(lower)
+	if hasDuplicate {
+		return true
+	}
+
+	return isFastAPIPattern(operationID)
+}
+
+// hasDuplicateResourceNames checks if the same resource name appears multiple times.
+func hasDuplicateResourceNames(lower string) bool {
+	parts := strings.Split(lower, "_")
+
 	seen := make(map[string]int)
 	for _, part := range parts {
-		// Skip common HTTP verbs and methods
-		if isHTTPVerbOrMethod(part) {
+		if isHTTPVerbOrMethod(part) || len(part) <= 1 {
 			continue
 		}
-		// Skip single-letter parts or very short parts
-		if len(part) <= 1 {
-			continue
-		}
+
 		seen[part]++
 		if seen[part] > 1 {
 			return true
 		}
-	}
-
-	// Check if it follows the FastAPI pattern: {function}_{path}_{method}
-	// where function and path contain the same resource name
-	if isFastAPIPattern(operationID) {
-		return true
 	}
 
 	return false
@@ -127,19 +124,25 @@ func isHTTPVerbOrMethod(s string) bool {
 //   - batch_create_todos_todos_batch_post → todos_batch_create
 //   - get_stats_todos_stats_get → todos_stats
 func extractMeaningfulName(operationID, path string) string {
-	lower := removeHTTPMethodSuffix(strings.ToLower(operationID))
-
+	cleanID := cleanOperationID(operationID)
 	pathParts := extractPathSegments(path)
+
 	if len(pathParts) == 0 {
 		return ""
 	}
+
 	mainResource := pathParts[0]
-	matchedVerb := extractVerbFromOperationID(lower, mainResource)
+	matchedVerb := extractVerbFromOperationID(cleanID, mainResource)
 	if matchedVerb == "" {
 		return ""
 	}
 
 	return buildToolName(mainResource, matchedVerb, pathParts)
+}
+
+// cleanOperationID removes HTTP method suffix from operation ID.
+func cleanOperationID(operationID string) string {
+	return removeHTTPMethodSuffix(strings.ToLower(operationID))
 }
 
 // removeHTTPMethodSuffix removes HTTP method suffix from operationId.
@@ -183,19 +186,38 @@ func extractVerbFromOperationID(operationID, mainResource string) string {
 
 // buildToolName constructs the final tool name from resource, verb, and path parts.
 func buildToolName(mainResource, matchedVerb string, pathParts []string) string {
-	// Check for subresource operations (e.g., /todos/batch or /todos/stats)
-	if len(pathParts) > 1 {
-		subResource := pathParts[1]
-		if strings.Contains(matchedVerb, subResource) {
-			return fmt.Sprintf("%s_%s", mainResource, matchedVerb)
-		}
-		return fmt.Sprintf("%s_%s", mainResource, subResource)
+	if isSubresourceOperation(pathParts) {
+		return buildSubresourceName(mainResource, matchedVerb, pathParts)
 	}
 
-	// Standard CRUD operation: remove redundant resource name from verb
-	cleanVerb := strings.TrimSuffix(matchedVerb, "_"+mainResource)
-	cleanVerb = strings.TrimSuffix(cleanVerb, "_"+strings.TrimSuffix(mainResource, "s"))
+	return buildStandardCRUDName(mainResource, matchedVerb)
+}
+
+// isSubresourceOperation checks if this is a subresource operation.
+func isSubresourceOperation(pathParts []string) bool {
+	return len(pathParts) > 1
+}
+
+// buildSubresourceName builds tool name for subresource operations.
+func buildSubresourceName(mainResource, matchedVerb string, pathParts []string) string {
+	subResource := pathParts[1]
+	if strings.Contains(matchedVerb, subResource) {
+		return fmt.Sprintf("%s_%s", mainResource, matchedVerb)
+	}
+	return fmt.Sprintf("%s_%s", mainResource, subResource)
+}
+
+// buildStandardCRUDName builds tool name for standard CRUD operations.
+func buildStandardCRUDName(mainResource, matchedVerb string) string {
+	cleanVerb := removeResourceFromVerb(matchedVerb, mainResource)
 	return fmt.Sprintf("%s_%s", mainResource, cleanVerb)
+}
+
+// removeResourceFromVerb removes redundant resource name from verb.
+func removeResourceFromVerb(verb, resource string) string {
+	cleanVerb := strings.TrimSuffix(verb, "_"+resource)
+	cleanVerb = strings.TrimSuffix(cleanVerb, "_"+strings.TrimSuffix(resource, "s"))
+	return cleanVerb
 }
 
 // extractPathSegments extracts meaningful path segments (excluding parameters and common prefixes).
@@ -204,72 +226,74 @@ func extractPathSegments(path string) []string {
 	var result []string
 
 	for _, seg := range segments {
-		// Skip empty, parameters, version prefixes, and "api" prefix
-		if seg == "" || strings.HasPrefix(seg, "{") ||
-			strings.HasPrefix(seg, "v") && len(seg) <= 3 ||
-			seg == "api" {
-			continue
+		if isMeaningfulSegment(seg) {
+			result = append(result, seg)
 		}
-		result = append(result, seg)
 	}
 
 	return result
 }
 
+// isMeaningfulSegment checks if a path segment should be included in the resource name.
+func isMeaningfulSegment(seg string) bool {
+	if seg == "" || strings.HasPrefix(seg, "{") {
+		return false
+	}
+
+	if seg == "api" {
+		return false
+	}
+
+	if isVersionPrefix(seg) {
+		return false
+	}
+
+	return true
+}
+
+// isVersionPrefix checks if a segment is a version prefix like "v1" or "v2".
+func isVersionPrefix(seg string) bool {
+	return strings.HasPrefix(seg, "v") && len(seg) <= 3
+}
+
 // NormalizeOperationID normalizes an operationId by removing redundant parts.
 // This is used as a fallback when semantic mapping isn't applicable.
 func NormalizeOperationID(operationID string) string {
-	if operationID == "" {
-		return ""
-	}
-
-	// If no redundancy detected, return as-is
-	if !hasRedundancy(operationID) {
+	if operationID == "" || !hasRedundancy(operationID) {
 		return operationID
 	}
 
-	// Remove FastAPI pattern suffix: method at end + redundant path parts
-	// Example: list_todos_todos_get → list_todos
-	// Example: get_todo_todos__id__get → get_todo
-	// Match pattern: (prefix)_(resource/path parts)_(http_method)
-	// We want to keep (prefix)_(first occurrence of resource)
+	return removeRedundantParts(strings.ToLower(operationID))
+}
 
-	lower := strings.ToLower(operationID)
+// removeRedundantParts removes duplicate resource names and HTTP method suffixes.
+func removeRedundantParts(lower string) string {
+	cleanID := removeHTTPMethodSuffix(lower)
+	parts := strings.Split(cleanID, "_")
 
-	// Remove HTTP method suffix first
-	for _, method := range []string{"_get", "_post", "_put", "_patch", "_delete"} {
-		if before, ok := strings.CutSuffix(lower, method); ok {
-			lower = before
-			break
-		}
-	}
+	return joinUniqueParts(parts)
+}
 
-	// Now find the first occurrence of repeated resource name
-	// Split by underscore and find duplicates
-	parts := strings.Split(lower, "_")
+// joinUniqueParts filters out duplicates and HTTP methods, then joins the result.
+func joinUniqueParts(parts []string) string {
 	seen := make(map[string]bool)
 	var result []string
 
 	for _, part := range parts {
-		// Skip empty parts (from double underscores like __id__)
-		if part == "" {
+		part = strings.TrimSpace(part)
+		if part == "" || isHTTPVerbOrMethod(part) {
 			continue
 		}
-		// Skip HTTP verbs/methods (they're not part of the meaningful name)
-		if isHTTPVerbOrMethod(part) {
-			continue
-		}
-		// Keep first occurrence, skip duplicates
+
 		if !seen[part] {
 			result = append(result, part)
 			seen[part] = true
 		}
-		// Skip subsequent occurrences (duplicates)
 	}
 
 	if len(result) > 0 {
 		return strings.Join(result, "_")
 	}
 
-	return operationID
+	return ""
 }

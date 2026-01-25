@@ -186,25 +186,36 @@ func computeHash(content []byte) string {
 	return hex.EncodeToString(hash[:])
 }
 
+// parseCacheControl extracts cache directives from Cache-Control header.
+func parseCacheControl(cacheControl string) (int, bool) {
+	for directive := range strings.SplitSeq(cacheControl, ",") {
+		directive = strings.TrimSpace(directive)
+		if after, ok := strings.CutPrefix(directive, "max-age="); ok {
+			if seconds, err := strconv.Atoi(after); err == nil {
+				return seconds, true
+			}
+		}
+		// no-cache or no-store means always revalidate
+		if directive == "no-cache" || directive == "no-store" {
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
 // parseExpiresAt parses HTTP cache headers to determine expiration time.
 func parseExpiresAt(resp *http.Response) time.Time {
 	now := time.Now()
 
 	// Check Cache-Control header
-	cacheControl := resp.Header.Get("Cache-Control")
-	if cacheControl != "" {
-		// Parse max-age directive
-		for directive := range strings.SplitSeq(cacheControl, ",") {
-			directive = strings.TrimSpace(directive)
-			if after, ok := strings.CutPrefix(directive, "max-age="); ok {
-				if seconds, err := strconv.Atoi(after); err == nil {
-					return now.Add(time.Duration(seconds) * time.Second)
-				}
-			}
-			// no-cache or no-store means always revalidate
-			if directive == "no-cache" || directive == "no-store" {
-				return now // Already expired
-			}
+	if cacheControl := resp.Header.Get("Cache-Control"); cacheControl != "" {
+		seconds, ok := parseCacheControl(cacheControl)
+		if ok {
+			return now.Add(time.Duration(seconds) * time.Second)
+		}
+		// If no-cache/no-store, return already expired
+		if strings.Contains(cacheControl, "no-cache") || strings.Contains(cacheControl, "no-store") {
+			return now
 		}
 	}
 
@@ -255,31 +266,37 @@ func (c *SpecCacheManager) FetchWithCacheAndOptions(appName, source string, opts
 	return c.fetchRemoteWithCache(appName, source, effectiveOpts)
 }
 
-// mergeFetchOptions merges manager defaults with per-spec overrides.
-func (c *SpecCacheManager) mergeFetchOptions(override *SpecFetchOptions) *SpecFetchOptions {
-	if c.fetchOptions == nil && override == nil {
+// copyHeaders creates a copy of a header map.
+func copyHeaders(headers map[string]string) map[string]string {
+	if headers == nil {
 		return nil
 	}
-	if c.fetchOptions == nil {
+	out := make(map[string]string, len(headers))
+	maps.Copy(out, headers)
+	return out
+}
+
+// mergeFetchOptions merges manager defaults with per-spec overrides.
+func (c *SpecCacheManager) mergeFetchOptions(override *SpecFetchOptions) *SpecFetchOptions {
+	switch {
+	case c.fetchOptions == nil && override == nil:
+		return nil
+	case c.fetchOptions == nil:
 		return override
-	}
-	if override == nil {
+	case override == nil:
 		return c.fetchOptions
 	}
 
-	// Merge: override takes precedence
+	// Start with defaults
 	merged := &SpecFetchOptions{
 		AuthType:     c.fetchOptions.AuthType,
 		AuthToken:    c.fetchOptions.AuthToken,
 		AuthKeyName:  c.fetchOptions.AuthKeyName,
 		AuthLocation: c.fetchOptions.AuthLocation,
-	}
-	if c.fetchOptions.Headers != nil {
-		merged.Headers = make(map[string]string, len(c.fetchOptions.Headers))
-		maps.Copy(merged.Headers, c.fetchOptions.Headers)
+		Headers:      copyHeaders(c.fetchOptions.Headers),
 	}
 
-	// Apply overrides
+	// Apply overrides (override takes precedence)
 	if override.AuthType != "" {
 		merged.AuthType = override.AuthType
 		merged.AuthToken = override.AuthToken
@@ -319,75 +336,104 @@ func (c *SpecCacheManager) fetchLocalFile(path string) (*FetchResult, error) {
 	}, nil
 }
 
+// tryLoadValidCache attempts to load a valid cached spec.
+func (c *SpecCacheManager) tryLoadValidCache(appName, url string, meta *SpecCacheMeta) (*FetchResult, bool) {
+	if meta == nil || meta.IsStale() || meta.SourceURL != url {
+		return nil, false
+	}
+
+	content, err := c.loadCachedContent(appName, meta.Format)
+	if err != nil || computeHash(content) != meta.ContentHash {
+		return nil, false
+	}
+
+	return &FetchResult{
+		Content:   content,
+		Format:    meta.Format,
+		Meta:      meta,
+		FromCache: true,
+	}, true
+}
+
+// tryUseStaleCache attempts to use stale cache on network error.
+func (c *SpecCacheManager) tryUseStaleCache(appName string, meta *SpecCacheMeta, fetchErr error) (*FetchResult, error) {
+	if meta == nil {
+		return nil, fmt.Errorf("failed to fetch spec: %w", fetchErr)
+	}
+
+	content, err := c.loadCachedContent(appName, meta.Format)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch spec: %w", fetchErr)
+	}
+
+	return &FetchResult{
+		Content:      content,
+		Format:       meta.Format,
+		Meta:         meta,
+		FromCache:    true,
+		CacheWarning: fmt.Sprintf("Using cached spec due to network error: %v", fetchErr),
+	}, nil
+}
+
+// handleNotModified handles 304 Not Modified response.
+func (c *SpecCacheManager) handleNotModified(result *FetchResult, appName string, meta *SpecCacheMeta) error {
+	content, err := c.loadCachedContent(appName, meta.Format)
+	if err != nil {
+		return err
+	}
+	result.Content = content
+	return c.SaveMeta(appName, result.Meta)
+}
+
 // fetchRemoteWithCache fetches a remote spec with caching.
 func (c *SpecCacheManager) fetchRemoteWithCache(appName, url string, opts *SpecFetchOptions) (*FetchResult, error) {
-	// Try to load existing cache metadata
 	meta, _ := c.LoadMeta(appName)
 
-	// Check if cache is still valid
-	if meta != nil && !meta.IsStale() && meta.SourceURL == url {
-		content, err := c.loadCachedContent(appName, meta.Format)
-		if err == nil {
-			// Verify content hash
-			if computeHash(content) == meta.ContentHash {
-				return &FetchResult{
-					Content:   content,
-					Format:    meta.Format,
-					Meta:      meta,
-					FromCache: true,
-				}, nil
-			}
-		}
+	// Try to use valid cache first
+	if result, ok := c.tryLoadValidCache(appName, url, meta); ok {
+		return result, nil
 	}
 
 	// Fetch from remote
 	result, err := c.fetchRemote(url, meta, opts)
 	if err != nil {
-		// Network error - try to use stale cache if available
-		if meta != nil {
-			content, cacheErr := c.loadCachedContent(appName, meta.Format)
-			if cacheErr == nil {
-				return &FetchResult{
-					Content:      content,
-					Format:       meta.Format,
-					Meta:         meta,
-					FromCache:    true,
-					CacheWarning: fmt.Sprintf("Using cached spec due to network error: %v", err),
-				}, nil
-			}
-		}
-		return nil, fmt.Errorf("failed to fetch spec: %w", err)
+		return c.tryUseStaleCache(appName, meta, err)
 	}
 
-	// Handle 304 Not Modified - load content from cache
+	// Handle 304 Not Modified
 	if result.FromCache && result.Content == nil && meta != nil {
-		content, err := c.loadCachedContent(appName, meta.Format)
-		if err == nil {
-			result.Content = content
-			// Update cache metadata with new expiration
-			if err := c.SaveMeta(appName, result.Meta); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to update cache metadata: %v\n", err)
-			}
+		if err := c.handleNotModified(result, appName, meta); err == nil {
 			return result, nil
 		}
 	}
 
-	// Save to cache
+	// Save to cache (warning on failure, but don't fail)
 	if err := c.saveToCache(appName, result); err != nil {
-		// Warning but don't fail
 		fmt.Fprintf(os.Stderr, "Warning: failed to cache spec: %v\n", err)
 	}
 
 	return result, nil
 }
 
-// fetchRemote fetches a spec from a remote URL.
+// persistFetchOptions saves non-sensitive fetch options to metadata.
+func persistFetchOptions(meta *SpecCacheMeta, opts *SpecFetchOptions) {
+	if opts == nil {
+		return
+	}
+	if opts.Headers != nil {
+		meta.FetchHeaders = make(map[string]string, len(opts.Headers))
+		maps.Copy(meta.FetchHeaders, opts.Headers)
+	}
+	meta.FetchAuthType = opts.AuthType
+	meta.FetchAuthKeyName = opts.AuthKeyName
+	meta.FetchAuthLocation = opts.AuthLocation
+}
+
 // buildMetaFromResponse creates SpecCacheMeta from HTTP response and content.
 func buildMetaFromResponse(resp *http.Response, url string, content []byte, opts *SpecFetchOptions) *SpecCacheMeta {
-	format := detectFormat(resp.Header.Get("Content-Type"), url)
 	meta := &SpecCacheMeta{
 		SourceURL:    url,
-		Format:       format,
+		Format:       detectFormat(resp.Header.Get("Content-Type"), url),
 		ETag:         resp.Header.Get("ETag"),
 		LastModified: resp.Header.Get("Last-Modified"),
 		FetchedAt:    time.Now(),
@@ -395,44 +441,42 @@ func buildMetaFromResponse(resp *http.Response, url string, content []byte, opts
 		ContentHash:  computeHash(content),
 		Size:         int64(len(content)),
 	}
-
-	// Persist fetch options (excluding sensitive token) for revalidation
-	if opts != nil {
-		if opts.Headers != nil {
-			meta.FetchHeaders = make(map[string]string, len(opts.Headers))
-			maps.Copy(meta.FetchHeaders, opts.Headers)
-		}
-		meta.FetchAuthType = opts.AuthType
-		meta.FetchAuthKeyName = opts.AuthKeyName
-		meta.FetchAuthLocation = opts.AuthLocation
-		// Note: AuthToken is NOT persisted for security reasons.
-		// Revalidation requires the caller to provide fresh credentials.
-	}
-
+	persistFetchOptions(meta, opts)
 	return meta
 }
 
-func (c *SpecCacheManager) fetchRemote(url string, existingMeta *SpecCacheMeta, opts *SpecFetchOptions) (*FetchResult, error) {
+// setConditionalHeaders sets HTTP conditional request headers based on existing metadata.
+func setConditionalHeaders(req *http.Request, existingMeta *SpecCacheMeta) {
+	if existingMeta == nil {
+		return
+	}
+	if existingMeta.ETag != "" {
+		req.Header.Set("If-None-Match", existingMeta.ETag)
+	}
+	if existingMeta.LastModified != "" {
+		req.Header.Set("If-Modified-Since", existingMeta.LastModified)
+	}
+}
+
+// createHTTPRequest creates a new HTTP GET request with standard headers.
+func createHTTPRequest(url string) (*http.Request, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	// Set common headers
 	req.Header.Set("Accept", "application/json, application/yaml, text/yaml, */*")
 	req.Header.Set("User-Agent", "OpenBridge/1.0")
+	return req, nil
+}
 
-	// Add conditional headers if we have existing cache
-	if existingMeta != nil {
-		if existingMeta.ETag != "" {
-			req.Header.Set("If-None-Match", existingMeta.ETag)
-		}
-		if existingMeta.LastModified != "" {
-			req.Header.Set("If-Modified-Since", existingMeta.LastModified)
-		}
+// fetchRemote fetches a spec from a remote URL.
+func (c *SpecCacheManager) fetchRemote(url string, existingMeta *SpecCacheMeta, opts *SpecFetchOptions) (*FetchResult, error) {
+	req, err := createHTTPRequest(url)
+	if err != nil {
+		return nil, err
 	}
 
-	// Apply custom headers and authentication
+	setConditionalHeaders(req, existingMeta)
 	applyFetchOptions(req, opts)
 
 	resp, err := c.httpClient.Do(req)
@@ -722,6 +766,20 @@ func (c *SpecCacheManager) LoadParsedSpec(appName string) (*openapi3.T, bool, er
 	return &spec, true, nil
 }
 
+// checkSourceIntegrity checks if the source document has changed.
+func (c *SpecCacheManager) checkSourceIntegrity(meta *SpecCacheMeta) bool {
+	if isWebURL(meta.SourceURL) {
+		return true // Web URLs require network check, assume valid
+	}
+
+	// For local files, verify the content hash matches
+	content, err := os.ReadFile(meta.SourceURL)
+	if err != nil {
+		return false
+	}
+	return computeHash(content) == meta.ContentHash
+}
+
 // ValidateParsedSpec validates that the parsed spec cache is still valid.
 func (c *SpecCacheManager) ValidateParsedSpec(appName string) (bool, error) {
 	meta, err := c.LoadMeta(appName)
@@ -729,8 +787,8 @@ func (c *SpecCacheManager) ValidateParsedSpec(appName string) (bool, error) {
 		return false, nil
 	}
 
-	// Check if parsed spec is cached
-	if meta.ParsedSpecPath == "" {
+	// Check basic cache metadata
+	if meta.ParsedSpecPath == "" || meta.ParserVersion != ParserVersion {
 		return false, nil
 	}
 
@@ -739,22 +797,9 @@ func (c *SpecCacheManager) ValidateParsedSpec(appName string) (bool, error) {
 		return false, nil
 	}
 
-	// Check parser version compatibility
-	if meta.ParserVersion != ParserVersion {
+	// Check source integrity
+	if !c.checkSourceIntegrity(meta) {
 		return false, nil
-	}
-
-	// Check if the source document has changed
-	if !isWebURL(meta.SourceURL) {
-		// For local files, verify the content hash matches
-		content, err := os.ReadFile(meta.SourceURL)
-		if err != nil {
-			return false, nil
-		}
-		currentHash := computeHash(content)
-		if currentHash != meta.ContentHash {
-			return false, nil
-		}
 	}
 
 	// Check if cache is stale

@@ -97,36 +97,49 @@ func maskSensitiveValue(value string, maskSecrets bool) string {
 		return value
 	}
 
-	// Mask Authorization header values
-	if strings.HasPrefix(value, "Bearer ") {
+	if isBearerToken(value) {
 		return "Bearer <YOUR_API_KEY>"
 	}
-	if strings.HasPrefix(value, "Basic ") {
+
+	if isBasicAuth(value) {
 		return "Basic <YOUR_CREDENTIALS>"
 	}
 
-	// For other values that look like tokens/keys, mask them:
-	// - No spaces (valid credential constraint)
-	// - Longer than typical words (minimum 15 chars is conservative for real tokens)
-	// - Contains underscores, hyphens, or alphanumeric-only patterns (typical for API keys)
-	if len(value) > 14 && !strings.Contains(value, " ") {
-		hasSpecialChars := strings.ContainsAny(value, "-_")
-		// Also mask if it's a hex-like string (common for tokens)
-		allAlphaNum := true
-		for _, ch := range value {
-			isAlphaNum := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
-			if !isAlphaNum && ch != '-' && ch != '_' {
-				allAlphaNum = false
-				break
-			}
-		}
-
-		if hasSpecialChars || allAlphaNum {
-			return "<YOUR_API_KEY>"
-		}
+	if looksLikeToken(value) {
+		return "<YOUR_API_KEY>"
 	}
 
 	return value
+}
+
+// isBearerToken checks if the value is a Bearer token.
+func isBearerToken(value string) bool {
+	return strings.HasPrefix(value, "Bearer ")
+}
+
+// isBasicAuth checks if the value is Basic authentication.
+func isBasicAuth(value string) bool {
+	return strings.HasPrefix(value, "Basic ")
+}
+
+// looksLikeToken checks if a value looks like a token/API key.
+func looksLikeToken(value string) bool {
+	if len(value) <= 14 || strings.Contains(value, " ") {
+		return false
+	}
+
+	hasSpecialChars := strings.ContainsAny(value, "-_")
+
+	allAlphaNum := true
+	for _, ch := range value {
+		isAlphaNum := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+		if !isAlphaNum && ch != '-' && ch != '_' {
+			allAlphaNum = false
+			break
+		}
+	}
+
+	return hasSpecialChars || allAlphaNum
 }
 
 // maskRequestHeaders returns a copy of the headers with sensitive values masked if needed.
@@ -174,8 +187,17 @@ func maskBody(body []byte, maskSecrets bool) string {
 
 	content := string(body)
 
-	// Sensitive field name patterns (case-insensitive matching in regex)
-	sensitivePatterns := []string{
+	sensitivePatterns := getSensitivePatterns()
+
+	content = maskJSONFields(content, sensitivePatterns)
+	content = maskFormFields(content, sensitivePatterns)
+
+	return content
+}
+
+// getSensitivePatterns returns the list of sensitive field name patterns.
+func getSensitivePatterns() []string {
+	return []string{
 		"api_key", "apikey", "api-key",
 		"token", "access_token", "accesstoken",
 		"secret", "password",
@@ -183,36 +205,43 @@ func maskBody(body []byte, maskSecrets bool) string {
 		"api_secret", "apisecret",
 		"bearer", "x-api-key", "x-auth-token",
 	}
+}
 
-	// Build regex patterns for JSON format: "field": "value" or "field": value
-	for _, pattern := range sensitivePatterns {
-		// Match JSON format: "fieldName": "stringValue" or "fieldName": 123
-		// Case-insensitive field matching
-		jsonPattern := fmt.Sprintf(`(?i)"%s"\s*:\s*"[^"]*"`, pattern)
-		re := regexp.MustCompile(jsonPattern)
-		content = re.ReplaceAllStringFunc(content, func(match string) string {
-			// Replace the value part while keeping the field name
-			before, _, ok := strings.Cut(match, ":")
-			if !ok {
-				return match
-			}
-			return before + `: "<MASKED>"`
-		})
-
-		// Also match numeric/boolean values: "fieldName": 123 or "fieldName": true
-		jsonNumPattern := fmt.Sprintf(`(?i)"%s"\s*:\s*(?:[0-9]+|true|false|null)`, pattern)
-		re = regexp.MustCompile(jsonNumPattern)
-		content = re.ReplaceAllString(content, fmt.Sprintf(`"%s": "<MASKED>"`, pattern))
+// maskJSONFields masks sensitive fields in JSON-formatted content.
+func maskJSONFields(content string, patterns []string) string {
+	for _, pattern := range patterns {
+		content = maskJSONStringValue(content, pattern)
+		content = maskJSONNumericValue(content, pattern)
 	}
+	return content
+}
 
-	// Build regex patterns for URL-encoded form data: field=value&
-	for _, pattern := range sensitivePatterns {
-		// Match form data: fieldName=value& or fieldName=value (end of string)
-		// Case-insensitive field matching
+// maskJSONStringValue masks JSON string values for a specific field pattern.
+func maskJSONStringValue(content, pattern string) string {
+	jsonPattern := fmt.Sprintf(`(?i)"%s"\s*:\s*"[^"]*"`, pattern)
+	re := regexp.MustCompile(jsonPattern)
+	return re.ReplaceAllStringFunc(content, func(match string) string {
+		before, _, ok := strings.Cut(match, ":")
+		if !ok {
+			return match
+		}
+		return before + `: "<MASKED>"`
+	})
+}
+
+// maskJSONNumericValue masks JSON numeric/boolean values for a specific field pattern.
+func maskJSONNumericValue(content, pattern string) string {
+	jsonNumPattern := fmt.Sprintf(`(?i)"%s"\s*:\s*(?:[0-9]+|true|false|null)`, pattern)
+	re := regexp.MustCompile(jsonNumPattern)
+	return re.ReplaceAllString(content, fmt.Sprintf(`"%s": "<MASKED>"`, pattern))
+}
+
+// maskFormFields masks sensitive fields in URL-encoded form data.
+func maskFormFields(content string, patterns []string) string {
+	for _, pattern := range patterns {
 		formPattern := fmt.Sprintf(`(?i)%s=[^&]*`, pattern)
 		re := regexp.MustCompile(formPattern)
 		content = re.ReplaceAllString(content, fmt.Sprintf(`%s=<MASKED>`, pattern))
 	}
-
 	return content
 }

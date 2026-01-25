@@ -287,6 +287,26 @@ func (h *ProgressiveHandler) buildInvokeToolDefinition() mcp.Tool {
 }
 
 // handleSearchTools handles SearchTools requests.
+// formatSearchResults formats search results into a string.
+func formatSearchResults(results []ToolMetadata) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Found %d tool(s):\n\n", len(results))
+
+	for _, tool := range results {
+		sb.WriteString(fmt.Sprintf("**%s** (`%s`)\n", tool.Name, tool.ID))
+		if tool.Description != "" {
+			fmt.Fprintf(&sb, "  %s\n", tool.Description)
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(results) == 0 {
+		sb.WriteString("No tools found matching your query.\n")
+	}
+
+	return sb.String()
+}
+
 func (h *ProgressiveHandler) handleSearchTools(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
 		Query string `json:"query"`
@@ -303,72 +323,15 @@ func (h *ProgressiveHandler) handleSearchTools(_ context.Context, req *mcp.CallT
 		return errorResultProg("Search failed: %v", err), nil
 	}
 
-	// Format results
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Found %d tool(s):\n\n", len(results))
-
-	for _, tool := range results {
-		sb.WriteString(fmt.Sprintf("**%s** (`%s`)\n", tool.Name, tool.ID))
-		if tool.Description != "" {
-			fmt.Fprintf(&sb, "  %s\n", tool.Description)
-		}
-		sb.WriteString("\n")
-	}
-
-	if len(results) == 0 {
-		sb.WriteString("No tools found matching your query.\n")
-	}
-
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: sb.String()},
+			&mcp.TextContent{Text: formatSearchResults(results)},
 		},
 	}, nil
 }
 
-// handleLoadTool handles LoadTool requests.
-//
-//nolint:funlen // This function handles the complete load workflow including validation, caching, and response formatting.
-func (h *ProgressiveHandler) handleLoadTool(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var args struct {
-		ToolID string `json:"toolId"`
-	}
-
-	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
-		return errorResultProg("Invalid arguments: %v", err), nil
-	}
-
-	if args.ToolID == "" {
-		return errorResultProg("toolId is required"), nil
-	}
-
-	tool, fromCache, err := h.registry.Load(args.ToolID)
-	if err != nil {
-		return errorResultProg("Failed to load tool: %v", err), nil
-	}
-
-	// Format tool definition
-	var sb strings.Builder
-	if fromCache {
-		fmt.Fprintf(&sb, "Tool **%s** (from cache):\n\n", tool.Name)
-	} else {
-		fmt.Fprintf(&sb, "Tool **%s** (newly loaded):\n\n", tool.Name)
-	}
-
-	fmt.Fprintf(&sb, "**Description:** %s\n\n", tool.Description)
-	sb.WriteString("**Parameters:**\n")
-
-	// Extract and format input schema
-	inputSchema, ok := tool.InputSchema.(map[string]any)
-	if !ok {
-		sb.WriteString("(No parameters defined)\n")
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{Text: sb.String()},
-			},
-		}, nil
-	}
-
+// formatToolParameters extracts and formats parameters from input schema.
+func formatToolParameters(inputSchema map[string]any, sb *strings.Builder) {
 	if props, ok := inputSchema["properties"].(map[string]any); ok {
 		required := []string{}
 		if req, ok := inputSchema["required"].([]string); ok {
@@ -387,7 +350,6 @@ func (h *ProgressiveHandler) handleLoadTool(_ context.Context, req *mcp.CallTool
 			}
 
 			isRequired := slices.Contains(required, name)
-
 			reqMarker := ""
 			if isRequired {
 				reqMarker = " (required)"
@@ -398,13 +360,55 @@ func (h *ProgressiveHandler) handleLoadTool(_ context.Context, req *mcp.CallTool
 				desc = d
 			}
 
-			sb.WriteString(fmt.Sprintf("- `%s` (%s)%s: %s\n", name, typeStr, reqMarker, desc))
+			fmt.Fprintf(sb, "- `%s` (%s)%s: %s\n", name, typeStr, reqMarker, desc)
 		}
+	}
+}
+
+// formatToolDefinition formats tool definition into a string.
+func formatToolDefinition(tool mcp.Tool, fromCache bool) string {
+	var sb strings.Builder
+	if fromCache {
+		fmt.Fprintf(&sb, "Tool **%s** (from cache):\n\n", tool.Name)
+	} else {
+		fmt.Fprintf(&sb, "Tool **%s** (newly loaded):\n\n", tool.Name)
+	}
+
+	fmt.Fprintf(&sb, "**Description:** %s\n\n", tool.Description)
+	sb.WriteString("**Parameters:**\n")
+
+	inputSchema, ok := tool.InputSchema.(map[string]any)
+	if !ok {
+		sb.WriteString("(No parameters defined)\n")
+		return sb.String()
+	}
+
+	formatToolParameters(inputSchema, &sb)
+	return sb.String()
+}
+
+// handleLoadTool handles LoadTool requests.
+func (h *ProgressiveHandler) handleLoadTool(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		ToolID string `json:"toolId"`
+	}
+
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return errorResultProg("Invalid arguments: %v", err), nil
+	}
+
+	if args.ToolID == "" {
+		return errorResultProg("toolId is required"), nil
+	}
+
+	tool, fromCache, err := h.registry.Load(args.ToolID)
+	if err != nil {
+		return errorResultProg("Failed to load tool: %v", err), nil
 	}
 
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: sb.String()},
+			&mcp.TextContent{Text: formatToolDefinition(tool, fromCache)},
 		},
 	}, nil
 }

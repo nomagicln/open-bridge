@@ -191,25 +191,29 @@ func (w *LocalFileWatcher) watchLoop(ctx context.Context) {
 	}
 }
 
+// createFsWatcher creates a new fsnotify watcher for the directory.
+func createFsWatcher(dir string) (*fsnotify.Watcher, error) {
+	fsWatcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+	if err := fsWatcher.Add(dir); err != nil {
+		_ = fsWatcher.Close()
+		return nil, err
+	}
+	return fsWatcher, nil
+}
+
 // tryStartFsnotify attempts to start fsnotify watching.
 // Returns false if fsnotify is not available (unsupported OS, network filesystem, etc.)
 func (w *LocalFileWatcher) tryStartFsnotify() bool {
-	// Check if file and directory exist
 	dir := filepath.Dir(w.filePath)
 	if _, err := os.Stat(dir); err != nil {
 		return false
 	}
 
-	fsWatcher, err := fsnotify.NewWatcher()
+	fsWatcher, err := createFsWatcher(dir)
 	if err != nil {
-		// fsnotify not supported on this platform/filesystem
-		return false
-	}
-
-	// Watch the directory (fsnotify works better with directories)
-	if err := fsWatcher.Add(dir); err != nil {
-		// May fail on network filesystems (NFS, CIFS, etc.)
-		_ = fsWatcher.Close()
 		return false
 	}
 
@@ -297,10 +301,26 @@ func (w *LocalFileWatcher) handleFsEvent(event fsnotify.Event, targetName, dir s
 	return false
 }
 
+// readFileAndHash reads file content and computes its hash.
+func readFileAndHash(filePath string) ([]byte, string, error) {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, "", err
+	}
+	return content, computeHash(content), nil
+}
+
+// updateFileState updates the cached file state.
+func (w *LocalFileWatcher) updateFileState(info os.FileInfo, newHash string) {
+	w.mu.Lock()
+	w.lastModTime = info.ModTime()
+	w.lastHash = newHash
+	w.mu.Unlock()
+}
+
 // handleFileModified checks if file content actually changed.
 func (w *LocalFileWatcher) handleFileModified() {
-	// Small delay to ensure write is complete
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // Small delay to ensure write is complete
 
 	info, err := os.Stat(w.filePath)
 	if err != nil {
@@ -310,20 +330,17 @@ func (w *LocalFileWatcher) handleFileModified() {
 		return
 	}
 
-	content, err := os.ReadFile(w.filePath)
+	content, newHash, err := readFileAndHash(w.filePath)
 	if err != nil {
 		return
 	}
 
-	newHash := computeHash(content)
-
 	w.mu.Lock()
 	oldHash := w.lastHash
-	w.lastModTime = info.ModTime()
-	w.lastHash = newHash
 	w.mu.Unlock()
 
 	if newHash != oldHash {
+		w.updateFileState(info, newHash)
 		w.notifyHandlers(*w.newEvent(SpecChangeModified, content, nil))
 	}
 }
@@ -357,6 +374,11 @@ func (w *LocalFileWatcher) runPollingMode(ctx context.Context) {
 	}
 }
 
+// shouldCheckContent checks if we should read and compare file content.
+func shouldCheckContent(info os.FileInfo, lastModTime time.Time) bool {
+	return info.ModTime().After(lastModTime)
+}
+
 // pollCheck performs a single polling check for changes.
 func (w *LocalFileWatcher) pollCheck() *SpecChangeEvent {
 	info, err := os.Stat(w.filePath)
@@ -371,20 +393,16 @@ func (w *LocalFileWatcher) pollCheck() *SpecChangeEvent {
 	lastModTime, lastHash := w.lastModTime, w.lastHash
 	w.mu.RUnlock()
 
-	if !info.ModTime().After(lastModTime) {
+	if !shouldCheckContent(info, lastModTime) {
 		return nil
 	}
 
-	content, err := os.ReadFile(w.filePath)
+	content, newHash, err := readFileAndHash(w.filePath)
 	if err != nil {
 		return w.newEvent(SpecChangeError, nil, err)
 	}
 
-	newHash := computeHash(content)
-	w.mu.Lock()
-	w.lastModTime = info.ModTime()
-	w.lastHash = newHash
-	w.mu.Unlock()
+	w.updateFileState(info, newHash)
 
 	if newHash != lastHash {
 		return w.newEvent(SpecChangeModified, content, nil)
@@ -450,28 +468,21 @@ func (w *LocalFileWatcher) checkForChanges() (*SpecChangeEvent, error) {
 	lastModTime, lastHash := w.lastModTime, w.lastHash
 	w.mu.RUnlock()
 
-	if !info.ModTime().After(lastModTime) {
+	if !shouldCheckContent(info, lastModTime) {
 		return nil, nil
 	}
 
-	content, err := os.ReadFile(w.filePath)
+	content, newHash, err := readFileAndHash(w.filePath)
 	if err != nil {
 		return w.newEvent(SpecChangeError, nil, err), err
 	}
 
-	newHash := computeHash(content)
 	if newHash == lastHash {
-		w.mu.Lock()
-		w.lastModTime = info.ModTime()
-		w.mu.Unlock()
+		w.updateFileState(info, newHash)
 		return nil, nil
 	}
 
-	w.mu.Lock()
-	w.lastModTime = info.ModTime()
-	w.lastHash = newHash
-	w.mu.Unlock()
-
+	w.updateFileState(info, newHash)
 	return w.newEvent(SpecChangeModified, content, nil), nil
 }
 

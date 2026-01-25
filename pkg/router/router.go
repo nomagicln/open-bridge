@@ -127,6 +127,15 @@ func (r *Router) parseMCPOptions(args []string, defaultProfile string) mcpOption
 		port:        "8080",
 	}
 
+	opts.parseTransport(args)
+	opts.parsePort(args)
+	opts.ensureProfile(defaultProfile)
+
+	return opts
+}
+
+// parseTransport parses the transport option from args.
+func (opts *mcpOptions) parseTransport(args []string) {
 	for i, arg := range args {
 		if arg == "--transport" && i+1 < len(args) {
 			opts.transport = args[i+1]
@@ -134,6 +143,12 @@ func (r *Router) parseMCPOptions(args []string, defaultProfile string) mcpOption
 		if after, ok := strings.CutPrefix(arg, "--transport="); ok {
 			opts.transport = after
 		}
+	}
+}
+
+// parsePort parses the port option from args.
+func (opts *mcpOptions) parsePort(args []string) {
+	for i, arg := range args {
 		if arg == "--port" && i+1 < len(args) {
 			opts.port = args[i+1]
 		}
@@ -141,11 +156,13 @@ func (r *Router) parseMCPOptions(args []string, defaultProfile string) mcpOption
 			opts.port = after
 		}
 	}
+}
 
+// ensureProfile ensures a profile is set, using default if not provided.
+func (opts *mcpOptions) ensureProfile(defaultProfile string) {
 	if opts.profileName == "" {
 		opts.profileName = defaultProfile
 	}
-	return opts
 }
 
 // registerProgressiveHandler creates and registers a progressive disclosure handler.

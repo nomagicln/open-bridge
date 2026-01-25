@@ -58,24 +58,23 @@ func (p *Provider) CompleteVerbs(appName, prefix string) []string {
 
 	tree := p.mapper.BuildCommandTree(specDoc)
 
-	// Collect unique verbs
+	verbs := p.collectVerbs(tree, prefix)
+
+	return verbs
+}
+
+// collectVerbs collects unique verbs from the command tree.
+func (p *Provider) collectVerbs(tree *semantic.CommandTree, prefix string) []string {
 	verbs := make(map[string]bool)
 	for _, res := range tree.RootResources {
 		for verb := range res.Operations {
-			if prefix == "" || strings.HasPrefix(verb, prefix) {
+			if matchesPrefix(verb, prefix) {
 				verbs[verb] = true
 			}
 		}
 	}
 
-	// Convert to sorted slice
-	result := make([]string, 0, len(verbs))
-	for verb := range verbs {
-		result = append(result, verb)
-	}
-	sort.Strings(result)
-
-	return result
+	return sortedKeys(verbs)
 }
 
 // CompleteResources returns available resources for an app.
@@ -87,15 +86,18 @@ func (p *Provider) CompleteResources(appName, prefix string) []string {
 
 	tree := p.mapper.BuildCommandTree(specDoc)
 
-	// Collect resources
+	return p.collectResources(tree, prefix)
+}
+
+// collectResources collects resource names from the command tree.
+func (p *Provider) collectResources(tree *semantic.CommandTree, prefix string) []string {
 	resources := make([]string, 0, len(tree.RootResources))
 	for resource := range tree.RootResources {
-		if prefix == "" || strings.HasPrefix(resource, prefix) {
+		if matchesPrefix(resource, prefix) {
 			resources = append(resources, resource)
 		}
 	}
 	sort.Strings(resources)
-
 	return resources
 }
 
@@ -108,18 +110,25 @@ func (p *Provider) CompleteResourcesForVerb(appName, verb, prefix string) []stri
 
 	tree := p.mapper.BuildCommandTree(specDoc)
 
-	// Collect resources that have this verb
+	return p.collectResourcesWithVerb(tree, verb, prefix)
+}
+
+// collectResourcesWithVerb collects resources that support a specific verb.
+func (p *Provider) collectResourcesWithVerb(tree *semantic.CommandTree, verb, prefix string) []string {
 	var resources []string
 	for resourceName, res := range tree.RootResources {
-		if _, ok := res.Operations[verb]; ok {
-			if prefix == "" || strings.HasPrefix(resourceName, prefix) {
-				resources = append(resources, resourceName)
-			}
+		if hasVerb(res, verb) && matchesPrefix(resourceName, prefix) {
+			resources = append(resources, resourceName)
 		}
 	}
 	sort.Strings(resources)
-
 	return resources
+}
+
+// hasVerb checks if a resource has a specific verb.
+func hasVerb(res *semantic.Resource, verb string) bool {
+	_, ok := res.Operations[verb]
+	return ok
 }
 
 // CompleteVerbsForResource returns available verbs for a given resource.
@@ -131,21 +140,23 @@ func (p *Provider) CompleteVerbsForResource(appName, resource, prefix string) []
 
 	tree := p.mapper.BuildCommandTree(specDoc)
 
-	// Find resource
+	return p.collectVerbsForResource(tree, resource, prefix)
+}
+
+// collectVerbsForResource collects verbs for a specific resource.
+func (p *Provider) collectVerbsForResource(tree *semantic.CommandTree, resource, prefix string) []string {
 	res, ok := tree.RootResources[resource]
 	if !ok {
 		return nil
 	}
 
-	// Collect verbs for this resource
 	verbs := make([]string, 0, len(res.Operations))
 	for verb := range res.Operations {
-		if prefix == "" || strings.HasPrefix(verb, prefix) {
+		if matchesPrefix(verb, prefix) {
 			verbs = append(verbs, verb)
 		}
 	}
 	sort.Strings(verbs)
-
 	return verbs
 }
 
@@ -326,53 +337,82 @@ func findBodyPropertyEnumValues(opSpec *openapi3.Operation, flagName string) []s
 
 // CompleteFlagValues returns possible values for a flag.
 func (p *Provider) CompleteFlagValues(appName, resource, verb, flagName string) []string {
-	// Remove -- or - prefix if present
-	flagName = strings.TrimPrefix(flagName, "--")
-	flagName = strings.TrimPrefix(flagName, "-")
+	cleanFlagName := cleanFlagName(flagName)
 
-	// Check common flags first
-	if values, handled := p.completeCommonFlagValues(appName, flagName); handled {
+	if values, handled := p.completeCommonFlagValues(appName, cleanFlagName); handled {
 		return values
 	}
 
+	opSpec, err := p.getOperationSpec(appName, resource, verb)
+	if err != nil || opSpec == nil {
+		return nil
+	}
+
+	return findEnumValues(opSpec, cleanFlagName)
+}
+
+// cleanFlagName removes -- or - prefix from flag names.
+func cleanFlagName(flagName string) string {
+	flagName = strings.TrimPrefix(flagName, "--")
+	flagName = strings.TrimPrefix(flagName, "-")
+	return flagName
+}
+
+// getOperationSpec retrieves the operation specification for a command.
+func (p *Provider) getOperationSpec(appName, resource, verb string) (*openapi3.Operation, error) {
 	specDoc, err := p.loadSpec(appName)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
-	opSpec := p.getOperationSpecForCommand(specDoc, resource, verb)
-	if opSpec == nil {
-		return nil
-	}
+	return p.getOperationSpecForCommand(specDoc, resource, verb), nil
+}
 
-	// Check parameters for enum values
+// findEnumValues searches for enum values in both parameters and request body.
+func findEnumValues(opSpec *openapi3.Operation, flagName string) []string {
 	if values := findParameterEnumValues(opSpec, flagName); values != nil {
 		return values
 	}
 
-	// Check request body schema for enum values
 	return findBodyPropertyEnumValues(opSpec, flagName)
 }
 
 // loadSpec loads and caches the OpenAPI spec for an app.
 func (p *Provider) loadSpec(appName string) (*openapi3.T, error) {
-	// Try to get cached spec
-	if specDoc, ok := p.specParser.GetCachedSpec(appName); ok {
+	if specDoc, ok := p.getCachedSpec(appName); ok {
 		return specDoc, nil
 	}
 
-	// Load app config
+	return p.loadAndCacheSpec(appName)
+}
+
+// getCachedSpec retrieves a cached spec if available.
+func (p *Provider) getCachedSpec(appName string) (*openapi3.T, bool) {
+	return p.specParser.GetCachedSpec(appName)
+}
+
+// loadAndCacheSpec loads and caches a spec from the app config.
+func (p *Provider) loadAndCacheSpec(appName string) (*openapi3.T, error) {
 	appConfig, err := p.configMgr.GetAppConfig(appName)
 	if err != nil {
 		return nil, err
 	}
 
-	// Load and cache spec with persistent caching
 	ctx := context.Background()
-	specDoc, err := p.specParser.LoadSpecWithPersistentCache(ctx, appConfig.SpecSource, appName)
-	if err != nil {
-		return nil, err
-	}
+	return p.specParser.LoadSpecWithPersistentCache(ctx, appConfig.SpecSource, appName)
+}
 
-	return specDoc, nil
+// matchesPrefix checks if a string matches the given prefix.
+func matchesPrefix(s, prefix string) bool {
+	return prefix == "" || strings.HasPrefix(s, prefix)
+}
+
+// sortedKeys converts a map's keys to a sorted slice.
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

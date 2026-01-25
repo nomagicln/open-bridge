@@ -9,6 +9,21 @@ import (
 	"strings"
 )
 
+// writeHeaderValues通用函数，将HTTP头部写入缓冲区
+func writeHeaderValues(buf *bytes.Buffer, headers http.Header, escapeFunc func(string) string) {
+	for key := range headers {
+		values := headers[key]
+		for _, value := range values {
+			buf.WriteString("    '")
+			buf.WriteString(key)
+			buf.WriteString("': '")
+			escapedValue := escapeFunc(value)
+			buf.WriteString(escapedValue)
+			buf.WriteString("',\n")
+		}
+	}
+}
+
 // NodeJSGenerator generates Node.js fetch API code from HTTP requests.
 type NodeJSGenerator struct {
 	opts Options
@@ -58,47 +73,68 @@ func (g *NodeJSGenerator) writeHeaders(buf *bytes.Buffer, headers http.Header) {
 	}
 
 	buf.WriteString("  headers: {\n")
-	for key := range headers {
-		values := headers[key]
-		for _, value := range values {
-			buf.WriteString("    '")
-			buf.WriteString(key)
-			buf.WriteString("': '")
-			escapedValue := escapeString(value)
-			buf.WriteString(escapedValue)
-			buf.WriteString("',\n")
-		}
-	}
+	g.writeHeaderValues(buf, headers)
 	buf.WriteString("  },\n")
 }
 
+// writeHeaderValues writes header key-value pairs.
+func (g *NodeJSGenerator) writeHeaderValues(buf *bytes.Buffer, headers http.Header) {
+	writeHeaderValues(buf, headers, escapeString)
+}
+
 func (g *NodeJSGenerator) writeBody(buf *bytes.Buffer, req *http.Request) error {
+	body, err := readRequestBody(req)
+	if err != nil {
+		return err
+	}
+
+	bodyStr := maskBody(body, g.opts.MaskSecrets)
+
+	if isJSON(body) {
+		g.writeJSONBody(buf, body)
+	} else {
+		g.writeStringBody(buf, bodyStr)
+	}
+
+	return nil
+}
+
+// readRequestBody reads and restores the request body.
+func readRequestBody(req *http.Request) ([]byte, error) {
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read request body: %w", err)
+		return nil, fmt.Errorf("failed to read request body: %w", err)
 	}
 
 	// Restore body for potential future use
 	req.Body = io.NopCloser(bytes.NewBuffer(body))
 
-	bodyStr := maskBody(body, g.opts.MaskSecrets)
+	return body, nil
+}
 
-	// Try to parse as JSON for better formatting
+// isJSON checks if the body content is valid JSON.
+func isJSON(body []byte) bool {
 	var jsonData any
-	if err := json.Unmarshal(body, &jsonData); err == nil {
-		// Valid JSON, format it nicely
-		buf.WriteString("  body: JSON.stringify(")
-		jsonBytes, _ := json.MarshalIndent(jsonData, "    ", "  ")
-		buf.WriteString(string(jsonBytes))
-		buf.WriteString("),\n")
-	} else {
-		// Not JSON, treat as string
-		buf.WriteString("  body: '")
-		escaped := escapeString(bodyStr)
-		buf.WriteString(escaped)
-		buf.WriteString("',\n")
-	}
-	return nil
+	return json.Unmarshal(body, &jsonData) == nil
+}
+
+// writeJSONBody writes a formatted JSON body.
+func (g *NodeJSGenerator) writeJSONBody(buf *bytes.Buffer, body []byte) {
+	var jsonData any
+	_ = json.Unmarshal(body, &jsonData)
+
+	buf.WriteString("  body: JSON.stringify(")
+	jsonBytes, _ := json.MarshalIndent(jsonData, "    ", "  ")
+	buf.WriteString(string(jsonBytes))
+	buf.WriteString("),\n")
+}
+
+// writeStringBody writes a string body.
+func (g *NodeJSGenerator) writeStringBody(buf *bytes.Buffer, bodyStr string) {
+	buf.WriteString("  body: '")
+	escaped := escapeString(bodyStr)
+	buf.WriteString(escaped)
+	buf.WriteString("',\n")
 }
 
 // escapeString escapes special characters for JavaScript string literals.

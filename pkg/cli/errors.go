@@ -259,15 +259,9 @@ func (f *ErrorFormatter) formatSpecLoadError(errMsg string) string {
 	)
 }
 
-// FormatHTTPError formats HTTP error responses with status codes and details.
-func (f *ErrorFormatter) FormatHTTPError(resp *http.Response, body []byte) string {
-	var sb strings.Builder
-
-	// Format status line
-	sb.WriteString(fmt.Sprintf("Error: HTTP %d %s\n\n", resp.StatusCode, resp.Status))
-
-	// Add user-friendly explanation based on status code
-	switch resp.StatusCode {
+// writeStatusExplanation writes user-friendly explanation for HTTP status code.
+func writeStatusExplanation(sb *strings.Builder, statusCode int) {
+	switch statusCode {
 	case http.StatusBadRequest:
 		sb.WriteString("The request was invalid or malformed.\n")
 	case http.StatusUnauthorized:
@@ -294,21 +288,26 @@ func (f *ErrorFormatter) FormatHTTPError(resp *http.Response, body []byte) strin
 	case http.StatusGatewayTimeout:
 		sb.WriteString("The server did not receive a timely response from an upstream server.\n")
 	default:
-		// No additional explanation for unrecognized status codes
+		sb.WriteString("An unexpected error occurred.\n")
 	}
+}
 
-	// Add response body if available
-	if len(body) > 0 {
-		sb.WriteString("\nResponse:\n")
-		// Try to format as JSON
-		var prettyBody string
-		if strings.HasPrefix(strings.TrimSpace(string(body)), "{") || strings.HasPrefix(strings.TrimSpace(string(body)), "[") {
-			prettyBody = string(body)
-		} else {
-			prettyBody = string(body)
-		}
-		sb.WriteString(prettyBody)
+// writeResponseBody writes the response body to the error message.
+func writeResponseBody(sb *strings.Builder, body []byte) {
+	if len(body) == 0 {
+		return
 	}
+	sb.WriteString("\nResponse:\n")
+	sb.WriteString(string(body))
+}
+
+// FormatHTTPError formats HTTP error responses with status codes and details.
+func (f *ErrorFormatter) FormatHTTPError(resp *http.Response, body []byte) string {
+	var sb strings.Builder
+
+	fmt.Fprintf(&sb, "Error: HTTP %d %s\n\n", resp.StatusCode, resp.Status)
+	writeStatusExplanation(&sb, resp.StatusCode)
+	writeResponseBody(&sb, body)
 
 	return sb.String()
 }
@@ -391,7 +390,7 @@ func writeOutputFlags(sb *strings.Builder) {
 func (f *ErrorFormatter) FormatUsageHelpWithBody(appName, resource, verb string, operation *openapi3.Operation, opParams openapi3.Parameters, requestBody *openapi3.RequestBody) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("Usage: %s %s %s [flags]\n\n", appName, resource, verb))
+	fmt.Fprintf(&sb, "Usage: %s %s %s [flags]\n\n", appName, resource, verb)
 
 	// Description
 	if operation.Summary != "" {
@@ -488,14 +487,14 @@ func (f *ErrorFormatter) formatBodyProperty(name string, schemaRef *openapi3.Sch
 // formatExampleWithBody formats an example command including body parameters.
 func (f *ErrorFormatter) formatExampleWithBody(appName, resource, verb string, opParams openapi3.Parameters, bodyProps map[string]*openapi3.SchemaRef, requiredBodyProps []string) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("  %s %s %s", appName, resource, verb))
+	fmt.Fprintf(&sb, "  %s %s %s", appName, resource, verb)
 
 	// Add example values for required URL parameters
 	for _, paramRef := range opParams {
 		param := paramRef.Value
 		if param.Required {
 			exampleValue := f.getExampleValue(param)
-			sb.WriteString(fmt.Sprintf(" --%s %s", param.Name, exampleValue))
+			fmt.Fprintf(&sb, " --%s %s", param.Name, exampleValue)
 		}
 	}
 
@@ -503,7 +502,7 @@ func (f *ErrorFormatter) formatExampleWithBody(appName, resource, verb string, o
 	for _, propName := range requiredBodyProps {
 		if propSchema, ok := bodyProps[propName]; ok {
 			exampleValue := f.getExampleValueForSchema(propName, propSchema)
-			sb.WriteString(fmt.Sprintf(" --%s %s", propName, exampleValue))
+			fmt.Fprintf(&sb, " --%s %s", propName, exampleValue)
 		}
 	}
 

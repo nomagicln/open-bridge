@@ -48,76 +48,102 @@ func NewToolRegistry() *ToolRegistry {
 
 // BuildFromSpec populates the registry from an OpenAPI specification.
 // It extracts all operations and converts them to tool definitions and metadata.
-//
-//nolint:funlen // This function handles the complete spec processing workflow.
 func (r *ToolRegistry) BuildFromSpec(spec *openapi3.T, safetyConfig *config.SafetyConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Clear existing data
-	r.allTools = make(map[string]mcp.Tool)
-	r.metadata = make([]ToolMetadata, 0)
-	r.operationMap = make(map[string]OperationInfo)
-	// Note: we don't clear loadedTools to preserve cache across spec reloads
-
+	r.clearRegistry()
 	if spec == nil || spec.Paths == nil {
 		return nil
 	}
 
-	for path, pathItem := range spec.Paths.Map() {
-		operations := map[string]*openapi3.Operation{
-			"GET":    pathItem.Get,
-			"POST":   pathItem.Post,
-			"PUT":    pathItem.Put,
-			"PATCH":  pathItem.Patch,
-			"DELETE": pathItem.Delete,
-		}
+	r.processSpecPaths(spec.Paths.Map(), safetyConfig)
+	return nil
+}
 
-		for method, op := range operations {
-			if op == nil {
-				continue
-			}
+// clearRegistry clears the registry data.
+func (r *ToolRegistry) clearRegistry() {
+	r.allTools = make(map[string]mcp.Tool)
+	r.metadata = make([]ToolMetadata, 0)
+	r.operationMap = make(map[string]OperationInfo)
+}
 
-			// Apply safety controls
-			if safetyConfig != nil && safetyConfig.ReadOnlyMode && method != "GET" {
-				continue
-			}
+// processSpecPaths processes all paths in the OpenAPI spec.
+func (r *ToolRegistry) processSpecPaths(paths map[string]*openapi3.PathItem, safetyConfig *config.SafetyConfig) {
+	for path, pathItem := range paths {
+		r.processPathItem(path, pathItem, safetyConfig)
+	}
+}
 
-			// Generate tool ID (use smart naming to avoid redundancy)
-			toolID := GenerateToolName(method, path, op)
-
-			// Check if tool is allowed
-			if !isToolAllowedByConfig(toolID, safetyConfig) {
-				continue
-			}
-
-			// Build full tool definition
-			tool := convertOperationToMCPTool(method, path, op)
-
-			// Build metadata for search
-			meta := ToolMetadata{
-				ID:          toolID,
-				Name:        tool.Name,
-				Description: tool.Description,
-				Method:      method,
-				Path:        path,
-			}
-			if op.Tags != nil {
-				meta.Tags = op.Tags
-			}
-
-			// Store in registry
-			r.allTools[toolID] = tool
-			r.metadata = append(r.metadata, meta)
-			r.operationMap[toolID] = OperationInfo{
-				Method:    method,
-				Path:      path,
-				Operation: op,
-			}
-		}
+// processPathItem processes a single path item and its operations.
+func (r *ToolRegistry) processPathItem(path string, pathItem *openapi3.PathItem, safetyConfig *config.SafetyConfig) {
+	operations := map[string]*openapi3.Operation{
+		"GET":    pathItem.Get,
+		"POST":   pathItem.Post,
+		"PUT":    pathItem.Put,
+		"PATCH":  pathItem.Patch,
+		"DELETE": pathItem.Delete,
 	}
 
-	return nil
+	for method, op := range operations {
+		r.processOperation(path, method, op, safetyConfig)
+	}
+}
+
+// processOperation processes a single operation.
+func (r *ToolRegistry) processOperation(path, method string, op *openapi3.Operation, safetyConfig *config.SafetyConfig) {
+	if op == nil {
+		return
+	}
+
+	if !r.isOperationAllowed(method, safetyConfig) {
+		return
+	}
+
+	toolID := GenerateToolName(method, path, op)
+
+	if !isToolAllowedByConfig(toolID, safetyConfig) {
+		return
+	}
+
+	r.registerTool(path, method, op, toolID)
+}
+
+// isOperationAllowed checks if an operation is allowed by safety config.
+func (r *ToolRegistry) isOperationAllowed(method string, safetyConfig *config.SafetyConfig) bool {
+	if safetyConfig != nil && safetyConfig.ReadOnlyMode && method != "GET" {
+		return false
+	}
+	return true
+}
+
+// registerTool registers a tool in the registry.
+func (r *ToolRegistry) registerTool(path, method string, op *openapi3.Operation, toolID string) {
+	tool := convertOperationToMCPTool(method, path, op)
+	meta := r.buildToolMetadata(toolID, tool, method, path)
+
+	if op != nil && op.Tags != nil {
+		meta.Tags = op.Tags
+	}
+
+	r.allTools[toolID] = tool
+	r.metadata = append(r.metadata, meta)
+	r.operationMap[toolID] = OperationInfo{
+		Method:    method,
+		Path:      path,
+		Operation: op,
+	}
+}
+
+// buildToolMetadata creates metadata for a tool.
+func (r *ToolRegistry) buildToolMetadata(toolID string, tool mcp.Tool, method, path string) ToolMetadata {
+	return ToolMetadata{
+		ID:          toolID,
+		Name:        tool.Name,
+		Description: tool.Description,
+		Method:      method,
+		Path:        path,
+	}
 }
 
 // convertOperationToMCPTool converts an OpenAPI operation to an MCP tool.

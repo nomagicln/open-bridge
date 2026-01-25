@@ -402,62 +402,78 @@ func parseRequestParamsAuto(args []string, params *RequestParams, opSpec *openap
 //
 // Returns the parsed value (string, any, []any, etc.) and error if parsing fails.
 // File-related errors include: file not found, read permission denied, invalid JSON/YAML.
-func ParseValue(value string) (any, error) {
-	// Handle quoted strings
-	if len(value) >= 2 && (value[0] == '"' && value[len(value)-1] == '"' || value[0] == '\'' && value[len(value)-1] == '\'') {
-		// Remove quotes
-		unquoted := value[1 : len(value)-1]
-		// Handle escape sequences
-		unquoted = strings.ReplaceAll(unquoted, "\\n", "\n")
-		unquoted = strings.ReplaceAll(unquoted, "\\t", "\t")
-		unquoted = strings.ReplaceAll(unquoted, "\\\"", "\"")
-		unquoted = strings.ReplaceAll(unquoted, "\\'", "'")
-		unquoted = strings.ReplaceAll(unquoted, "\\\\", "\\")
-		return unquoted, nil
+// unquoteString removes quotes from a quoted string and handles escape sequences.
+func unquoteString(value string) (string, error) {
+	if len(value) < 2 {
+		return "", fmt.Errorf("invalid quoted string")
 	}
 
-	// Handle file references
-	if strings.HasPrefix(value, "@") {
-		filePath := value[1:]
-		absPath, err := resolveFilePath(filePath)
-		if err != nil {
-			return nil, err
-		}
-		return readFileContent(absPath)
+	quote := value[0]
+	if value[len(value)-1] != quote {
+		return "", fmt.Errorf("mismatched quotes")
 	}
 
-	// Handle direct values - try to parse as specific types
-	// Try boolean
+	unquoted := value[1 : len(value)-1]
+	replacements := map[string]string{
+		"\\n":  "\n",
+		"\\t":  "\t",
+		"\\\"": "\"",
+		"\\'":  "'",
+		"\\\\": "\\",
+	}
+
+	for escaped, actual := range replacements {
+		unquoted = strings.ReplaceAll(unquoted, escaped, actual)
+	}
+	return unquoted, nil
+}
+
+// parseFileReference parses a file reference starting with @.
+func parseFileReference(value string) (any, error) {
+	filePath := value[1:]
+	absPath, err := resolveFilePath(filePath)
+	if err != nil {
+		return nil, err
+	}
+	return readFileContent(absPath)
+}
+
+// parseLiteralValue parses a literal value (boolean, null, integer, float, JSON).
+func parseLiteralValue(value string) (any, error) {
 	if value == "true" || value == "false" {
 		return value == "true", nil
 	}
-
-	// Try null
 	if value == "null" {
 		return nil, nil
 	}
-
-	// Try integer
 	if intVal, err := strconv.ParseInt(value, 10, 64); err == nil {
 		return intVal, nil
 	}
-
-	// Try float
 	if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
 		return floatVal, nil
 	}
-
-	// Try JSON object/array
-	if (strings.HasPrefix(value, "{") && strings.HasSuffix(value, "}")) ||
-		(strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]")) {
+	if strings.HasPrefix(value, "{") && strings.HasSuffix(value, "}") ||
+		strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
 		var result any
 		if err := json.Unmarshal([]byte(value), &result); err == nil {
 			return result, nil
 		}
 	}
-
-	// Return as string
 	return value, nil
+}
+
+func ParseValue(value string) (any, error) {
+	if len(value) >= 2 {
+		if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+			return unquoteString(value)
+		}
+	}
+
+	if strings.HasPrefix(value, "@") {
+		return parseFileReference(value)
+	}
+
+	return parseLiteralValue(value)
 }
 
 // BuildNestedBody constructs nested JSON objects from flat Body parameters using JSONPath.

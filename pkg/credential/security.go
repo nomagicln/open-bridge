@@ -176,6 +176,41 @@ func NewCredentialValidator() *CredentialValidator {
 }
 
 // Validate validates a credential.
+// validateBearerToken validates bearer token credential.
+func validateBearerToken(cred *Credential) error {
+	if cred.Token == "" {
+		return fmt.Errorf("bearer token cannot be empty")
+	}
+	return nil
+}
+
+// validateAPIKey validates API key credential.
+func validateAPIKey(cred *Credential) error {
+	if cred.Token == "" {
+		return fmt.Errorf("API key cannot be empty")
+	}
+	return nil
+}
+
+// validateBasicAuth validates basic authentication credential.
+func validateBasicAuth(cred *Credential) error {
+	if cred.Username == "" {
+		return fmt.Errorf("username cannot be empty")
+	}
+	if cred.Password == "" {
+		return fmt.Errorf("password cannot be empty")
+	}
+	return nil
+}
+
+// validateOAuth2 validates OAuth2 credential.
+func validateOAuth2(cred *Credential) error {
+	if cred.AccessToken == "" {
+		return fmt.Errorf("access token cannot be empty")
+	}
+	return nil
+}
+
 func (v *CredentialValidator) Validate(cred *Credential) error {
 	if cred == nil {
 		return fmt.Errorf("credential is nil")
@@ -183,29 +218,16 @@ func (v *CredentialValidator) Validate(cred *Credential) error {
 
 	switch cred.Type {
 	case CredentialTypeBearer:
-		if cred.Token == "" {
-			return fmt.Errorf("bearer token cannot be empty")
-		}
+		return validateBearerToken(cred)
 	case CredentialTypeAPIKey:
-		if cred.Token == "" {
-			return fmt.Errorf("API key cannot be empty")
-		}
+		return validateAPIKey(cred)
 	case CredentialTypeBasic:
-		if cred.Username == "" {
-			return fmt.Errorf("username cannot be empty")
-		}
-		if cred.Password == "" {
-			return fmt.Errorf("password cannot be empty")
-		}
+		return validateBasicAuth(cred)
 	case CredentialTypeOAuth2:
-		if cred.AccessToken == "" {
-			return fmt.Errorf("access token cannot be empty")
-		}
+		return validateOAuth2(cred)
 	default:
 		return fmt.Errorf("unknown credential type: %s", cred.Type)
 	}
-
-	return nil
 }
 
 // ValidateNonEmpty checks if a credential has non-empty values.
@@ -278,6 +300,25 @@ func IsCredentialNotFound(err error) bool {
 }
 
 // RedactCredential creates a safe-to-log version of a credential.
+// redactTokenFields redacts token fields for OAuth2 credentials.
+func redactOAuth2Fields(cred *Credential, redacted map[string]any) {
+	redacted["access_token"] = redactString(cred.AccessToken)
+	redacted["refresh_token"] = redactString(cred.RefreshToken)
+	if !cred.ExpiresAt.IsZero() {
+		redacted["expires_at"] = cred.ExpiresAt.String()
+	}
+}
+
+// addMetadataFields adds timestamp metadata to redacted credential.
+func addMetadataFields(cred *Credential, redacted map[string]any) {
+	if !cred.CreatedAt.IsZero() {
+		redacted["created_at"] = cred.CreatedAt.String()
+	}
+	if !cred.UpdatedAt.IsZero() {
+		redacted["updated_at"] = cred.UpdatedAt.String()
+	}
+}
+
 func RedactCredential(cred *Credential) map[string]any {
 	if cred == nil {
 		return nil
@@ -287,35 +328,23 @@ func RedactCredential(cred *Credential) map[string]any {
 		"type": string(cred.Type),
 	}
 
-	// Never include actual credential values
 	switch cred.Type {
 	case CredentialTypeBearer:
 		redacted["token"] = redactString(cred.Token)
 	case CredentialTypeAPIKey:
 		redacted["api_key"] = redactString(cred.Token)
 	case CredentialTypeBasic:
-		redacted["username"] = cred.Username // Username is typically not secret
+		redacted["username"] = cred.Username
 		redacted["password"] = "[REDACTED]"
 	case CredentialTypeOAuth2:
-		redacted["access_token"] = redactString(cred.AccessToken)
-		redacted["refresh_token"] = redactString(cred.RefreshToken)
-		if !cred.ExpiresAt.IsZero() {
-			redacted["expires_at"] = cred.ExpiresAt.String()
-		}
+		redactOAuth2Fields(cred, redacted)
 	default:
-		// Unknown credential type - redact any token-like field
 		if cred.Token != "" {
 			redacted["token"] = redactString(cred.Token)
 		}
 	}
 
-	if !cred.CreatedAt.IsZero() {
-		redacted["created_at"] = cred.CreatedAt.String()
-	}
-	if !cred.UpdatedAt.IsZero() {
-		redacted["updated_at"] = cred.UpdatedAt.String()
-	}
-
+	addMetadataFields(cred, redacted)
 	return redacted
 }
 

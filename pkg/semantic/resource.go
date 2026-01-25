@@ -134,41 +134,44 @@ func (e *ResourceExtractor) Extract(path string, operation *openapi3.Operation) 
 	return result
 }
 
+// actionPrefixes contains common action verb prefixes.
+var actionPrefixes = []string{
+	"find", "search", "query", "filter",
+	"list", "get", "fetch", "load",
+	"create", "add", "new",
+	"update", "modify", "edit", "patch",
+	"delete", "remove", "clear",
+	"check", "verify", "validate",
+	"enable", "disable", "activate", "deactivate",
+	"start", "stop", "restart", "pause", "resume",
+	"export", "import", "download", "upload",
+	"sync", "refresh", "reset",
+	"approve", "reject", "cancel",
+	"publish", "unpublish", "archive", "unarchive",
+	"lock", "unlock",
+	"send", "resend",
+	"clone", "copy", "move", "rename",
+	"batch", "bulk",
+}
+
+// hasValidActionSuffix checks if an action prefix is followed by a valid suffix.
+func hasValidActionSuffix(segment, prefix string) bool {
+	if len(segment) <= len(prefix) {
+		return false
+	}
+	nextChar := segment[len(prefix)]
+	return nextChar >= 'A' && nextChar <= 'Z' || nextChar == '_' || nextChar == '-'
+}
+
 // isActionSegment checks if a path segment represents an action rather than a resource.
 // Common patterns: findByX, searchByX, listX, getX, createX, updateX, deleteX, etc.
 func (e *ResourceExtractor) isActionSegment(segment string) bool {
 	lower := strings.ToLower(segment)
-
-	// Action verb prefixes
-	actionPrefixes := []string{
-		"find", "search", "query", "filter",
-		"list", "get", "fetch", "load",
-		"create", "add", "new",
-		"update", "modify", "edit", "patch",
-		"delete", "remove", "clear",
-		"check", "verify", "validate",
-		"enable", "disable", "activate", "deactivate",
-		"start", "stop", "restart", "pause", "resume",
-		"export", "import", "download", "upload",
-		"sync", "refresh", "reset",
-		"approve", "reject", "cancel",
-		"publish", "unpublish", "archive", "unarchive",
-		"lock", "unlock",
-		"send", "resend",
-		"clone", "copy", "move", "rename",
-		"batch", "bulk",
-	}
-
 	for _, prefix := range actionPrefixes {
-		if strings.HasPrefix(lower, prefix) && len(segment) > len(prefix) {
-			// Make sure it's followed by another word (camelCase or separator)
-			nextChar := segment[len(prefix)]
-			if nextChar >= 'A' && nextChar <= 'Z' || nextChar == '_' || nextChar == '-' {
-				return true
-			}
+		if strings.HasPrefix(lower, prefix) && hasValidActionSuffix(segment, prefix) {
+			return true
 		}
 	}
-
 	return false
 }
 

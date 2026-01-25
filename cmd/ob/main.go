@@ -398,38 +398,42 @@ Example:
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeAppNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			appName := args[0]
-
-			// Check if app exists
-			if !configMgr.AppExists(appName) {
-				// Suggest similar apps
-				apps, _ := configMgr.ListApps()
-				if len(apps) > 0 {
-					fmt.Fprintf(os.Stderr, "App '%s' not found.\n\nInstalled apps:\n", appName)
-					for _, app := range apps {
-						fmt.Fprintf(os.Stderr, "  %s\n", app)
-					}
-				} else {
-					fmt.Fprintf(os.Stderr, "App '%s' not found. No apps are currently installed.\n", appName)
-				}
-				// Wrap with PrintedError to prevent double printing
-				return &cli.PrintedError{Err: fmt.Errorf("app not found: %s", appName)}
-			}
-
-			// Uninstall
-			err := configMgr.UninstallApp(appName, removeShim)
-			if err != nil {
-				return fmt.Errorf("uninstallation failed: %w", err)
-			}
-
-			fmt.Printf("✓ Successfully uninstalled app '%s'\n", appName)
-			return nil
+			return uninstallApp(args[0], removeShim)
 		},
 	}
 
 	cmd.Flags().BoolVar(&removeShim, "remove-shim", true, "Remove the command shortcut (shim)")
 
 	return cmd
+}
+
+// uninstallApp uninstalls an app by name.
+func uninstallApp(appName string, removeShim bool) error {
+	if !configMgr.AppExists(appName) {
+		showAppNotFoundError(appName)
+		return &cli.PrintedError{Err: fmt.Errorf("app not found: %s", appName)}
+	}
+
+	err := configMgr.UninstallApp(appName, removeShim)
+	if err != nil {
+		return fmt.Errorf("uninstallation failed: %w", err)
+	}
+
+	fmt.Printf("✓ Successfully uninstalled app '%s'\n", appName)
+	return nil
+}
+
+// showAppNotFoundError displays helpful error when app is not found.
+func showAppNotFoundError(appName string) {
+	apps, _ := configMgr.ListApps()
+	if len(apps) > 0 {
+		fmt.Fprintf(os.Stderr, "App '%s' not found.\n\nInstalled apps:\n", appName)
+		for _, app := range apps {
+			fmt.Fprintf(os.Stderr, "  %s\n", app)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "App '%s' not found. No apps are currently installed.\n", appName)
+	}
 }
 
 // printAppDetails prints detailed information for a single app.
@@ -505,31 +509,45 @@ Example:
   ob list --details`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			apps, err := configMgr.ListApps()
-			if err != nil {
-				return fmt.Errorf("failed to list apps: %w", err)
-			}
-
-			if len(apps) == 0 {
-				fmt.Println("No applications installed.")
-				fmt.Println("\nTo install an app, run:")
-				fmt.Println("  ob install <app-name> --spec <openapi-spec>")
-				return nil
-			}
-
-			if showDetails {
-				printAppsDetailed(apps)
-			} else {
-				printAppsTable(apps)
-			}
-
-			return nil
+			return listApps(showDetails)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&showDetails, "details", "d", false, "Show detailed information")
 
 	return cmd
+}
+
+// listApps lists all installed apps.
+func listApps(showDetails bool) error {
+	apps, err := configMgr.ListApps()
+	if err != nil {
+		return fmt.Errorf("failed to list apps: %w", err)
+	}
+
+	if len(apps) == 0 {
+		showEmptyStateMessage()
+		return nil
+	}
+
+	displayApps(apps, showDetails)
+	return nil
+}
+
+// showEmptyStateMessage shows message when no apps are installed.
+func showEmptyStateMessage() {
+	fmt.Println("No applications installed.")
+	fmt.Println("\nTo install an app, run:")
+	fmt.Println("  ob install <app-name> --spec <openapi-spec>")
+}
+
+// displayApps displays the list of apps.
+func displayApps(apps []string, showDetails bool) {
+	if showDetails {
+		printAppsDetailed(apps)
+	} else {
+		printAppsTable(apps)
+	}
 }
 
 // newInfoCmd creates the info subcommand to show app configuration
@@ -554,24 +572,27 @@ Example:
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeAppNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			appName := args[0]
-
-			if !configMgr.AppExists(appName) {
-				return fmt.Errorf("app '%s' not found", appName)
-			}
-
-			appConfig, err := configMgr.GetAppConfig(appName)
-			if err != nil {
-				return fmt.Errorf("failed to get app config: %w", err)
-			}
-
-			return printAppConfig(appConfig, outputFormat)
+			return showAppInfo(args[0], outputFormat)
 		},
 	}
 
 	cmd.Flags().StringVarP(&outputFormat, "output", "o", "text", "Output format: text, json, yaml")
 
 	return cmd
+}
+
+// showAppInfo shows detailed information about an app.
+func showAppInfo(appName, outputFormat string) error {
+	if !configMgr.AppExists(appName) {
+		return fmt.Errorf("app '%s' not found", appName)
+	}
+
+	appConfig, err := configMgr.GetAppConfig(appName)
+	if err != nil {
+		return fmt.Errorf("failed to get app config: %w", err)
+	}
+
+	return printAppConfig(appConfig, outputFormat)
 }
 
 // printAppConfig prints the app configuration in the specified format.
@@ -774,42 +795,65 @@ Example:
 		ValidArgsFunction:  completeRunArgs,
 		DisableFlagParsing: true, // Pass all flags to the app handler
 		RunE: func(cmd *cobra.Command, args []string) error {
-			appName := args[0]
-
-			// Check if app exists
-			if !configMgr.AppExists(appName) {
-				apps, _ := configMgr.ListApps()
-				if len(apps) > 0 {
-					fmt.Fprintf(os.Stderr, "App '%s' not found.\n\nInstalled apps:\n", appName)
-					for _, app := range apps {
-						fmt.Fprintf(os.Stderr, "  %s\n", app)
-					}
-				} else {
-					fmt.Fprintf(os.Stderr, "App '%s' not found. No apps are currently installed.\n", appName)
-				}
-				return fmt.Errorf("app not found: %s", appName)
-			}
-
-			// Load app config
-			appConfig, err := configMgr.GetAppConfig(appName)
-			if err != nil {
-				return fmt.Errorf("failed to load app config: %w", err)
-			}
-
-			// Check for MCP mode
-			isMCPMode := slices.Contains(args[1:], "--mcp")
-
-			if isMCPMode {
-				// Start MCP server
-				return startMCPServer(appConfig, args[1:])
-			}
-
-			// CLI mode
-			return cliHandler.ExecuteCommand(appName, appConfig, args[1:])
+			return runCommand(args)
 		},
 	}
 
 	return cmd
+}
+
+// runCommand executes the run command logic.
+func runCommand(args []string) error {
+	appName := args[0]
+
+	if !validateAppExists(appName) {
+		return fmt.Errorf("app not found: %s", appName)
+	}
+
+	appConfig, err := loadAppConfig(appName)
+	if err != nil {
+		return err
+	}
+
+	return executeRunMode(args, appConfig)
+}
+
+// validateAppExists checks if the app exists and shows helpful error if not.
+func validateAppExists(appName string) bool {
+	if configMgr.AppExists(appName) {
+		return true
+	}
+
+	apps, _ := configMgr.ListApps()
+	if len(apps) > 0 {
+		fmt.Fprintf(os.Stderr, "App '%s' not found.\n\nInstalled apps:\n", appName)
+		for _, app := range apps {
+			fmt.Fprintf(os.Stderr, "  %s\n", app)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "App '%s' not found. No apps are currently installed.\n", appName)
+	}
+	return false
+}
+
+// loadAppConfig loads the app configuration.
+func loadAppConfig(appName string) (*config.AppConfig, error) {
+	appConfig, err := configMgr.GetAppConfig(appName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load app config: %w", err)
+	}
+	return appConfig, nil
+}
+
+// executeRunMode executes the appropriate run mode (CLI or MCP).
+func executeRunMode(args []string, appConfig *config.AppConfig) error {
+	isMCPMode := slices.Contains(args[1:], "--mcp")
+
+	if isMCPMode {
+		return startMCPServer(appConfig, args[1:])
+	}
+
+	return cliHandler.ExecuteCommand(appConfig.Name, appConfig, args[1:])
 }
 
 // mcpServerOptions holds parsed MCP server options.
@@ -920,7 +964,6 @@ func completeAppNames(cmd *cobra.Command, args []string, toComplete string) ([]s
 // completeRunArgs provides completion for the run command
 func completeRunArgs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) == 0 {
-		// Complete app name
 		return completeAppNames(cmd, args, toComplete)
 	}
 
@@ -930,27 +973,32 @@ func completeRunArgs(cmd *cobra.Command, args []string, toComplete string) ([]st
 	}
 
 	if len(args) == 1 {
-		// Complete resource
-		resources := completionHelper.CompleteResources(appName, toComplete)
-		return resources, cobra.ShellCompDirectiveNoFileComp
+		return completeResources(appName, toComplete)
 	}
 
 	if len(args) == 2 {
-		// Complete verb (filter by resource if possible)
-		resource := args[1]
-		verbs := completionHelper.CompleteVerbsForResource(appName, resource, toComplete)
-		return verbs, cobra.ShellCompDirectiveNoFileComp
+		return completeVerbs(appName, args[1], toComplete)
 	}
 
-	// For args after resource and verb, complete flags
-	if len(args) >= 3 && strings.HasPrefix(toComplete, "-") {
-		resource := args[1]
-		verb := args[2]
-		flags := completionHelper.CompleteFlags(appName, resource, verb, toComplete)
-		return flags, cobra.ShellCompDirectiveNoFileComp
-	}
+	return completeFlags(appName, args[1], args[2], toComplete)
+}
 
-	return nil, cobra.ShellCompDirectiveNoFileComp
+// completeResources completes resource names.
+func completeResources(appName, toComplete string) ([]string, cobra.ShellCompDirective) {
+	resources := completionHelper.CompleteResources(appName, toComplete)
+	return resources, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeVerbs completes verb names for a resource.
+func completeVerbs(appName, resource, toComplete string) ([]string, cobra.ShellCompDirective) {
+	verbs := completionHelper.CompleteVerbsForResource(appName, resource, toComplete)
+	return verbs, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeFlags completes flag names.
+func completeFlags(appName, resource, verb, toComplete string) ([]string, cobra.ShellCompDirective) {
+	flags := completionHelper.CompleteFlags(appName, resource, verb, toComplete)
+	return flags, cobra.ShellCompDirectiveNoFileComp
 }
 
 // newCompletionCmd creates the completion subcommand

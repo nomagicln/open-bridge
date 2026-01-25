@@ -241,13 +241,30 @@ func (p *Parser) GetFetchOptions() *SpecFetchOptions {
 
 // loadFromFile loads a specification from a local file.
 func (p *Parser) loadFromFile(ctx context.Context, path string) (*openapi3.T, error) {
-	// Resolve absolute path
-	absPath, err := filepath.Abs(path)
+	absPath, err := p.resolveAbsolutePath(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve path: %w", err)
+		return nil, err
 	}
 
-	// Read file content
+	data, err := p.readSpecFile(path, absPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return p.parseSpec(ctx, data)
+}
+
+// resolveAbsolutePath resolves the file path to an absolute path.
+func (p *Parser) resolveAbsolutePath(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve path: %w", err)
+	}
+	return absPath, nil
+}
+
+// readSpecFile reads the spec file content.
+func (p *Parser) readSpecFile(path, absPath string) ([]byte, error) {
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read spec file '%s': %w", path, err)
@@ -257,47 +274,86 @@ func (p *Parser) loadFromFile(ctx context.Context, path string) (*openapi3.T, er
 		return nil, fmt.Errorf("spec file '%s' is empty", path)
 	}
 
-	spec, err := p.parseSpec(ctx, data)
-	if err != nil {
-		return nil, err
-	}
-
-	return spec, nil
+	return data, nil
 }
 
 // loadFromURL loads a specification from a remote URL.
 // If perSpecOpts is provided, it is merged with parser defaults (per-spec takes precedence).
 func (p *Parser) loadFromURL(ctx context.Context, specURL string, perSpecOpts *SpecFetchOptions) (*openapi3.T, error) {
-	// Validate URL
+	parsedURL, err := p.validateAndParseURL(specURL)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := p.createHTTPRequest(ctx, specURL)
+	if err != nil {
+		return nil, err
+	}
+
+	p.setDefaultHeaders(req)
+	p.applyFetchOptions(req, p.fetchOptions.Merge(perSpecOpts))
+
+	resp, err := p.executeHTTPRequest(specURL, req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if err := p.checkHTTPResponse(specURL, resp); err != nil {
+		return nil, err
+	}
+
+	data, err := p.readResponseBody(specURL, resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return p.parseSpecWithBaseURL(ctx, data, parsedURL)
+}
+
+// validateAndParseURL validates and parses the URL.
+func (p *Parser) validateAndParseURL(specURL string) (*url.URL, error) {
 	parsedURL, err := url.Parse(specURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %w", err)
 	}
+	return parsedURL, nil
+}
 
-	// Fetch the spec
+// createHTTPRequest creates a new HTTP request with context.
+func (p *Parser) createHTTPRequest(ctx context.Context, specURL string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, specURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
+	return req, nil
+}
 
-	// Set common headers
+// setDefaultHeaders sets default headers on the request.
+func (p *Parser) setDefaultHeaders(req *http.Request) {
 	req.Header.Set("Accept", "application/json, application/yaml, text/yaml, */*")
 	req.Header.Set("User-Agent", "OpenBridge/1.0")
+}
 
-	// Merge parser defaults with per-spec options (per-spec takes precedence)
-	effectiveOpts := p.fetchOptions.Merge(perSpecOpts)
-	p.applyFetchOptions(req, effectiveOpts)
-
+// executeHTTPRequest executes the HTTP request.
+func (p *Parser) executeHTTPRequest(specURL string, req *http.Request) (*http.Response, error) {
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch spec from '%s': %w", specURL, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	return resp, nil
+}
 
+// checkHTTPResponse checks if the HTTP response is valid.
+func (p *Parser) checkHTTPResponse(specURL string, resp *http.Response) error {
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch spec from '%s': HTTP %d %s", specURL, resp.StatusCode, resp.Status)
+		return fmt.Errorf("failed to fetch spec from '%s': HTTP %d %s", specURL, resp.StatusCode, resp.Status)
 	}
+	return nil
+}
 
+// readResponseBody reads the response body.
+func (p *Parser) readResponseBody(specURL string, resp *http.Response) ([]byte, error) {
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
@@ -307,8 +363,7 @@ func (p *Parser) loadFromURL(ctx context.Context, specURL string, perSpecOpts *S
 		return nil, fmt.Errorf("received empty response from '%s'", specURL)
 	}
 
-	// Use the URL as the source for relative reference resolution
-	return p.parseSpecWithBaseURL(ctx, data, parsedURL)
+	return data, nil
 }
 
 // applyFetchOptions applies custom headers and authentication to an HTTP request.
@@ -317,12 +372,19 @@ func (p *Parser) applyFetchOptions(req *http.Request, opts *SpecFetchOptions) {
 		return
 	}
 
-	// Apply custom headers
-	for key, value := range opts.Headers {
+	p.applyCustomHeaders(req, opts.Headers)
+	p.applyAuthentication(req, opts)
+}
+
+// applyCustomHeaders sets custom headers on the request.
+func (p *Parser) applyCustomHeaders(req *http.Request, headers map[string]string) {
+	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
+}
 
-	// Apply authentication
+// applyAuthentication applies authentication to the request based on auth type.
+func (p *Parser) applyAuthentication(req *http.Request, opts *SpecFetchOptions) {
 	if opts.AuthToken == "" {
 		return
 	}
@@ -333,21 +395,26 @@ func (p *Parser) applyFetchOptions(req *http.Request, opts *SpecFetchOptions) {
 	case "basic":
 		req.Header.Set("Authorization", "Basic "+opts.AuthToken)
 	case "api_key":
-		keyName := opts.AuthKeyName
-		if keyName == "" {
-			keyName = "X-API-Key"
-		}
-		location := opts.AuthLocation
-		// Apply api_key to query if explicitly specified, otherwise default to header
-		if location == "query" {
-			q := req.URL.Query()
-			q.Set(keyName, opts.AuthToken)
-			req.URL.RawQuery = q.Encode()
-		} else {
-			req.Header.Set(keyName, opts.AuthToken)
-		}
+		p.applyAPIKeyAuth(req, opts)
 	default:
 		// Unknown auth type, skip authentication
+	}
+}
+
+// applyAPIKeyAuth applies API key authentication to the request.
+func (p *Parser) applyAPIKeyAuth(req *http.Request, opts *SpecFetchOptions) {
+	keyName := opts.AuthKeyName
+	if keyName == "" {
+		keyName = "X-API-Key"
+	}
+
+	location := opts.AuthLocation
+	if location == "query" {
+		q := req.URL.Query()
+		q.Set(keyName, opts.AuthToken)
+		req.URL.RawQuery = q.Encode()
+	} else {
+		req.Header.Set(keyName, opts.AuthToken)
 	}
 }
 
@@ -786,74 +853,121 @@ func (p *Parser) ParseSpecFromJSON(data []byte) (*openapi3.T, error) {
 // LoadSpecWithPersistentCache loads an OpenAPI specification with persistent caching support.
 // This enables cross-process caching of parsed specs to avoid re-parsing on each restart.
 func (p *Parser) LoadSpecWithPersistentCache(ctx context.Context, source string, appName string) (*openapi3.T, error) {
-	// Check if persistent caching is enabled
-	if p.baseDir == "" || appName == "" {
-		// Fallback to regular loading
+	if !p.isPersistentCacheEnabled(appName) {
 		return p.LoadSpecWithContext(ctx, source)
 	}
 
-	// Try to load from persistent cache
-	if spec, ok, err := p.loadFromPersistentCache(appName, source); err == nil && ok {
+	spec, err := p.tryLoadFromPersistentCache(ctx, source, appName)
+	if err == nil && spec != nil {
 		return spec, nil
 	}
 
-	// Load from source and parse
-	var spec *openapi3.T
-	var err error
+	return p.loadAndCacheSpec(ctx, source, appName)
+}
 
-	if isURL(source) {
-		spec, err = p.loadFromURL(ctx, source, nil)
-	} else {
-		spec, err = p.loadFromFile(ctx, source)
+// isPersistentCacheEnabled checks if persistent caching is enabled for the app.
+func (p *Parser) isPersistentCacheEnabled(appName string) bool {
+	return p.baseDir != "" && appName != ""
+}
+
+// tryLoadFromPersistentCache attempts to load spec from persistent cache.
+func (p *Parser) tryLoadFromPersistentCache(_ context.Context, source string, appName string) (*openapi3.T, error) {
+	spec, ok, err := p.loadFromPersistentCache(appName, source)
+	if err != nil {
+		return nil, err
 	}
+	if !ok {
+		return nil, nil
+	}
+	return spec, nil
+}
 
+// loadAndCacheSpec loads spec from source and saves it to cache.
+func (p *Parser) loadAndCacheSpec(ctx context.Context, source string, appName string) (*openapi3.T, error) {
+	spec, err := p.loadSpecFromSource(ctx, source)
 	if err != nil {
 		return nil, err
 	}
 
-	// Save to persistent cache
 	if err := p.saveToPersistentCache(appName, source, spec); err != nil {
-		// Log the error but don't fail - cache miss is not critical
 		fmt.Fprintf(os.Stderr, "Warning: failed to save persistent cache: %v\n", err)
 	}
 
 	return spec, nil
 }
 
+// loadSpecFromSource loads a spec from file or URL.
+func (p *Parser) loadSpecFromSource(ctx context.Context, source string) (*openapi3.T, error) {
+	if isURL(source) {
+		return p.loadFromURL(ctx, source, nil)
+	}
+	return p.loadFromFile(ctx, source)
+}
+
 // loadFromPersistentCache loads a spec from the persistent cache.
 func (p *Parser) loadFromPersistentCache(appName string, source string) (*openapi3.T, bool, error) {
-	// Get cache paths
+	cachePaths := p.getCachePaths(appName)
+
+	if !p.cacheFilesExist(cachePaths) {
+		return nil, false, nil
+	}
+
+	meta, err := p.readCacheMetadata(cachePaths.metaPath)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if !p.isCacheValid(source, meta) {
+		return nil, false, nil
+	}
+
+	return p.readParsedSpec(cachePaths.parsedPath)
+}
+
+// cachePaths contains the paths to cache files.
+type cachePaths struct {
+	parsedPath string
+	metaPath   string
+}
+
+// getCachePaths returns the cache file paths for an app.
+func (p *Parser) getCachePaths(appName string) cachePaths {
 	cacheDir := p.getCacheDir(appName)
-	parsedPath := filepath.Join(cacheDir, "parsed.json")
-	metaPath := filepath.Join(cacheDir, "meta.json")
-
-	// Check if files exist
-	if _, err := os.Stat(parsedPath); err != nil {
-		return nil, false, nil
+	return cachePaths{
+		parsedPath: filepath.Join(cacheDir, "parsed.json"),
+		metaPath:   filepath.Join(cacheDir, "meta.json"),
 	}
+}
 
-	if _, err := os.Stat(metaPath); err != nil {
-		return nil, false, nil
+// cacheFilesExist checks if cache files exist.
+func (p *Parser) cacheFilesExist(paths cachePaths) bool {
+	if _, err := os.Stat(paths.parsedPath); err != nil {
+		return false
 	}
+	if _, err := os.Stat(paths.metaPath); err != nil {
+		return false
+	}
+	return true
+}
 
-	// Read metadata
+// readCacheMetadata reads and parses the cache metadata.
+func (p *Parser) readCacheMetadata(metaPath string) (*ParsedCacheMeta, error) {
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to read cache metadata: %w", err)
+		return nil, fmt.Errorf("failed to read cache metadata: %w", err)
 	}
 
 	var meta ParsedCacheMeta
 	if err := json.Unmarshal(data, &meta); err != nil {
-		return nil, false, fmt.Errorf("failed to unmarshal cache metadata: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal cache metadata: %w", err)
 	}
 
-	// Check if cache is valid
-	if !p.isCacheValid(source, &meta) {
-		return nil, false, nil
-	}
+	return &meta, nil
+}
 
-	// Read parsed spec
-	data, err = os.ReadFile(parsedPath)
+// readParsedSpec reads and parses the cached spec.
+func (p *Parser) readParsedSpec(parsedPath string) (*openapi3.T, bool, error) {
+	data, err := os.ReadFile(parsedPath)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to read parsed spec: %w", err)
 	}
@@ -868,32 +982,58 @@ func (p *Parser) loadFromPersistentCache(appName string, source string) (*openap
 
 // saveToPersistentCache saves a parsed spec to the persistent cache.
 func (p *Parser) saveToPersistentCache(appName string, source string, spec *openapi3.T) error {
-	// Create cache directory
-	cacheDir := p.getCacheDir(appName)
+	cachePaths := p.getCachePaths(appName)
+
+	if err := p.createCacheDirectory(cachePaths.parsedPath); err != nil {
+		return err
+	}
+
+	meta := p.createCacheMetadata(source)
+	if err := p.computeContentHash(source, meta); err != nil {
+		return err
+	}
+
+	if err := p.writeParsedSpec(cachePaths.parsedPath, spec); err != nil {
+		return err
+	}
+
+	return p.writeMetadata(cachePaths.metaPath, meta)
+}
+
+// createCacheDirectory creates the cache directory if it doesn't exist.
+func (p *Parser) createCacheDirectory(parsedPath string) error {
+	cacheDir := filepath.Dir(parsedPath)
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return fmt.Errorf("failed to create cache directory: %w", err)
 	}
+	return nil
+}
 
-	parsedPath := filepath.Join(cacheDir, "parsed.json")
-	metaPath := filepath.Join(cacheDir, "meta.json")
-
-	// Create metadata
-	meta := ParsedCacheMeta{
+// createCacheMetadata creates the cache metadata.
+func (p *Parser) createCacheMetadata(source string) *ParsedCacheMeta {
+	return &ParsedCacheMeta{
 		SourceURL:     source,
 		ParsedAt:      time.Now(),
 		ParserVersion: ParserVersion,
 	}
+}
 
-	// Compute content hash for source
-	if !isURL(source) {
-		content, err := os.ReadFile(source)
-		if err != nil {
-			return fmt.Errorf("failed to read source for hashing: %w", err)
-		}
-		meta.ContentHash = computeHash(content)
+// computeContentHash computes and sets the content hash for local files.
+func (p *Parser) computeContentHash(source string, meta *ParsedCacheMeta) error {
+	if isURL(source) {
+		return nil
 	}
 
-	// Marshal and write parsed spec
+	content, err := os.ReadFile(source)
+	if err != nil {
+		return fmt.Errorf("failed to read source for hashing: %w", err)
+	}
+	meta.ContentHash = computeHash(content)
+	return nil
+}
+
+// writeParsedSpec writes the parsed spec to cache.
+func (p *Parser) writeParsedSpec(parsedPath string, spec *openapi3.T) error {
 	specData, err := json.MarshalIndent(spec, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal parsed spec: %w", err)
@@ -907,7 +1047,11 @@ func (p *Parser) saveToPersistentCache(appName string, source string, spec *open
 		return fmt.Errorf("failed to move parsed spec: %w", err)
 	}
 
-	// Marshal and write metadata
+	return nil
+}
+
+// writeMetadata writes the metadata to cache.
+func (p *Parser) writeMetadata(metaPath string, meta *ParsedCacheMeta) error {
 	metaData, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)

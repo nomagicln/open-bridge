@@ -188,26 +188,34 @@ func buildKeyringConfig(cfg *managerConfig, fileDir string, passwordFn func(stri
 }
 
 // NewManager creates a new credential manager.
+// getPasswordFunc returns the password function to use for file backend.
+func getPasswordFunc(cfg *managerConfig) func(string) (string, error) {
+	if cfg.filePasswordFn != nil {
+		return cfg.filePasswordFn
+	}
+	return keyring.FixedStringPrompt(ServiceName)
+}
+
+// getFileDir returns the file directory to use for file backend.
+func getFileDir(cfg *managerConfig) (string, error) {
+	if cfg.fileDir != "" {
+		return cfg.fileDir, nil
+	}
+	return getDefaultKeyringDir()
+}
+
 func NewManager(opts ...ManagerOption) (*Manager, error) {
 	cfg := &managerConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
 
-	fileDir := cfg.fileDir
-	if fileDir == "" {
-		var err error
-		fileDir, err = getDefaultKeyringDir()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get keyring directory: %w", err)
-		}
+	fileDir, err := getFileDir(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get keyring directory: %w", err)
 	}
 
-	passwordFn := cfg.filePasswordFn
-	if passwordFn == nil {
-		passwordFn = keyring.FixedStringPrompt(ServiceName)
-	}
-
+	passwordFn := getPasswordFunc(cfg)
 	config := buildKeyringConfig(cfg, fileDir, passwordFn)
 
 	ring, err := keyring.Open(config)
@@ -223,37 +231,54 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 }
 
 // getDefaultKeyringDir returns the default directory for the file-based keyring.
-func getDefaultKeyringDir() (string, error) {
-	switch runtime.GOOS {
-	case "darwin":
-		homeDir, err := os.UserHomeDir()
+// getHomeDir returns the user's home directory.
+func getHomeDir() (string, error) {
+	return os.UserHomeDir()
+}
+
+// getDarwinKeyringDir returns the keyring directory for macOS.
+func getDarwinKeyringDir() (string, error) {
+	homeDir, err := getHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDir, "Library", "Application Support", "openbridge", "keyring"), nil
+}
+
+// getWindowsKeyringDir returns the keyring directory for Windows.
+func getWindowsKeyringDir() (string, error) {
+	appData := os.Getenv("LOCALAPPDATA")
+	if appData == "" {
+		homeDir, err := getHomeDir()
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(homeDir, "Library", "Application Support", "openbridge", "keyring"), nil
+		appData = filepath.Join(homeDir, "AppData", "Local")
+	}
+	return filepath.Join(appData, "OpenBridge", "keyring"), nil
+}
 
+// getLinuxKeyringDir returns the keyring directory for Linux/Unix.
+func getLinuxKeyringDir() (string, error) {
+	xdgData := os.Getenv("XDG_DATA_HOME")
+	if xdgData == "" {
+		homeDir, err := getHomeDir()
+		if err != nil {
+			return "", err
+		}
+		xdgData = filepath.Join(homeDir, ".local", "share")
+	}
+	return filepath.Join(xdgData, "openbridge", "keyring"), nil
+}
+
+func getDefaultKeyringDir() (string, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		return getDarwinKeyringDir()
 	case "windows":
-		appData := os.Getenv("LOCALAPPDATA")
-		if appData == "" {
-			homeDir, err := os.UserHomeDir()
-			if err != nil {
-				return "", err
-			}
-			appData = filepath.Join(homeDir, "AppData", "Local")
-		}
-		return filepath.Join(appData, "OpenBridge", "keyring"), nil
-
+		return getWindowsKeyringDir()
 	default:
-		// Linux/Unix: XDG data directory
-		xdgData := os.Getenv("XDG_DATA_HOME")
-		if xdgData == "" {
-			homeDir, err := os.UserHomeDir()
-			if err != nil {
-				return "", err
-			}
-			xdgData = filepath.Join(homeDir, ".local", "share")
-		}
-		return filepath.Join(xdgData, "openbridge", "keyring"), nil
+		return getLinuxKeyringDir()
 	}
 }
 
@@ -311,18 +336,32 @@ func parseKey(key string) (appName, profileName string, ok bool) {
 	return "", "", false
 }
 
+// updateTimestamps updates the created and updated timestamps on a credential.
+func updateTimestamps(cred *Credential) {
+	now := time.Now()
+	if cred.CreatedAt.IsZero() {
+		cred.CreatedAt = now
+	}
+	cred.UpdatedAt = now
+}
+
+// createKeyringItem creates a keyring item from a credential.
+func createKeyringItem(key, appName, profileName string, data []byte) keyring.Item {
+	return keyring.Item{
+		Key:         key,
+		Data:        data,
+		Label:       fmt.Sprintf("OpenBridge: %s/%s", appName, profileName),
+		Description: fmt.Sprintf("API credentials for %s profile %s", appName, profileName),
+	}
+}
+
 // StoreCredential stores a credential in the keyring.
 func (m *Manager) StoreCredential(appName, profileName string, cred *Credential) error {
 	if cred == nil {
 		return fmt.Errorf("credential cannot be nil")
 	}
 
-	// Update timestamps
-	now := time.Now()
-	if cred.CreatedAt.IsZero() {
-		cred.CreatedAt = now
-	}
-	cred.UpdatedAt = now
+	updateTimestamps(cred)
 
 	data, err := json.Marshal(cred)
 	if err != nil {
@@ -330,12 +369,8 @@ func (m *Manager) StoreCredential(appName, profileName string, cred *Credential)
 	}
 
 	key := buildKey(appName, profileName)
-	err = m.ring.Set(keyring.Item{
-		Key:         key,
-		Data:        data,
-		Label:       fmt.Sprintf("OpenBridge: %s/%s", appName, profileName),
-		Description: fmt.Sprintf("API credentials for %s profile %s", appName, profileName),
-	})
+	item := createKeyringItem(key, appName, profileName, data)
+	err = m.ring.Set(item)
 	if err != nil {
 		return fmt.Errorf("failed to store credential: %w", err)
 	}
@@ -363,40 +398,50 @@ func (m *Manager) GetCredential(appName, profileName string) (*Credential, error
 	return &cred, nil
 }
 
+// handleRemoveError handles errors from ring.Remove().
+func handleRemoveError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, keyring.ErrKeyNotFound) {
+		return nil
+	}
+	return fmt.Errorf("failed to delete credential: %w", err)
+}
+
 // DeleteCredential removes a credential from the keyring.
 func (m *Manager) DeleteCredential(appName, profileName string) error {
 	key := buildKey(appName, profileName)
+	return handleRemoveError(m.ring.Remove(key))
+}
 
-	err := m.ring.Remove(key)
-	if err != nil {
-		if errors.Is(err, keyring.ErrKeyNotFound) {
-			return nil // Already deleted
-		}
-		return fmt.Errorf("failed to delete credential: %w", err)
+// getOrCreateCredential gets an existing credential or creates a new one.
+func (m *Manager) getOrCreateCredential(appName, profileName string) (*Credential, error) {
+	cred, err := m.GetCredential(appName, profileName)
+	if err == nil {
+		return cred, nil
 	}
 
-	return nil
+	// Check if error is CredentialNotFoundError
+	credentialNotFoundError := &CredentialNotFoundError{}
+	if errors.As(err, &credentialNotFoundError) {
+		return &Credential{}, nil
+	}
+
+	return nil, err
 }
 
 // UpdateCredential updates an existing credential or creates a new one.
 func (m *Manager) UpdateCredential(appName, profileName string, updateFn func(*Credential) error) error {
-	// Try to get existing credential
-	cred, err := m.GetCredential(appName, profileName)
+	cred, err := m.getOrCreateCredential(appName, profileName)
 	if err != nil {
-		// Create new if not found
-		credentialNotFoundError := &CredentialNotFoundError{}
-		if !errors.As(err, &credentialNotFoundError) {
-			return err
-		}
-		cred = &Credential{}
+		return err
 	}
 
-	// Apply update function
 	if err := updateFn(cred); err != nil {
 		return err
 	}
 
-	// Store updated credential
 	return m.StoreCredential(appName, profileName, cred)
 }
 
@@ -419,6 +464,18 @@ func (m *Manager) ListCredentials(appName string) ([]string, error) {
 }
 
 // ListAllCredentials returns all stored credentials.
+// buildCredentialInfo creates a CredentialInfo from a credential.
+func buildCredentialInfo(appName, profileName string, cred *Credential) CredentialInfo {
+	return CredentialInfo{
+		AppName:     appName,
+		ProfileName: profileName,
+		Type:        cred.Type,
+		CreatedAt:   cred.CreatedAt,
+		UpdatedAt:   cred.UpdatedAt,
+		IsExpired:   cred.IsExpired(),
+	}
+}
+
 func (m *Manager) ListAllCredentials() ([]CredentialInfo, error) {
 	keys, err := m.ring.Keys()
 	if err != nil {
@@ -437,14 +494,7 @@ func (m *Manager) ListAllCredentials() ([]CredentialInfo, error) {
 			continue
 		}
 
-		creds = append(creds, CredentialInfo{
-			AppName:     appName,
-			ProfileName: profileName,
-			Type:        cred.Type,
-			CreatedAt:   cred.CreatedAt,
-			UpdatedAt:   cred.UpdatedAt,
-			IsExpired:   cred.IsExpired(),
-		})
+		creds = append(creds, buildCredentialInfo(appName, profileName, cred))
 	}
 
 	return creds, nil
@@ -482,6 +532,14 @@ func (m *Manager) DeleteAllCredentials(appName string) error {
 	return nil
 }
 
+// createCredentialCopy creates a copy of a credential with reset timestamps.
+func createCredentialCopy(cred *Credential) *Credential {
+	newCred := *cred
+	newCred.CreatedAt = time.Time{}
+	newCred.UpdatedAt = time.Time{}
+	return &newCred
+}
+
 // CopyCredential copies a credential from one profile to another.
 func (m *Manager) CopyCredential(appName, fromProfile, toProfile string) error {
 	cred, err := m.GetCredential(appName, fromProfile)
@@ -489,12 +547,7 @@ func (m *Manager) CopyCredential(appName, fromProfile, toProfile string) error {
 		return err
 	}
 
-	// Create a copy with new timestamps
-	newCred := *cred
-	newCred.CreatedAt = time.Time{}
-	newCred.UpdatedAt = time.Time{}
-
-	return m.StoreCredential(appName, toProfile, &newCred)
+	return m.StoreCredential(appName, toProfile, createCredentialCopy(cred))
 }
 
 // Error types
@@ -547,34 +600,32 @@ func NewOAuth2Credential(accessToken, refreshToken, tokenType string, expiresAt 
 	}
 }
 
+// getPlatformBackend returns platform-specific backend information.
+func getPlatformBackend(osName string) (bool, string, BackendType) {
+	switch osName {
+	case "darwin":
+		return true, "macOS Keychain", BackendKeychain
+	case "windows":
+		return true, "Windows Credential Manager", BackendWinCred
+	case "linux":
+		return true, "Secret Service (GNOME Keyring/KWallet)", BackendSecretService
+	default:
+		return false, "", BackendFile
+	}
+}
+
 // GetPlatformInfo returns information about the current platform's keyring support.
 func GetPlatformInfo() PlatformInfo {
-	info := PlatformInfo{
+	supportsNative, nativeStore, backend := getPlatformBackend(runtime.GOOS)
+
+	return PlatformInfo{
 		OS:                  runtime.GOOS,
 		Arch:                runtime.GOARCH,
-		SupportsNativeStore: false,
-		NativeStoreName:     "",
+		SupportsNativeStore: supportsNative,
+		NativeStoreName:     nativeStore,
 		FallbackAvailable:   true,
+		RecommendedBackend:  backend,
 	}
-
-	switch runtime.GOOS {
-	case "darwin":
-		info.SupportsNativeStore = true
-		info.NativeStoreName = "macOS Keychain"
-		info.RecommendedBackend = BackendKeychain
-	case "windows":
-		info.SupportsNativeStore = true
-		info.NativeStoreName = "Windows Credential Manager"
-		info.RecommendedBackend = BackendWinCred
-	case "linux":
-		info.SupportsNativeStore = true // D-Bus Secret Service
-		info.NativeStoreName = "Secret Service (GNOME Keyring/KWallet)"
-		info.RecommendedBackend = BackendSecretService
-	default:
-		info.RecommendedBackend = BackendFile
-	}
-
-	return info
 }
 
 // PlatformInfo contains information about the platform's keyring support.
