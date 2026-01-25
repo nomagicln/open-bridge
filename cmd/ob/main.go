@@ -59,11 +59,8 @@ func init() {
 		os.Exit(1)
 	}
 
-	// Get config directory for persistent caching
-	configDir := configMgr.ConfigDir()
-
 	// Spec parser
-	specParser = spec.NewParser(spec.WithBaseDir(configDir))
+	specParser = spec.NewParser()
 
 	// Credential manager
 	credMgr, err = credential.NewManager()
@@ -361,6 +358,12 @@ func newInstallCmd() *cobra.Command {
 		Short: "Install an API as a CLI application",
 		Long: `Install an OpenAPI specification as a CLI application.
 The specification can be provided as a local file path or a remote URL.
+
+After installation, you can call API operations using either:
+  - Automatic parameter classification (recommended):
+    ob myapp get-user --id=123
+  - Explicit parameter classification with '--' separator (use prefixes):
+    ob myapp get-user -- --path:id=123
 
 Example:
   ob install myapi --spec ./openapi.yaml
