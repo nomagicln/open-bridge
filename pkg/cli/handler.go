@@ -3,6 +3,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -74,14 +75,19 @@ func (h *Handler) handleHelpCommands(appName string, appConfig *config.AppConfig
 
 // loadAndCacheSpec loads the spec, using cache if available.
 func (h *Handler) loadAndCacheSpec(appName string, appConfig *config.AppConfig) (*openapi3.T, error) {
+	// Try to get from memory cache first
 	if specDoc, ok := h.specParser.GetCachedSpec(appName); ok {
 		return specDoc, nil
 	}
 
-	specDoc, err := h.specParser.LoadSpec(appConfig.SpecSource)
+	// Try to load from persistent cache (cross-process)
+	ctx := context.Background()
+	specDoc, err := h.specParser.LoadSpecWithPersistentCache(ctx, appConfig.SpecSource, appName)
 	if err != nil {
 		return nil, h.printAndWrapError(h.errorFormatter.FormatError(fmt.Errorf("failed to load spec: %w", err)), err)
 	}
+
+	// Cache in memory for this process
 	h.specParser.CacheSpec(appName, specDoc)
 	return specDoc, nil
 }

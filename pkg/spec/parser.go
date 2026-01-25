@@ -3,6 +3,8 @@ package spec
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,6 +35,12 @@ const (
 	// Version31 represents OpenAPI 3.1.x.
 	Version31 SpecVersion = "3.1"
 )
+
+// computeHash computes the SHA256 hash of the given content.
+func computeHash(content []byte) string {
+	hash := sha256.Sum256(content)
+	return hex.EncodeToString(hash[:])
+}
 
 // SpecFetchOptions contains options for fetching remote OpenAPI specifications.
 // This allows passing custom headers, authentication, and other HTTP settings
@@ -119,6 +127,9 @@ type Parser struct {
 	client       *http.Client
 	loader       *openapi3.Loader
 	fetchOptions *SpecFetchOptions
+
+	// baseDir is the base directory for persistent caching
+	baseDir string
 }
 
 // CachedSpec represents a cached OpenAPI specification with metadata.
@@ -166,13 +177,20 @@ func WithFetchOptions(opts *SpecFetchOptions) ParserOption {
 	}
 }
 
+// WithBaseDir sets the base directory for persistent caching.
+func WithBaseDir(baseDir string) ParserOption {
+	return func(p *Parser) {
+		p.baseDir = baseDir
+	}
+}
+
 // NewParser creates a new Parser with the given options. 🐾
 func NewParser(opts ...ParserOption) *Parser {
 	loader := openapi3.NewLoader()
 	loader.IsExternalRefsAllowed = true
 
 	p := &Parser{
-		cacheTTL: 5 * time.Minute, // Default TTL
+		cacheTTL: 5 * time.Minute, // Default TTL for cache entries
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -239,7 +257,12 @@ func (p *Parser) loadFromFile(ctx context.Context, path string) (*openapi3.T, er
 		return nil, fmt.Errorf("spec file '%s' is empty", path)
 	}
 
-	return p.parseSpec(ctx, data)
+	spec, err := p.parseSpec(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+
+	return spec, nil
 }
 
 // loadFromURL loads a specification from a remote URL.
@@ -352,18 +375,27 @@ func (p *Parser) parseSpec(ctx context.Context, data []byte) (*openapi3.T, error
 func (p *Parser) parseSpecWithBaseURL(ctx context.Context, data []byte, baseURL *url.URL) (*openapi3.T, error) {
 	version := detectVersion(data)
 
+	var spec *openapi3.T
+	var err error
+
 	switch version {
 	case Version20:
-		return p.parseSwaggerWithBaseURL(ctx, data)
+		spec, err = p.parseSwaggerWithBaseURL(ctx, data)
 	case Version30, Version31:
-		return p.parseOpenAPI3WithBaseURL(ctx, data, baseURL)
+		spec, err = p.parseOpenAPI3WithBaseURL(ctx, data, baseURL)
 	default:
-		doc, err := p.parseOpenAPI3WithBaseURL(ctx, data, baseURL)
+		spec, err = p.parseOpenAPI3WithBaseURL(ctx, data, baseURL)
 		if err == nil {
-			return doc, nil
+			break
 		}
-		return p.parseSwaggerWithBaseURL(ctx, data)
+		spec, err = p.parseSwaggerWithBaseURL(ctx, data)
 	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return spec, nil
 }
 
 // parseOpenAPI3 parses an OpenAPI 3.x specification.
@@ -750,3 +782,178 @@ func (p *Parser) ParseSpecFromJSON(data []byte) (*openapi3.T, error) {
 	ctx := context.Background()
 	return p.parseSpec(ctx, data)
 }
+
+// LoadSpecWithPersistentCache loads an OpenAPI specification with persistent caching support.
+// This enables cross-process caching of parsed specs to avoid re-parsing on each restart.
+func (p *Parser) LoadSpecWithPersistentCache(ctx context.Context, source string, appName string) (*openapi3.T, error) {
+	// Check if persistent caching is enabled
+	if p.baseDir == "" || appName == "" {
+		// Fallback to regular loading
+		return p.LoadSpecWithContext(ctx, source)
+	}
+
+	// Try to load from persistent cache
+	if spec, ok, err := p.loadFromPersistentCache(appName, source); err == nil && ok {
+		return spec, nil
+	}
+
+	// Load from source and parse
+	var spec *openapi3.T
+	var err error
+
+	if isURL(source) {
+		spec, err = p.loadFromURL(ctx, source, nil)
+	} else {
+		spec, err = p.loadFromFile(ctx, source)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Save to persistent cache
+	if err := p.saveToPersistentCache(appName, source, spec); err != nil {
+		// Log the error but don't fail - cache miss is not critical
+		fmt.Fprintf(os.Stderr, "Warning: failed to save persistent cache: %v\n", err)
+	}
+
+	return spec, nil
+}
+
+// loadFromPersistentCache loads a spec from the persistent cache.
+func (p *Parser) loadFromPersistentCache(appName string, source string) (*openapi3.T, bool, error) {
+	// Get cache paths
+	cacheDir := p.getCacheDir(appName)
+	parsedPath := filepath.Join(cacheDir, "parsed.json")
+	metaPath := filepath.Join(cacheDir, "meta.json")
+
+	// Check if files exist
+	if _, err := os.Stat(parsedPath); err != nil {
+		return nil, false, nil
+	}
+
+	if _, err := os.Stat(metaPath); err != nil {
+		return nil, false, nil
+	}
+
+	// Read metadata
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to read cache metadata: %w", err)
+	}
+
+	var meta ParsedCacheMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return nil, false, fmt.Errorf("failed to unmarshal cache metadata: %w", err)
+	}
+
+	// Check if cache is valid
+	if !p.isCacheValid(source, &meta) {
+		return nil, false, nil
+	}
+
+	// Read parsed spec
+	data, err = os.ReadFile(parsedPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to read parsed spec: %w", err)
+	}
+
+	var spec openapi3.T
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return nil, false, fmt.Errorf("failed to unmarshal parsed spec: %w", err)
+	}
+
+	return &spec, true, nil
+}
+
+// saveToPersistentCache saves a parsed spec to the persistent cache.
+func (p *Parser) saveToPersistentCache(appName string, source string, spec *openapi3.T) error {
+	// Create cache directory
+	cacheDir := p.getCacheDir(appName)
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return fmt.Errorf("failed to create cache directory: %w", err)
+	}
+
+	parsedPath := filepath.Join(cacheDir, "parsed.json")
+	metaPath := filepath.Join(cacheDir, "meta.json")
+
+	// Create metadata
+	meta := ParsedCacheMeta{
+		SourceURL:     source,
+		ParsedAt:      time.Now(),
+		ParserVersion: ParserVersion,
+	}
+
+	// Compute content hash for source
+	if !isURL(source) {
+		content, err := os.ReadFile(source)
+		if err != nil {
+			return fmt.Errorf("failed to read source for hashing: %w", err)
+		}
+		meta.ContentHash = computeHash(content)
+	}
+
+	// Marshal and write parsed spec
+	specData, err := json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal parsed spec: %w", err)
+	}
+
+	tmpPath := parsedPath + ".tmp"
+	if err := os.WriteFile(tmpPath, specData, 0644); err != nil {
+		return fmt.Errorf("failed to write parsed spec: %w", err)
+	}
+	if err := os.Rename(tmpPath, parsedPath); err != nil {
+		return fmt.Errorf("failed to move parsed spec: %w", err)
+	}
+
+	// Marshal and write metadata
+	metaData, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	if err := os.WriteFile(metaPath, metaData, 0644); err != nil {
+		return fmt.Errorf("failed to write metadata: %w", err)
+	}
+
+	return nil
+}
+
+// isCacheValid checks if the persistent cache is still valid.
+func (p *Parser) isCacheValid(source string, meta *ParsedCacheMeta) bool {
+	// Check parser version
+	if meta.ParserVersion != ParserVersion {
+		return false
+	}
+
+	// Check if source has changed (for local files)
+	if !isURL(source) {
+		content, err := os.ReadFile(source)
+		if err != nil {
+			return false
+		}
+		currentHash := computeHash(content)
+		if currentHash != meta.ContentHash {
+			return false
+		}
+	}
+
+	return true
+}
+
+// getCacheDir returns the cache directory for an app.
+func (p *Parser) getCacheDir(appName string) string {
+	return filepath.Join(p.baseDir, appName, "cache")
+}
+
+// ParsedCacheMeta contains metadata about a cached parsed spec.
+type ParsedCacheMeta struct {
+	SourceURL     string    `json:"source_url"`
+	ParsedAt      time.Time `json:"parsed_at"`
+	ParserVersion string    `json:"parser_version"`
+	ContentHash   string    `json:"content_hash,omitempty"`
+}
+
+// ParserVersion is the version of the parser used for persistent caching.
+const ParserVersion = "1.0"

@@ -2,6 +2,7 @@
 package completion
 
 import (
+	"context"
 	"sort"
 	"strings"
 
@@ -366,12 +367,12 @@ func (p *Provider) loadSpec(appName string) (*openapi3.T, error) {
 		return nil, err
 	}
 
-	// Load and cache spec
-	specDoc, err := p.specParser.LoadSpec(appConfig.SpecSource)
+	// Load and cache spec with persistent caching
+	ctx := context.Background()
+	specDoc, err := p.specParser.LoadSpecWithPersistentCache(ctx, appConfig.SpecSource, appName)
 	if err != nil {
 		return nil, err
 	}
 
-	p.specParser.CacheSpec(appName, specDoc)
 	return specDoc, nil
 }

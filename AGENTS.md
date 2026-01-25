@@ -128,24 +128,29 @@ Run the following commands. All must pass:
 
 1. **Format & Lint:**
 
-```bash
-make fmt-fix && make lint-fix
+    ```bash
+    make fmt-fix && make lint-fix
+    ```
 
-```
+2. **Unit Tests:**
 
-1. **Unit Tests:**
+    ```bash
+    go test -v -short ./...
+    ```
 
-```bash
-go test -v -short ./...
+3. **Integration Tests (Optional but Recommended):**
 
-```
+    ```bash
+    go test -v -tags=integration ./...
+    ```
 
-1. **Integration Tests (Optional but Recommended):**
+4. **Documentation Sync Check:**
 
-```bash
-go test -v -tags=integration ./...
+    * Review your changes and ensure all modifications are reflected in relevant documentation (e.g., README files, API docs, code comments, or guides).
 
-```
+    * If the change affects user-facing functionality, verify that documentation is updated accordingly.
+
+    * When in doubt, ask whether the change requires documentation updates.
 
 ### 5.2 Commit Messages
 
