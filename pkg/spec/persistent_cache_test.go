@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,7 +131,7 @@ func TestRemoteCacheStoresAndReusesEntry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Stat(%s) failed: %v", name, err)
 		}
-		if info.Mode().Perm() != remoteCacheFilePerm {
+		if runtime.GOOS != "windows" && info.Mode().Perm() != remoteCacheFilePerm {
 			t.Errorf("cache file %s has perm %o, want %o", name, info.Mode().Perm(), remoteCacheFilePerm)
 		}
 		if filepath.Ext(name) == ".tmp" {

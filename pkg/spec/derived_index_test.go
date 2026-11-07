@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -177,7 +178,7 @@ func TestLoadDerivedIndexBuildsPersistsAndReuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat index file failed: %v", err)
 	}
-	if info.Mode().Perm() != derivedIndexFilePerm {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != derivedIndexFilePerm {
 		t.Errorf("index file perm = %o, want %o", info.Mode().Perm(), derivedIndexFilePerm)
 	}
 
