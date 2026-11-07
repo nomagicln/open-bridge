@@ -614,22 +614,30 @@ func TestPropertyDerivedIndexGobRoundTrip(t *testing.T) {
 								Tags:                 []string{"pets"},
 								Parameters: []DerivedParameter{
 									{
-										Name: "status", In: "query", Required: true, Type: "string",
-										Types: []string{"string"}, Enum: []string{"available", "pending"},
-										EnumAreStrings: true, Description: "status filter",
+										Name: "status", In: "query", Required: true,
+										Description: "status filter",
+										Schema: &DerivedSchema{
+											Type: "string", Types: []string{"string"},
+											Enum: []string{"available", "pending"}, EnumAreStrings: true,
+										},
 									},
 									{
-										Name: "limit", In: "query", Type: "integer", Types: []string{"integer"},
-										HasExample: true, Example: "10",
+										Name: "limit", In: "query", HasExample: true, Example: "10",
+										Schema: &DerivedSchema{Type: "integer", Types: []string{"integer"}},
 									},
 								},
-								BodyFields: []DerivedField{
-									{Name: "name", Required: true, Type: "string", Types: []string{"string"}, Description: "pet name"},
-									{Name: "kind", Type: "string", Types: []string{"string"}, Enum: []string{"cat", "dog"}, EnumAreStrings: true},
+								BodySchema: &DerivedSchema{
+									Type: "object", Types: []string{"object"},
+									Required: []string{"name"},
+									Properties: map[string]*DerivedSchema{
+										"name": {Type: "string", Types: []string{"string"}, Description: "pet name"},
+										"kind": {Type: "string", Types: []string{"string"}, Enum: []string{"cat", "dog"}, EnumAreStrings: true},
+									},
 								},
-								BodyRequired:  true,
-								BodyMediaType: "application/json",
-								HasBody:       true,
+								BodyRequired:       true,
+								BodyMediaType:      "application/json",
+								HasBody:            true,
+								ExecutionIndexable: true,
 							},
 						},
 					},
@@ -705,7 +713,7 @@ func writeDerivedIndexDetailsSpec(t *testing.T) string {
 	return specPath
 }
 
-func TestDerivedIndexV3OperationDetails(t *testing.T) {
+func TestDerivedIndexV4OperationDetails(t *testing.T) {
 	specPath := writeDerivedIndexDetailsSpec(t)
 	idx, err := NewParser(WithIndexCache(t.TempDir())).LoadDerivedIndex(context.Background(), specPath, "details")
 	if err != nil {
@@ -724,34 +732,43 @@ func TestDerivedIndexV3OperationDetails(t *testing.T) {
 	}
 
 	limit := op.Parameters[0]
-	if limit.Name != "limit" || limit.In != "query" || limit.Required || limit.Type != "integer" || limit.Description != "Max results" {
+	if limit.Name != "limit" || limit.In != "query" || limit.Required || limit.Description != "Max results" {
 		t.Errorf("unexpected limit parameter: %+v", limit)
 	}
+	if limit.Schema == nil || limit.Schema.Type != "integer" {
+		t.Errorf("unexpected limit schema: %+v", limit.Schema)
+	}
 	status := op.Parameters[1]
-	if status.Name != "status" || !status.Required || status.Type != "string" ||
-		!reflect.DeepEqual(status.Enum, []string{"available", "pending"}) || !status.EnumAreStrings {
+	if status.Name != "status" || !status.Required || status.Schema == nil || status.Schema.Type != "string" ||
+		!reflect.DeepEqual(status.Schema.Enum, []string{"available", "pending"}) || !status.Schema.EnumAreStrings {
 		t.Errorf("unexpected status parameter: %+v", status)
 	}
 
-	if !op.HasBody || !op.BodyRequired || op.BodyMediaType != "application/json" {
-		t.Errorf("unexpected body metadata: hasBody=%v required=%v media=%q", op.HasBody, op.BodyRequired, op.BodyMediaType)
+	if !op.HasBody || !op.BodyRequired || op.BodyMediaType != "application/json" || op.BodySchema == nil {
+		t.Errorf("unexpected body metadata: hasBody=%v required=%v media=%q schema=%v", op.HasBody, op.BodyRequired, op.BodyMediaType, op.BodySchema)
 	}
-	if len(op.BodyFields) != 2 {
-		t.Fatalf("expected 2 body fields, got %+v", op.BodyFields)
+	if len(op.BodySchema.Properties) != 2 {
+		t.Fatalf("expected 2 body properties, got %+v", op.BodySchema.Properties)
 	}
-	nameField := op.BodyFields[0]
-	if nameField.Name != "name" || !nameField.Required || nameField.Type != "string" || nameField.Description != "Pet name" {
+	nameField := op.BodySchema.Properties["name"]
+	if nameField == nil || nameField.Type != "string" || nameField.Description != "Pet name" {
 		t.Errorf("unexpected required body field: %+v", nameField)
 	}
 	if !nameField.HasExample || nameField.Example != "rex" {
 		t.Errorf("unexpected body field example: %+v", nameField)
 	}
-	if age := op.BodyFields[1]; age.Name != "age" || age.Required || age.Type != "integer" {
+	if age := op.BodySchema.Properties["age"]; age == nil || age.Type != "integer" {
 		t.Errorf("unexpected optional body field: %+v", age)
+	}
+	if !reflect.DeepEqual(op.BodySchema.Required, []string{"name"}) {
+		t.Errorf("unexpected body required list: %v", op.BodySchema.Required)
+	}
+	if !op.ExecutionIndexable || op.ExecutionBlockReason != "" {
+		t.Errorf("expected indexable operation, got indexable=%v reason=%q", op.ExecutionIndexable, op.ExecutionBlockReason)
 	}
 }
 
-func TestDerivedIndexV3CommandSpecRoundTrip(t *testing.T) {
+func TestDerivedIndexV4CommandSpecRoundTrip(t *testing.T) {
 	specPath := writeDerivedIndexDetailsSpec(t)
 	idx, err := NewParser(WithIndexCache(t.TempDir())).LoadDerivedIndex(context.Background(), specPath, "details")
 	if err != nil {
@@ -842,13 +859,17 @@ func TestDerivedIndexCommandHelpIndexable(t *testing.T) {
 func TestDerivedIndexFlagHelpers(t *testing.T) {
 	op := &DerivedOperation{
 		Parameters: []DerivedParameter{
-			{Name: "status", In: "query", Type: "string", Enum: []string{"available", "pending"}, EnumAreStrings: true},
-			{Name: "limit", In: "query", Type: "integer"},
+			{Name: "status", In: "query", Schema: &DerivedSchema{Type: "string", Types: []string{"string"}, Enum: []string{"available", "pending"}, EnumAreStrings: true}},
+			{Name: "limit", In: "query", Schema: &DerivedSchema{Type: "integer", Types: []string{"integer"}}},
 		},
-		BodyFields: []DerivedField{
-			{Name: "name", Required: true, Type: "string"},
-			{Name: "kind", Type: "string", Enum: []string{"cat", "dog"}, EnumAreStrings: true},
+		BodySchema: &DerivedSchema{
+			Type: "object", Types: []string{"object"},
+			Properties: map[string]*DerivedSchema{
+				"name": {Type: "string", Types: []string{"string"}},
+				"kind": {Type: "string", Types: []string{"string"}, Enum: []string{"cat", "dog"}, EnumAreStrings: true},
+			},
 		},
+		HasBody: true,
 	}
 
 	flags := op.FlagNames("")
@@ -994,6 +1015,59 @@ const derivedIndexExecutionSpec = `{
         },
         "responses": {"201": {"description": "Created"}}
       }
+    },
+    "/matrix": {
+      "post": {
+        "operationId": "createMatrix",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "properties": {"grid": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}}}
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    },
+    "/choice": {
+      "post": {
+        "operationId": "createChoice",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "oneOf": [
+              {"type": "object", "properties": {"name": {"type": "string"}}},
+              {"type": "object", "properties": {"code": {"type": "integer"}}}
+            ]
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    },
+    "/variants": {
+      "post": {
+        "operationId": "createVariants",
+        "requestBody": {
+          "content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": true
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    },
+    "/composed": {
+      "post": {
+        "operationId": "createComposed",
+        "requestBody": {
+          "content": {"application/json": {"schema": {
+            "allOf": [
+              {"type": "object", "properties": {"a": {"type": "string"}}},
+              {"type": "object", "properties": {"b": {"type": "string"}}}
+            ]
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
     }
   }
 }`
@@ -1017,10 +1091,14 @@ func TestDerivedIndexExecutionIndexability(t *testing.T) {
 	}{
 		{"pets", "list", true, ""},
 		{"pets", "create", true, ""},
-		{"orders", "create", false, "nested object"},
-		{"tags", "create", false, "array of strings"},
+		{"orders", "create", true, ""},
+		{"tags", "create", true, ""},
+		{"matrix", "create", true, ""},
+		{"choice", "create", true, ""},
 		{"untyped", "list", false, "has no type"},
 		{"xml", "create", false, "media type"},
+		{"variants", "create", false, "additionalProperties"},
+		{"composed", "create", false, "allOf"},
 	}
 
 	for _, tt := range tests {
