@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/nomagicln/open-bridge/internal/install"
 	"github.com/nomagicln/open-bridge/pkg/cli"
 	"github.com/nomagicln/open-bridge/pkg/completion"
 	"github.com/nomagicln/open-bridge/pkg/config"
@@ -41,9 +42,11 @@ func newTestDeps(t *testing.T) *Deps {
 	mcpHandler := mcp.NewHandler(mapper, reqBuilder, nil)
 	appRouter := router.NewRouter(cliHandler, mcpHandler, configMgr, specParser)
 	completionProvider := completion.NewProvider(configMgr, specParser, mapper)
+	installer := install.New(configMgr)
 
 	return &Deps{
 		Config:     configMgr,
+		Installer:  installer,
 		Parser:     specParser,
 		Credential: nil,
 		Mapper:     mapper,
@@ -160,13 +163,13 @@ func TestMergeExistingConfig(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		opts     config.InstallOptions
-		expected config.InstallOptions
+		opts     install.InstallOptions
+		expected install.InstallOptions
 	}{
 		{
 			name: "merge all empty fields",
-			opts: config.InstallOptions{},
-			expected: config.InstallOptions{
+			opts: install.InstallOptions{},
+			expected: install.InstallOptions{
 				SpecSource:  "existing-spec.yaml",
 				SpecSources: []string{"spec1.yaml", "spec2.yaml"},
 				Description: "Existing description",
@@ -176,13 +179,13 @@ func TestMergeExistingConfig(t *testing.T) {
 		},
 		{
 			name: "preserve non-empty fields",
-			opts: config.InstallOptions{
+			opts: install.InstallOptions{
 				SpecSource:  "new-spec.yaml",
 				Description: "New description",
 				BaseURL:     "https://new-api.example.com",
 				AuthType:    "api_key",
 			},
-			expected: config.InstallOptions{
+			expected: install.InstallOptions{
 				SpecSource:  "new-spec.yaml",
 				SpecSources: nil, // When SpecSource is provided, SpecSources is not merged
 				Description: "New description",
@@ -192,10 +195,10 @@ func TestMergeExistingConfig(t *testing.T) {
 		},
 		{
 			name: "merge spec sources when spec source is empty",
-			opts: config.InstallOptions{
+			opts: install.InstallOptions{
 				SpecSources: []string{"new-spec1.yaml"},
 			},
-			expected: config.InstallOptions{
+			expected: install.InstallOptions{
 				SpecSource:  "",                         // When SpecSources is provided, SpecSource is not merged
 				SpecSources: []string{"new-spec1.yaml"}, // Preserved, not merged
 				Description: "Existing description",
@@ -205,10 +208,10 @@ func TestMergeExistingConfig(t *testing.T) {
 		},
 		{
 			name: "preserve spec sources when spec source is provided",
-			opts: config.InstallOptions{
+			opts: install.InstallOptions{
 				SpecSource: "new-spec.yaml",
 			},
-			expected: config.InstallOptions{
+			expected: install.InstallOptions{
 				SpecSource:  "new-spec.yaml",
 				SpecSources: nil, // When SpecSource is provided, SpecSources is not merged
 				Description: "Existing description",
@@ -498,7 +501,8 @@ paths: {}
 `
 	require.NoError(t, os.WriteFile(specPath, []byte(specContent), 0644))
 
-	_, err = mgr.InstallApp(appName, config.InstallOptions{
+	installer := install.New(mgr)
+	_, err = installer.InstallApp(appName, install.InstallOptions{
 		SpecSource: specPath,
 		BaseURL:    "https://api.example.com",
 		CreateShim: false,

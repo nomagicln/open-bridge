@@ -245,8 +245,12 @@ func TestFlagValueCompletionContext(t *testing.T) {
 		{"equals prefix", []string{"a", "res", "verb"}, "--status=av", "--status", "av", true, true},
 		{"flag name completion", []string{"a", "res", "verb"}, "--st", "", "", false, false},
 		{"bare completion", []string{"a", "res", "verb"}, "", "", "", false, false},
-		{"value word only", []string{"a", "res", "verb", "--status"}, "av", "", "", false, false},
+		{"space form value prefix", []string{"a", "res", "verb", "--status"}, "av", "--status", "av", false, true},
+		{"space form single char prefix", []string{"a", "res", "verb", "--status"}, "p", "--status", "p", false, true},
+		{"dash prefixed prefix stays flag completion", []string{"a", "res", "verb", "--status"}, "-a", "", "", false, false},
+		{"value prefix without flag", []string{"a", "res", "verb"}, "av", "", "", false, false},
 		{"non-flag last arg", []string{"a", "res", "verb", "--status", "available"}, "", "", "", false, false},
+		{"space form after flag with equals in value", []string{"a", "res", "verb", "--status"}, "x=y", "--status", "x=y", false, true},
 	}
 
 	for _, tt := range tests {
@@ -258,4 +262,75 @@ func TestFlagValueCompletionContext(t *testing.T) {
 			assert.Equal(t, tt.ok, ok)
 		})
 	}
+}
+
+func TestCompleteRunArgsFlagValueSpaceFormPrefix(t *testing.T) {
+	deps := newTestDeps(t)
+	specPath := writeCompletionFlagSpec(t)
+	installCompletionApp(t, deps, "spaceapp", specPath)
+
+	tests := []struct {
+		name       string
+		args       []string
+		toComplete string
+		want       []string
+	}{
+		{
+			name:       "enum prefix filters values",
+			args:       []string{"spaceapp", "pets", "list", "--status"},
+			toComplete: "av",
+			want:       []string{"available"},
+		},
+		{
+			name:       "second enum value prefix",
+			args:       []string{"spaceapp", "pets", "list", "--status"},
+			toComplete: "p",
+			want:       []string{"pending"},
+		},
+		{
+			name:       "multiple enum matches",
+			args:       []string{"spaceapp", "pets", "list", "--sort"},
+			toComplete: "d",
+			want:       []string{"desc"},
+		},
+		{
+			name:       "common flag value prefix",
+			args:       []string{"spaceapp", "pets", "list", "--output"},
+			toComplete: "js",
+			want:       []string{"json"},
+		},
+		{
+			name:       "no matching enum value falls back",
+			args:       []string{"spaceapp", "pets", "list", "--status"},
+			toComplete: "zzz",
+			want:       nil,
+		},
+		{
+			name:       "unknown flag falls back to flag names",
+			args:       []string{"spaceapp", "pets", "list", "--bogus"},
+			toComplete: "x",
+			want:       nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, directive := deps.completeRunArgs(nil, tt.args, tt.toComplete)
+
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
+		})
+	}
+}
+
+func TestCompleteRunArgsSpaceFormKeepsEmptyPrefixBehavior(t *testing.T) {
+	deps := newTestDeps(t)
+	specPath := writeCompletionFlagSpec(t)
+	installCompletionApp(t, deps, "prefixapp", specPath)
+
+	// An empty prefix after the flag keeps returning every known value (empty
+	// completion of the flag value, not a filtered prefix).
+	got, directive := deps.completeRunArgs(nil, []string{"prefixapp", "pets", "list", "--status"}, "")
+	assert.Equal(t, []string{"available", "pending"}, got)
+	assert.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
 }
