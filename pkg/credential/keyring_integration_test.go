@@ -249,7 +249,7 @@ func TestManagerBackend(t *testing.T) {
 	assert.NotEmpty(t, backend)
 }
 
-func TestGetPlatformInfo(t *testing.T) {
+func TestIntegrationGetPlatformInfo(t *testing.T) {
 	info := GetPlatformInfo()
 
 	assert.NotEmpty(t, info.OS)
@@ -258,7 +258,10 @@ func TestGetPlatformInfo(t *testing.T) {
 	assert.True(t, info.FallbackAvailable)
 }
 
-func TestWithPassBackend(t *testing.T) {
+// TestIntegrationWithPassBackend verifies the pass backend option can be constructed.
+// Renamed from TestWithPassBackend to avoid a redeclaration conflict with the
+// untagged keyring_test.go when the integration build tag is enabled.
+func TestIntegrationWithPassBackend(t *testing.T) {
 	// Just test that the option can be created without panic
 	opt := WithPassBackend("/tmp/pass", "pass", "ob")
 	assert.NotNil(t, opt)

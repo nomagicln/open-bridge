@@ -1,3 +1,5 @@
+//go:build integration
+
 // Package integration provides end-to-end integration tests for OpenBridge.
 package integration
 
