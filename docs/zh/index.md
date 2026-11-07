@@ -26,7 +26,7 @@ features:
   - title: 渐进式披露
     details: 智能的工具发现策略，通过 SearchTools 避免大量 API 淹没 AI 上下文。
   - title: 安全且快速
-    details: 使用系统密钥环管理凭据（无桌面后端时可用加密文件后端），缓存远端 OpenAPI 规范以支持离线复用，支持按 profile 配置 TLS/重试，CLI 启动为个位数毫秒。
+    details: 使用系统密钥环管理凭据（无桌面后端时可用加密文件后端），缓存远端规范与派生的帮助索引以实现即时 help/补全，支持按 profile 配置 TLS/重试，CLI 启动为个位数毫秒。
   - title: 跨平台
     details: 在 Linux, macOS 和 Windows 上原生运行。
 ---

@@ -26,6 +26,7 @@
 - **Secure Credentials**: Uses system keyring (Keychain, Credential Manager, Secret Service); on headless systems, set `OPENBRIDGE_KEYRING_PASSWORD` to use an encrypted file backend
 - **Resilient Requests**: Per-profile timeout, retry policy and TLS options (custom CA, client certificates, insecure-skip-verify, minimum version)
 - **Offline-Friendly Remote Specs**: remote OpenAPI specs are cached locally and revalidated with `ETag` / `Last-Modified`
+- **Instant Help & Completion**: app help and shell completion read a cached derived index (~10ms even for multi-MB specs)
 - **Fast Startup**: CLI startup (`ob --version` / `--help`) in single-digit milliseconds; app command latency depends on OpenAPI spec size
 
 ## Installation
@@ -142,7 +143,7 @@ profiles:
       retryable_status_codes: [429, 503]
 ```
 
-Profile-level `timeout` / `tls` / `retry` settings are applied to CLI requests. MCP safety controls
+Derived help/completion indexes and remote spec copies are cached under the config directory. Profile-level `timeout` / `tls` / `retry` settings are applied to CLI requests. MCP safety controls
 (`read_only_mode`, `require_confirm`, `max_requests_per_minute`, `dangerous_operation_patterns`, …)
 are documented in the CLI reference.
 

@@ -25,4 +25,5 @@
 - **安全凭据**：使用系统密钥环（Keychain, Credential Manager, Secret Service）；无桌面后端的环境可设置 `OPENBRIDGE_KEYRING_PASSWORD` 使用加密文件后端
 - **弹性请求**：按 profile 配置超时、重试策略与 TLS（自定义 CA、客户端证书、跳过校验）
 - **离线可用的远端 spec**：远端 OpenAPI 规范会本地缓存，并用 `ETag` / `Last-Modified` 做条件重新验证
+- **即时帮助与补全**：app help 与 shell 补全读取缓存的派生索引（即使 spec 有数 MB，也在 ~10ms 级）
 - **快速启动**：CLI 启动（`ob --version` / `--help`）为个位数毫秒；app 命令耗时取决于 OpenAPI 规范体积
