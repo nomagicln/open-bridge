@@ -4,6 +4,7 @@ package request
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,16 +18,24 @@ import (
 	"github.com/nomagicln/open-bridge/pkg/credential"
 )
 
+// credentialProvider is the subset of credential.Manager used to resolve credentials.
+// It is an interface so that tests can substitute a fake provider.
+type credentialProvider interface {
+	GetCredential(appName, profileName string) (*credential.Credential, error)
+}
+
 // Builder constructs HTTP requests from OpenAPI operations and parameters.
 type Builder struct {
-	credMgr *credential.Manager
+	credMgr credentialProvider
 }
 
 // NewBuilder creates a new request builder.
 func NewBuilder(credMgr *credential.Manager) *Builder {
-	return &Builder{
-		credMgr: credMgr,
+	b := &Builder{}
+	if credMgr != nil {
+		b.credMgr = credMgr
 	}
+	return b
 }
 
 // BuildRequest constructs an HTTP request from an operation and parameters.
@@ -104,14 +113,27 @@ func (b *Builder) createHTTPRequest(method, urlStr string, bodyReader *bytes.Rea
 }
 
 // InjectAuth adds authentication to a request based on configuration.
+//
+// A missing credential manager or a profile without authentication is a legal
+// state: no credential lookup is performed and nil is returned. A missing
+// credential is likewise silent. Any other backend error is wrapped and
+// returned so that failures are never silently swallowed.
 func (b *Builder) InjectAuth(req *http.Request, appName, profileName string, authConfig *config.AuthConfig) error {
 	if b.credMgr == nil {
 		return nil
 	}
 
+	if authConfig == nil || authConfig.Type == "" || strings.EqualFold(authConfig.Type, "none") {
+		return nil
+	}
+
 	cred, err := b.credMgr.GetCredential(appName, profileName)
 	if err != nil {
-		return nil // No credential, skip auth
+		var notFound *credential.CredentialNotFoundError
+		if errors.As(err, &notFound) {
+			return nil // No credential configured: legitimate, stay silent.
+		}
+		return fmt.Errorf("failed to load credential for %s/%s: %w", appName, profileName, err)
 	}
 
 	return b.injectAuthCredentials(req, authConfig, cred)

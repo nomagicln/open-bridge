@@ -2,6 +2,8 @@ package request
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -316,6 +318,118 @@ func TestInjectAuth_NoAuthApplied(t *testing.T) {
 			assert.Empty(t, req.Header.Get("Authorization"), tt.description)
 		})
 	}
+}
+
+// fakeCredentialProvider is a test double for credentialProvider that records calls.
+type fakeCredentialProvider struct {
+	cred     *credential.Credential
+	err      error
+	calls    int
+	lastApp  string
+	lastProf string
+}
+
+func (f *fakeCredentialProvider) GetCredential(appName, profileName string) (*credential.Credential, error) {
+	f.calls++
+	f.lastApp = appName
+	f.lastProf = profileName
+	return f.cred, f.err
+}
+
+func TestInjectAuth_NilAuthConfig_SkipsCredentialLookup(t *testing.T) {
+	provider := &fakeCredentialProvider{cred: credential.NewBearerCredential("token")}
+	b := &Builder{credMgr: provider}
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+	require.NoError(t, err)
+
+	err = b.InjectAuth(req, "myapp", "default", nil)
+	require.NoError(t, err)
+	assert.Empty(t, req.Header.Get("Authorization"))
+	assert.Zero(t, provider.calls, "nil auth config must not query the keyring")
+}
+
+func TestInjectAuth_NoAuthType_SkipsCredentialLookup(t *testing.T) {
+	tests := []struct {
+		name     string
+		authType string
+	}{
+		{name: "empty type", authType: ""},
+		{name: "none type", authType: "none"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &fakeCredentialProvider{cred: credential.NewBearerCredential("token")}
+			b := &Builder{credMgr: provider}
+
+			req, err := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+			require.NoError(t, err)
+
+			err = b.InjectAuth(req, "myapp", "default", &config.AuthConfig{Type: tt.authType})
+			require.NoError(t, err)
+			assert.Empty(t, req.Header.Get("Authorization"))
+			assert.Zero(t, provider.calls, "auth type %q must not query the keyring", tt.authType)
+		})
+	}
+}
+
+func TestInjectAuth_CredentialNotFoundIsSilent(t *testing.T) {
+	provider := &fakeCredentialProvider{
+		err: &credential.CredentialNotFoundError{AppName: "myapp", ProfileName: "default"},
+	}
+	b := &Builder{credMgr: provider}
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+	require.NoError(t, err)
+
+	err = b.InjectAuth(req, "myapp", "default", &config.AuthConfig{Type: "bearer"})
+	require.NoError(t, err, "missing credentials are a legal state and must stay silent")
+	assert.Empty(t, req.Header.Get("Authorization"))
+	assert.Equal(t, 1, provider.calls)
+}
+
+func TestInjectAuth_WrappedCredentialNotFoundIsSilent(t *testing.T) {
+	provider := &fakeCredentialProvider{
+		err: fmt.Errorf("lookup failed: %w", &credential.CredentialNotFoundError{AppName: "myapp", ProfileName: "default"}),
+	}
+	b := &Builder{credMgr: provider}
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+	require.NoError(t, err)
+
+	err = b.InjectAuth(req, "myapp", "default", &config.AuthConfig{Type: "bearer"})
+	require.NoError(t, err)
+	assert.Empty(t, req.Header.Get("Authorization"))
+}
+
+func TestInjectAuth_BackendErrorIsWrapped(t *testing.T) {
+	backendErr := errors.New("keyring is locked")
+	provider := &fakeCredentialProvider{err: backendErr}
+	b := &Builder{credMgr: provider}
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+	require.NoError(t, err)
+
+	err = b.InjectAuth(req, "myapp", "default", &config.AuthConfig{Type: "bearer"})
+	require.Error(t, err)
+	require.ErrorIs(t, err, backendErr, "backend errors must be wrapped with %w")
+	assert.Contains(t, err.Error(), "failed to load credential for myapp/default")
+	assert.Empty(t, req.Header.Get("Authorization"))
+}
+
+func TestInjectAuth_UsesRealAppAndProfileNames(t *testing.T) {
+	provider := &fakeCredentialProvider{cred: credential.NewBearerCredential("token")}
+	b := &Builder{credMgr: provider}
+
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+	require.NoError(t, err)
+
+	err = b.InjectAuth(req, "petapi", "prod", &config.AuthConfig{Type: "bearer"})
+	require.NoError(t, err)
+	assert.Equal(t, "petapi", provider.lastApp)
+	assert.Equal(t, "prod", provider.lastProf)
+	assert.Equal(t, "Bearer token", req.Header.Get("Authorization"))
 }
 
 func TestAddHeaderParams(t *testing.T) {
