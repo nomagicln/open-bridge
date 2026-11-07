@@ -197,13 +197,37 @@ func (h *Handler) executeAPIRequest(appName string, op *semantic.Operation, opSp
 		return nil, err
 	}
 
-	resp, err := h.httpClient.Do(req)
+	client, retryConfig, err := h.clientForProfile(profile)
+	if err != nil {
+		return nil, h.printAndWrapError(h.errorFormatter.FormatError(err), err)
+	}
+
+	resp, err := request.DoWithRetry(client, req, retryConfig)
 	if err != nil {
 		return nil, h.printAndWrapError(h.errorFormatter.FormatError(err), err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	return h.readResponse(resp)
+}
+
+// clientForProfile builds the HTTP client and retry policy for a profile.
+// Handler.httpClient remains the fallback used when no profile is supplied (and
+// is available for tests that inject a client); a real profile gets a client
+// derived from its timeout/TLS settings plus its retry policy.
+func (h *Handler) clientForProfile(profile *config.Profile) (*http.Client, config.RetryConfig, error) {
+	if profile == nil {
+		if h.httpClient != nil {
+			return h.httpClient, config.RetryConfig{}, nil
+		}
+		return &http.Client{Timeout: defaultHTTPTimeout}, config.RetryConfig{}, nil
+	}
+
+	client, err := request.NewHTTPClient(profile)
+	if err != nil {
+		return nil, config.RetryConfig{}, fmt.Errorf("failed to configure HTTP client for profile %q: %w", profile.Name, err)
+	}
+	return client, profile.RetryConfig, nil
 }
 
 // createCodeGenerator creates a code generator with the specified format and options.
