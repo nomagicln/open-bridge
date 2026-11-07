@@ -628,9 +628,8 @@ func TestTypedErrorUnwrap(t *testing.T) {
 	}
 
 	wrapped := fmt.Errorf("outer context: %w", &UnknownResourceError{Resource: "users"})
-	var unknown *UnknownResourceError
-	if !errors.As(wrapped, &unknown) {
-		t.Error("wrapped UnknownResourceError must be discoverable with errors.As")
+	if _, ok := errors.AsType[*UnknownResourceError](wrapped); !ok {
+		t.Error("wrapped UnknownResourceError must be discoverable with errors.AsType")
 	}
 }
 
