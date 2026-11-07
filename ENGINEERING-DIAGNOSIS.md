@@ -724,3 +724,62 @@ git log --format='%h %s' | while read h s; do git log -1 --format='%B' $h | grep
 ---
 
 > **报告完。** 本次诊断未修改仓库任何源码/配置；新增文件仅有本报告与 `.diagnosis/` 下 4 份领域详报。若需要，我可以按 §9 批次 0 直接发起修复 PR（建议从 A0-1/A0-2 开始）。
+
+---
+
+## 附录 D：修复状态跟踪（截至批次 3 完成，批次 4 进行中）
+
+> 本附录把诊断发现映射到修复批次，便于 reviewer 追踪闭环情况。批次 0–3 已提交并推送（32 个 DCO 签名提交，DCO 历史问题已通过 `git rebase --signoff` 修复）；批次 4 进行中。
+
+### D.1 P0 / P1 发现状态
+
+| 诊断 ID | 问题 | 状态 | 修复批次 / 证据 |
+| :---: | --- | :---: | --- |
+| D-01 (P0) | CLI 认证全链路失效 | ✅ 已修复 | 批次 0；e2e 断言 `Authorization: Bearer …`（批次 0 报告 §4） |
+| D-02 | 网络错误回显 query secret | ✅ 已修复 | 批次 0；`api_key=REDACTED` e2e |
+| D-03 | codegen URL 未掩码 | ✅ 已修复 | 批次 0；四种生成器均 `<YOUR_API_KEY>` |
+| D-04 | `ob info -o json/yaml` 未掩码 Header | ✅ 已修复 | 批次 0；深拷贝掩码 + 测试 |
+| D-05 | 持久化解析缓存空壳 / 每条命令重解析 | ✅ 已修复 | 批次 1 远端内容缓存；批次 2–3 派生命令树索引（help/completion ~10ms）；**批次 4 执行路径 P4：4MB spec 命令 147.0→11.4ms（12.9×）、删 spec 仍可执行** |
+| D-06 | 远端 spec 每命令重复下载 | ✅ 已修复 | 批次 1；install GET 1 次、重跑 0 请求、304/离线回退 |
+| D-07 | `--json/--yaml/--output` 无效 | ✅ 已修复 | 批次 0；e2e JSON/YAML 生效 |
+| D-08 | `--profile` 静默无效 / profile 配置不生效 | ✅ 已修复 | 批次 0（选择/Headers/Query）、批次 1（Timeout/TLS/Retry CLI）、批次 2（MCP） |
+| D-09 | MCP 安全控制不执行 | ✅ 已修复 | 批次 1；require_confirm/限流/dangerous patterns + 启动校验，e2e PASS |
+| D-10 | HTTP 无超时 | ✅ 已修复 | 批次 0（30s 兜底）、批次 1（per-profile timeout）、批次 2（MCP） |
+| D-11 | `ob <app>` 直连路由不可达 | ✅ 已修复 | 批次 0；直连/--help/--mcp e2e PASS |
+| D-12 | keyring 固定口令回退 | ✅ 已修复 | 批次 0；显式 opt-in、真实后端上报、无后端明确报错 |
+| D-13 | 集成测试 tag/重名/CI 缺失 | ✅ 已修复 | 批次 0；6/6 带 tag、`go vet -tags=integration` 与 tagged 套件全绿、CI 三步门禁 |
+| D-14 | lint 工具链不可运行/不可复现 | ✅ 已修复 | 批次 0 pin v2.15.0；批次 3 actionlint + 失效豁免清理；全仓 0 issue |
+| D-15 | `ob list/info` 解析所有 spec | ✅ 已修复 | 批次 1；持久化 spec 元数据，删除 spec 文件后仍可 list/info（~6.9ms vs 167ms） |
+| D-16 | 覆盖率/安全门禁缺失 | ✅ 已修复 | 批次 1（codecov/govulncheck/Dependabot/CodeQL）；批次 3 floor 70%/patch 75% |
+| F-22/F-23 | 错误模型字符串嗅探 / `PrintedError` 空消息 | ✅ 已修复 | 批次 4：typed errors + errors.As（5 处 strings.Contains 移除）、用户可见文本 13/13 逐字一致、`PrintedError` 返回真实文本 |
+| F-02/F-03 | `init()` 组合根 / 全局可变依赖 | ✅ 已修复 | 批次 3；`internal/app.Deps`，main.go 1,145→37 行，21/21 行为等价 |
+| F-05 | `pkg/config` 上帝包 | 🟡 设计完成，待实施 | 批次 2 删 3.2k 行死代码；批次 4 再删 1,934 行死 API + `proposals/03_config_split.md`（S0–S5 分步计划，批次 5 实施） |
+| F-18 | 归档依赖 `ghodss/yaml` / yaml.v2 | ✅ 已修复 | 批次 3；yaml.v3 替换，44 例等价矩阵，go mod tidy 干净 |
+| F-42 | ~4.5k 行死代码 | ✅ 基本清理 | 批次 2 删 spec_watcher/spec_cache（−3,260 行）+ fsnotify；批次 4 再删 config export/profile 死 API（−1,934）；剩余 profile Manager ~400 行列入批次 5 |
+
+### D.2 关键指标（诊断基线 → 批次 3 后）
+
+| 指标 | 诊断时 | 批次 3 后 |
+| --- | ---: | ---: |
+| 单元测试覆盖率 | 55.3% | **75.2%** |
+| Test 函数 | 535 | **696** |
+| Benchmark | 0 | **4**（派生索引/存储层）+ `make bench` |
+| `golangci-lint` | 不可运行 | **0 issues**（pin v2.15.0） |
+| govulncheck 可达漏洞 | 未检测 | **0**（批次 1 实测修复 7 个） |
+| `ob list`（3 app，含 4.1MB spec） | 166.9ms | **~6.9ms** |
+| 4MB spec `ob <app> --help` | 119–134ms | **~11ms**（派生索引） |
+| 4MB spec 命令级 `--help` | 148.6ms | **~11.5ms** |
+| 4MB spec 命令执行（mock API） | 147.0ms | **~11.4ms**（索引 fast path） |
+| 4MB spec shell 补全 | 133.6ms/Tab | **~11ms** |
+| 远端 spec 每条命令下载 | 1 次 GET/命令 | 本地缓存 + 条件请求（重跑 0 请求） |
+| `cmd/ob/main.go` | 1,057 行 + `init()` 全局依赖 | **37 行**（`internal/app.Deps`） |
+| 集成测试 tag 合规 | 1/6 | **6/6** |
+| DCO | 42 提交 37 缺失 | **32/32 签名**（历史已 `rebase --signoff` 重写并 force-push；本地备份分支保留） |
+
+### D.3 仍未闭环（批次 5+ 候选）
+
+- 派生索引 P4 扩展：嵌套 object/array-of-object/oneOf 等 schema 目前安全回退（视真实 API 形态决定是否扩展）。
+- `pkg/config` 拆分实施（proposals/03 的 S1–S5，批次 5）。
+- `go list -m all` 中 ghodss/yaml.v2 的 module graph 遗留（viper/etcd 旧链路）。
+- 索引 DTO 可选 body 属性顺序、`--flag value<TAB>` 空格形式补全、MCP 限流跨进程。
+- 剩余 P2/P3 条目（见各领域详报）。
