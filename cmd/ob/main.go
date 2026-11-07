@@ -65,6 +65,7 @@ func init() {
 	// back to the cached copy when the remote source is unreachable).
 	specParser = spec.NewParser(
 		spec.WithRemoteCache(filepath.Join(configMgr.ConfigDir(), "spec-cache")),
+		spec.WithIndexCache(filepath.Join(configMgr.ConfigDir(), "index-cache")),
 	)
 
 	// Credential manager

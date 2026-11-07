@@ -560,3 +560,191 @@ func TestClientForProfileFallback(t *testing.T) {
 		t.Fatal("clientForProfile() expected error for invalid TLS configuration, got nil")
 	}
 }
+
+// newIndexedHelpHandler builds a Handler whose parser uses a persistent derived
+// index cache and whose help output is captured in a buffer.
+func newIndexedHelpHandler(t *testing.T, indexDir string) (*Handler, *bytes.Buffer) {
+	t.Helper()
+
+	parser := spec.NewParser(spec.WithIndexCache(indexDir))
+	handler := NewHandler(parser, semantic.NewMapper(), request.NewBuilder(nil), nil)
+	buf := &bytes.Buffer{}
+	handler.stdout = buf
+
+	return handler, buf
+}
+
+// writeCLIHelpSpec writes a spec file and returns its path.
+func writeCLIHelpSpec(t *testing.T) string {
+	t.Helper()
+
+	specPath := filepath.Join(t.TempDir(), "index-help.json")
+	if err := os.WriteFile(specPath, []byte(cliTestSpecJSON), 0o600); err != nil {
+		t.Fatalf("write help spec: %v", err)
+	}
+
+	return specPath
+}
+
+// corruptCLIHelpSpec replaces the spec content with garbage of the same size and
+// restores the original modification time, so the derived-index key still
+// matches while parsing the file would fail.
+func corruptCLIHelpSpec(t *testing.T, specPath string) {
+	t.Helper()
+
+	info, err := os.Stat(specPath)
+	if err != nil {
+		t.Fatalf("stat spec: %v", err)
+	}
+
+	garbage := bytes.Repeat([]byte("x"), int(info.Size()))
+	if err := os.WriteFile(specPath, garbage, 0o600); err != nil {
+		t.Fatalf("corrupt spec: %v", err)
+	}
+	if err := os.Chtimes(specPath, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatalf("restore spec mtime: %v", err)
+	}
+}
+
+// helpAppConfig returns an AppConfig for the given spec source.
+func helpAppConfig(name, specSource string) *config.AppConfig {
+	return &config.AppConfig{
+		Name:           name,
+		SpecSource:     specSource,
+		Description:    "Derived Index Help API",
+		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{
+			"default": {Name: "default", BaseURL: "https://api.example.com"},
+		},
+	}
+}
+
+func TestShowAppHelpUsesDerivedIndexWithoutParsing(t *testing.T) {
+	specPath := writeCLIHelpSpec(t)
+	indexDir := t.TempDir()
+	appConfig := helpAppConfig("idxapp", specPath)
+
+	first, firstOut := newIndexedHelpHandler(t, indexDir)
+	if err := first.showAppHelp("idxapp", appConfig); err != nil {
+		t.Fatalf("first showAppHelp failed: %v", err)
+	}
+
+	firstText := firstOut.String()
+	if !strings.Contains(firstText, "Available Resources:") || !strings.Contains(firstText, "pets") {
+		t.Fatalf("help output missing resources:\n%s", firstText)
+	}
+	if _, ok := first.specParser.GetCachedSpec("idxapp"); ok {
+		t.Fatal("expected the index path not to populate the in-memory spec cache")
+	}
+
+	corruptCLIHelpSpec(t, specPath)
+
+	second, secondOut := newIndexedHelpHandler(t, indexDir)
+	if err := second.showAppHelp("idxapp", appConfig); err != nil {
+		t.Fatalf("cached showAppHelp failed: %v", err)
+	}
+	if _, ok := second.specParser.GetCachedSpec("idxapp"); ok {
+		t.Error("expected the second help render to use the derived index, not parse the spec")
+	}
+	if got := secondOut.String(); got != firstText {
+		t.Errorf("help text changed when served from the derived index:\nfirst:\n%s\nsecond:\n%s", firstText, got)
+	}
+}
+
+func TestShowResourceHelpUsesDerivedIndexWithoutParsing(t *testing.T) {
+	specPath := writeCLIHelpSpec(t)
+	indexDir := t.TempDir()
+	appConfig := helpAppConfig("idxres", specPath)
+
+	first, firstOut := newIndexedHelpHandler(t, indexDir)
+	if err := first.showResourceHelp("idxres", "pets", appConfig); err != nil {
+		t.Fatalf("first showResourceHelp failed: %v", err)
+	}
+
+	firstText := firstOut.String()
+	if !strings.Contains(firstText, "Resource: pets") || !strings.Contains(firstText, "pets list") {
+		t.Fatalf("resource help output unexpected:\n%s", firstText)
+	}
+
+	corruptCLIHelpSpec(t, specPath)
+
+	second, secondOut := newIndexedHelpHandler(t, indexDir)
+	if err := second.showResourceHelp("idxres", "pets", appConfig); err != nil {
+		t.Fatalf("cached showResourceHelp failed: %v", err)
+	}
+	if got := secondOut.String(); got != firstText {
+		t.Errorf("resource help text changed when served from the derived index:\n%s\n---\n%s", firstText, got)
+	}
+}
+
+func TestShowResourceOrVerbHelpUnknownResourceUsesIndex(t *testing.T) {
+	specPath := writeCLIHelpSpec(t)
+	indexDir := t.TempDir()
+	appConfig := helpAppConfig("idxunknown", specPath)
+
+	first, _ := newIndexedHelpHandler(t, indexDir)
+	if err := first.showAppHelp("idxunknown", appConfig); err != nil {
+		t.Fatalf("priming showAppHelp failed: %v", err)
+	}
+
+	corruptCLIHelpSpec(t, specPath)
+
+	second, _ := newIndexedHelpHandler(t, indexDir)
+	err := second.showResourceOrVerbHelp("idxunknown", "nope", appConfig)
+	if err == nil {
+		t.Fatal("expected an error for an unknown resource")
+	}
+	// The unknown-resource path renders the invalid-syntax help built from the
+	// derived index (the pre-index behavior for a single unknown argument).
+	if !strings.Contains(err.Error(), "Invalid command syntax") {
+		t.Errorf("unexpected error (likely parsed instead of using the index): %v", err)
+	}
+	if !strings.Contains(err.Error(), "idxunknown pets list --json") {
+		t.Errorf("index-derived examples missing from error: %v", err)
+	}
+}
+
+func TestShowAppHelpFallsBackWhenIndexDisabled(t *testing.T) {
+	specPath := writeCLIHelpSpec(t)
+	appConfig := helpAppConfig("fallbackapp", specPath)
+
+	handler, out := newIndexedHelpHandler(t, "")
+	if err := handler.showAppHelp("fallbackapp", appConfig); err != nil {
+		t.Fatalf("showAppHelp failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "Available Resources:") {
+		t.Errorf("fallback help output missing resources:\n%s", out.String())
+	}
+}
+
+func TestShowAppHelpSpecLoadFailureFallsBackToMessage(t *testing.T) {
+	appConfig := helpAppConfig("missingapp", filepath.Join(t.TempDir(), "does-not-exist.json"))
+
+	handler, out := newIndexedHelpHandler(t, t.TempDir())
+	if err := handler.showAppHelp("missingapp", appConfig); err != nil {
+		t.Fatalf("showAppHelp should tolerate a missing spec, got: %v", err)
+	}
+	if !strings.Contains(out.String(), "(Unable to load API specification)") {
+		t.Errorf("expected fallback message, got:\n%s", out.String())
+	}
+}
+
+func TestHelpTextIdenticalWithAndWithoutIndex(t *testing.T) {
+	specPath := writeCLIHelpSpec(t)
+	appConfig := helpAppConfig("sameapp", specPath)
+
+	cold, coldOut := newIndexedHelpHandler(t, "")
+	if err := cold.showAppHelp("sameapp", appConfig); err != nil {
+		t.Fatalf("cold showAppHelp failed: %v", err)
+	}
+
+	indexDir := t.TempDir()
+	warm, warmOut := newIndexedHelpHandler(t, indexDir)
+	if err := warm.showAppHelp("sameapp", appConfig); err != nil {
+		t.Fatalf("warm showAppHelp failed: %v", err)
+	}
+
+	if coldOut.String() != warmOut.String() {
+		t.Errorf("help text differs between parse and index paths:\ncold:\n%s\nwarm:\n%s", coldOut.String(), warmOut.String())
+	}
+}
