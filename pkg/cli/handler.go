@@ -98,7 +98,7 @@ func (h *Handler) loadAndCacheSpec(appName string, appConfig *config.AppConfig) 
 	ctx := context.Background()
 	specDoc, err := h.specParser.LoadSpecWithPersistentCache(ctx, appConfig.SpecSource, appName)
 	if err != nil {
-		return nil, h.printAndWrapError(h.errorFormatter.FormatError(fmt.Errorf("failed to load spec: %w", err)), err)
+		return nil, h.wrapSpecLoadError(appConfig.SpecSource, err)
 	}
 
 	// Cache in memory for this process
@@ -271,20 +271,20 @@ func (h *Handler) generateCode(appName string, op *semantic.Operation, opSpec *o
 	return writeCodeOutput(code, outputFile)
 }
 
-// resolveOperation finds the resource and operation for the given command.
-func (h *Handler) resolveOperation(specDoc *openapi3.T, resource, verb string) (*semantic.Resource, *semantic.Operation, error) {
+// resolveOperation finds the operation for the given command.
+func (h *Handler) resolveOperation(specDoc *openapi3.T, resource, verb string) (*semantic.Operation, error) {
 	tree := h.mapper.BuildCommandTree(specDoc)
 	res := h.findResource(tree, resource)
 	if res == nil {
-		return nil, nil, h.showUnknownResourceError(resource, tree)
+		return nil, h.showUnknownResourceError(resource, tree)
 	}
 
 	op, ok := res.Operations[verb]
 	if !ok {
-		return nil, nil, h.showUnknownVerbError(verb, resource, res)
+		return nil, h.showUnknownVerbError(verb, resource, res)
 	}
 
-	return res, op, nil
+	return op, nil
 }
 
 // getOperationRequestBody extracts the request body from the operation spec if present.
@@ -298,12 +298,16 @@ func getOperationRequestBody(opSpec *openapi3.Operation) *openapi3.RequestBody {
 // ExecuteCommand parses and executes a CLI command.
 // resolveOperationSpec loads spec and resolves operation details.
 func (h *Handler) resolveOperationSpec(appName string, appConfig *config.AppConfig, resource, verb string) (*openapi3.PathItem, *openapi3.Operation, *semantic.Operation, error) {
+	if opSpec, op, ok := h.resolveOperationSpecFromIndex(appName, appConfig, resource, verb); ok {
+		return nil, opSpec, op, nil
+	}
+
 	specDoc, err := h.loadAndCacheSpec(appName, appConfig)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	_, op, err := h.resolveOperation(specDoc, resource, verb)
+	op, err := h.resolveOperation(specDoc, resource, verb)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -319,6 +323,33 @@ func (h *Handler) resolveOperationSpec(appName string, appConfig *config.AppConf
 	}
 
 	return pathItem, opSpec, op, nil
+}
+
+// resolveOperationSpecFromIndex resolves an operation from the persisted derived
+// index when it is marked executable, avoiding a full spec parse. It returns
+// ok=false whenever the caller must fall back to the regular parsing path.
+func (h *Handler) resolveOperationSpecFromIndex(appName string, appConfig *config.AppConfig, resource, verb string) (*openapi3.Operation, *semantic.Operation, bool) {
+	index := h.loadDerivedIndex(appConfig, appName)
+	if index == nil {
+		return nil, nil, false
+	}
+
+	derivedOp, ok := index.FindOperation(resource, verb)
+	if !ok || !derivedOp.ExecutionIndexable {
+		return nil, nil, false
+	}
+
+	opSpec := derivedOp.CommandSpec()
+	if opSpec == nil {
+		return nil, nil, false
+	}
+
+	op := derivedOp.SemanticOperation()
+	if op == nil {
+		return nil, nil, false
+	}
+
+	return opSpec, op, true
 }
 
 // parseAndMergeParams parses CLI and request arguments and merges them into a unified map.
@@ -722,7 +753,7 @@ func (h *Handler) showInvalidSyntaxError(appName string, tree *semantic.CommandT
 func (h *Handler) showResourceOrVerbHelp(appName, arg string, appConfig *config.AppConfig) error {
 	tree, err := h.loadCommandTree(appName, appConfig)
 	if err != nil {
-		return h.wrapSpecLoadError(err)
+		return h.wrapSpecLoadError(appConfig.SpecSource, err)
 	}
 
 	// Check if arg is a resource
@@ -739,7 +770,7 @@ func (h *Handler) showResourceOrVerbHelp(appName, arg string, appConfig *config.
 func (h *Handler) showResourceHelp(appName, resourceName string, appConfig *config.AppConfig) error {
 	tree, err := h.loadCommandTree(appName, appConfig)
 	if err != nil {
-		return h.wrapSpecLoadError(err)
+		return h.wrapSpecLoadError(appConfig.SpecSource, err)
 	}
 
 	// Find resource
@@ -843,10 +874,12 @@ func (h *Handler) loadDerivedIndex(appConfig *config.AppConfig, appName string) 
 	return index
 }
 
-// wrapSpecLoadError formats and prints a help-path spec load error exactly like
-// the pre-index help path did.
-func (h *Handler) wrapSpecLoadError(err error) error {
-	return h.printAndWrapError(h.errorFormatter.FormatError(fmt.Errorf("failed to load spec: %w", err)), err)
+// wrapSpecLoadError wraps a spec loading failure in a typed SpecLoadError,
+// prints its formatted form and returns a PrintedError so main() does not print
+// it a second time.
+func (h *Handler) wrapSpecLoadError(source string, err error) error {
+	specErr := &SpecLoadError{Source: source, Err: err}
+	return h.printAndWrapError(h.errorFormatter.FormatError(specErr), specErr)
 }
 
 // sortedResourceKeys returns resource names sorted for deterministic help output.
@@ -1037,7 +1070,7 @@ func (h *Handler) showCommandHelpFromSpec(appName, resource, verb string, appCon
 		var err error
 		specDoc, err = h.specParser.LoadSpec(appConfig.SpecSource)
 		if err != nil {
-			return fmt.Errorf("failed to load spec: %w", err)
+			return &SpecLoadError{Source: appConfig.SpecSource, Err: err}
 		}
 		h.specParser.CacheSpec(appName, specDoc)
 	}
@@ -1045,12 +1078,12 @@ func (h *Handler) showCommandHelpFromSpec(appName, resource, verb string, appCon
 	tree := h.mapper.BuildCommandTree(specDoc)
 	res := h.findResource(tree, resource)
 	if res == nil {
-		return fmt.Errorf("unknown resource: %s", resource)
+		return &UnknownResourceError{Resource: resource}
 	}
 
 	op, ok := res.Operations[verb]
 	if !ok {
-		return fmt.Errorf("unknown verb '%s' for resource '%s'", verb, resource)
+		return &UnknownVerbError{Resource: resource, Verb: verb}
 	}
 
 	opSpec, err := h.getOperationFromSpec(specDoc, op)
@@ -1095,7 +1128,10 @@ func (h *Handler) showUnknownResourceError(resource string, tree *semantic.Comma
 	sb.WriteString("\nFor more information, use:\n")
 	sb.WriteString("  <app> --help\n")
 
-	return fmt.Errorf("%s", sb.String())
+	return &displayError{
+		message: sb.String(),
+		err:     &UnknownResourceError{Resource: resource},
+	}
 }
 
 // showUnknownVerbError displays error for unknown verb with available verbs.
@@ -1112,7 +1148,10 @@ func (h *Handler) showUnknownVerbError(verb, resource string, res *semantic.Reso
 	sb.WriteString("\nFor more information, use:\n")
 	fmt.Fprintf(&sb, "  <app> %s --help\n", resource)
 
-	return fmt.Errorf("%s", sb.String())
+	return &displayError{
+		message: sb.String(),
+		err:     &UnknownVerbError{Resource: resource, Verb: verb},
+	}
 }
 
 // showParameterValidationError displays detailed parameter validation error with help.

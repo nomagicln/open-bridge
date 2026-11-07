@@ -705,14 +705,14 @@ func writeDerivedIndexDetailsSpec(t *testing.T) string {
 	return specPath
 }
 
-func TestDerivedIndexV2OperationDetails(t *testing.T) {
+func TestDerivedIndexV3OperationDetails(t *testing.T) {
 	specPath := writeDerivedIndexDetailsSpec(t)
 	idx, err := NewParser(WithIndexCache(t.TempDir())).LoadDerivedIndex(context.Background(), specPath, "details")
 	if err != nil {
 		t.Fatalf("LoadDerivedIndex failed: %v", err)
 	}
-	if !reflect.DeepEqual(idx.IndexSchemaVersion, DerivedIndexSchemaVersion) || idx.IndexSchemaVersion != 2 {
-		t.Errorf("expected schema version 2, got %d", idx.IndexSchemaVersion)
+	if idx.IndexSchemaVersion != DerivedIndexSchemaVersion {
+		t.Errorf("expected schema version %d, got %d", DerivedIndexSchemaVersion, idx.IndexSchemaVersion)
 	}
 
 	op, ok := idx.FindOperation("pets", "create")
@@ -751,7 +751,7 @@ func TestDerivedIndexV2OperationDetails(t *testing.T) {
 	}
 }
 
-func TestDerivedIndexV2CommandSpecRoundTrip(t *testing.T) {
+func TestDerivedIndexV3CommandSpecRoundTrip(t *testing.T) {
 	specPath := writeDerivedIndexDetailsSpec(t)
 	idx, err := NewParser(WithIndexCache(t.TempDir())).LoadDerivedIndex(context.Background(), specPath, "details")
 	if err != nil {
@@ -915,5 +915,166 @@ func TestDerivedIndexSizeRatio(t *testing.T) {
 	t.Logf("index ratio: %.1f%% (%d / %d bytes)", ratio*100, info.Size(), specSize)
 	if ratio > 0.30 {
 		t.Errorf("index size ratio %.1f%% exceeds the 30%% target", ratio*100)
+	}
+}
+
+// derivedIndexExecutionSpec contains indexable operations (scalar parameters,
+// scalar and string-array body fields) and operations that must fall back to
+// full parsing (nested objects, arrays of objects, untyped parameters, non-JSON
+// bodies).
+const derivedIndexExecutionSpec = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Execution Index API", "version": "1.0.0"},
+  "paths": {
+    "/pets": {
+      "get": {
+        "operationId": "listPets",
+        "summary": "List pets",
+        "parameters": [
+          {"name": "status", "in": "query", "required": true,
+           "schema": {"type": "string", "enum": ["available", "pending"]}},
+          {"name": "limit", "in": "query", "schema": {"type": "integer"}}
+        ],
+        "responses": {"200": {"description": "OK"}}
+      },
+      "post": {
+        "operationId": "createPet",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string"},
+              "tags": {"type": "array", "items": {"type": "string"}}
+            }
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    },
+    "/orders": {
+      "post": {
+        "operationId": "createOrder",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "properties": {"meta": {"type": "object", "properties": {"x": {"type": "string"}}}}
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    },
+    "/tags": {
+      "post": {
+        "operationId": "createTags",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "properties": {"items": {"type": "array", "items": {"type": "object"}}}
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    },
+    "/untyped": {
+      "get": {
+        "operationId": "listUntyped",
+        "parameters": [{"name": "q", "in": "query", "schema": {}}],
+        "responses": {"200": {"description": "OK"}}
+      }
+    },
+    "/xml": {
+      "post": {
+        "operationId": "postXML",
+        "requestBody": {
+          "content": {"application/xml": {"schema": {"type": "object", "properties": {"x": {"type": "string"}}}}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    }
+  }
+}`
+
+func TestDerivedIndexExecutionIndexability(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "execution-spec.json")
+	if err := os.WriteFile(specPath, []byte(derivedIndexExecutionSpec), 0o600); err != nil {
+		t.Fatalf("write execution spec: %v", err)
+	}
+
+	idx, err := NewParser(WithIndexCache(t.TempDir())).LoadDerivedIndex(context.Background(), specPath, "exec")
+	if err != nil {
+		t.Fatalf("LoadDerivedIndex failed: %v", err)
+	}
+
+	tests := []struct {
+		resource      string
+		verb          string
+		indexable     bool
+		reasonKeyword string
+	}{
+		{"pets", "list", true, ""},
+		{"pets", "create", true, ""},
+		{"orders", "create", false, "nested object"},
+		{"tags", "create", false, "array of strings"},
+		{"untyped", "list", false, "has no type"},
+		{"xml", "create", false, "media type"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.resource+"/"+tt.verb, func(t *testing.T) {
+			op, ok := idx.FindOperation(tt.resource, tt.verb)
+			if !ok {
+				t.Fatalf("operation %s/%s not found", tt.resource, tt.verb)
+			}
+			if op.ExecutionIndexable != tt.indexable {
+				t.Fatalf("ExecutionIndexable = %v (reason %q), want %v",
+					op.ExecutionIndexable, op.ExecutionBlockReason, tt.indexable)
+			}
+			if tt.indexable {
+				if op.ExecutionBlockReason != "" {
+					t.Errorf("expected empty block reason, got %q", op.ExecutionBlockReason)
+				}
+				if specOp := op.CommandSpec(); specOp == nil {
+					t.Error("indexable operation did not reconstruct a spec")
+				}
+				return
+			}
+			if !strings.Contains(op.ExecutionBlockReason, tt.reasonKeyword) {
+				t.Errorf("block reason %q does not mention %q", op.ExecutionBlockReason, tt.reasonKeyword)
+			}
+			if op.SemanticOperation() == nil {
+				t.Error("SemanticOperation returned nil")
+			}
+		})
+	}
+}
+
+func TestLoadDerivedIndexDeletedSourceUsesIdentityIndex(t *testing.T) {
+	specPath := writeDerivedIndexDetailsSpec(t)
+	cacheDir := t.TempDir()
+
+	built, err := NewParser(WithIndexCache(cacheDir)).LoadDerivedIndex(context.Background(), specPath, "gone")
+	if err != nil {
+		t.Fatalf("initial LoadDerivedIndex failed: %v", err)
+	}
+
+	if err := os.Remove(specPath); err != nil {
+		t.Fatalf("remove spec: %v", err)
+	}
+
+	fromIndex, err := NewParser(WithIndexCache(cacheDir)).LoadDerivedIndex(context.Background(), specPath, "gone")
+	if err != nil {
+		t.Fatalf("expected identity index lookup after source removal, got: %v", err)
+	}
+	if !reflect.DeepEqual(built, fromIndex) {
+		t.Error("identity index differs from the originally built index")
+	}
+
+	// A different app must not inherit the entry.
+	if _, err := NewParser(WithIndexCache(cacheDir)).LoadDerivedIndex(context.Background(), specPath, "other"); err == nil {
+		t.Error("expected an error for an unknown app/source identity")
 	}
 }
