@@ -739,7 +739,7 @@ git log --format='%h %s' | while read h s; do git log -1 --format='%B' $h | grep
 | D-02 | 网络错误回显 query secret | ✅ 已修复 | 批次 0；`api_key=REDACTED` e2e |
 | D-03 | codegen URL 未掩码 | ✅ 已修复 | 批次 0；四种生成器均 `<YOUR_API_KEY>` |
 | D-04 | `ob info -o json/yaml` 未掩码 Header | ✅ 已修复 | 批次 0；深拷贝掩码 + 测试 |
-| D-05 | 持久化解析缓存空壳 / 每条命令重解析 | ✅ 已修复 | 批次 1 远端内容缓存；批次 2–3 派生命令树索引（help/completion ~10ms）；**批次 4 执行路径 P4：4MB spec 命令 147.0→11.4ms（12.9×）、删 spec 仍可执行** |
+| D-05 | 持久化解析缓存空壳 / 每条命令重解析 | ✅ 已修复 | 批次 1 远端内容缓存；批次 2–3 help/completion 索引（~11ms）；批次 4 执行 fast path（4MB 命令 147→11.4ms、删 spec 仍可执行）；批次 5 嵌套 schema 扩展（可索引率 44%→89%，4MB warm 12.9ms） |
 | D-06 | 远端 spec 每命令重复下载 | ✅ 已修复 | 批次 1；install GET 1 次、重跑 0 请求、304/离线回退 |
 | D-07 | `--json/--yaml/--output` 无效 | ✅ 已修复 | 批次 0；e2e JSON/YAML 生效 |
 | D-08 | `--profile` 静默无效 / profile 配置不生效 | ✅ 已修复 | 批次 0（选择/Headers/Query）、批次 1（Timeout/TLS/Retry CLI）、批次 2（MCP） |
@@ -753,15 +753,15 @@ git log --format='%h %s' | while read h s; do git log -1 --format='%B' $h | grep
 | D-16 | 覆盖率/安全门禁缺失 | ✅ 已修复 | 批次 1（codecov/govulncheck/Dependabot/CodeQL）；批次 3 floor 70%/patch 75% |
 | F-22/F-23 | 错误模型字符串嗅探 / `PrintedError` 空消息 | ✅ 已修复 | 批次 4：typed errors + errors.As（5 处 strings.Contains 移除）、用户可见文本 13/13 逐字一致、`PrintedError` 返回真实文本 |
 | F-02/F-03 | `init()` 组合根 / 全局可变依赖 | ✅ 已修复 | 批次 3；`internal/app.Deps`，main.go 1,145→37 行，21/21 行为等价 |
-| F-05 | `pkg/config` 上帝包 | 🟡 设计完成，待实施 | 批次 2 删 3.2k 行死代码；批次 4 再删 1,934 行死 API + `proposals/03_config_split.md`（S0–S5 分步计划，批次 5 实施） |
+| F-05 | `pkg/config` 上帝包 | ✅ S1–S3 已实施 | 批次 2 删 3.2k 行死代码；批次 4 删 1,934 行死 API；**批次 5 S1–S3：config 2,625→808 行 / 93→41 导出 / 叶子包，internal/install 承接安装/TLS，ProfileManager 死 API 删除**；S4 TUI 内化待后续 |
 | F-18 | 归档依赖 `ghodss/yaml` / yaml.v2 | ✅ 已修复 | 批次 3；yaml.v3 替换，44 例等价矩阵，go mod tidy 干净 |
-| F-42 | ~4.5k 行死代码 | ✅ 基本清理 | 批次 2 删 spec_watcher/spec_cache（−3,260 行）+ fsnotify；批次 4 再删 config export/profile 死 API（−1,934）；剩余 profile Manager ~400 行列入批次 5 |
+| F-42 | ~4.5k 行死代码 | ✅ 已清理 | 批次 2 删 spec_watcher/spec_cache（−3,260 行）+ fsnotify；批次 4 删 config export 死 API（−1,934）；批次 5 删 ProfileManager 家族（−1,275） |
 
 ### D.2 关键指标（诊断基线 → 批次 3 后）
 
 | 指标 | 诊断时 | 批次 3 后 |
 | --- | ---: | ---: |
-| 单元测试覆盖率 | 55.3% | **75.2%** |
+| 单元测试覆盖率 | 55.3% | **75.9%** |
 | Test 函数 | 535 | **696** |
 | Benchmark | 0 | **4**（派生索引/存储层）+ `make bench` |
 | `golangci-lint` | 不可运行 | **0 issues**（pin v2.15.0） |
@@ -769,17 +769,18 @@ git log --format='%h %s' | while read h s; do git log -1 --format='%B' $h | grep
 | `ob list`（3 app，含 4.1MB spec） | 166.9ms | **~6.9ms** |
 | 4MB spec `ob <app> --help` | 119–134ms | **~11ms**（派生索引） |
 | 4MB spec 命令级 `--help` | 148.6ms | **~11.5ms** |
-| 4MB spec 命令执行（mock API） | 147.0ms | **~11.4ms**（索引 fast path） |
+| 4MB spec 命令执行（mock API） | 147.0ms | **~11.4–12.9ms**（索引 fast path，v4 嵌套 schema） |
 | 4MB spec shell 补全 | 133.6ms/Tab | **~11ms** |
 | 远端 spec 每条命令下载 | 1 次 GET/命令 | 本地缓存 + 条件请求（重跑 0 请求） |
-| `cmd/ob/main.go` | 1,057 行 + `init()` 全局依赖 | **37 行**（`internal/app.Deps`） |
+| `cmd/ob/main.go` | 1,057 行 + `init()` 全局依赖 | **37 行**（`internal/app.Deps`，commands 已拆 4 文件） |
+| `pkg/config` | 10,448 行 / 243 导出（诊断口径） | **808 行 / 41 导出 / 叶子包**（批次 5 S1–S3） |
 | 集成测试 tag 合规 | 1/6 | **6/6** |
 | DCO | 42 提交 37 缺失 | **32/32 签名**（历史已 `rebase --signoff` 重写并 force-push；本地备份分支保留） |
 
 ### D.3 仍未闭环（批次 5+ 候选）
 
-- 派生索引 P4 扩展：嵌套 object/array-of-object/oneOf 等 schema 目前安全回退（视真实 API 形态决定是否扩展）。
-- `pkg/config` 拆分实施（proposals/03 的 S1–S5，批次 5）。
+- 派生索引 P4 剩余边界：additionalProperties 动态键、allOf、非 string enum、深递归 `$ref` 仍安全回退；索引体积可选优化。
+- proposals/03 S4：TUI 内化 + DTO 归位（config 已在 S1–S3 收敛为叶子）。
 - `go list -m all` 中 ghodss/yaml.v2 的 module graph 遗留（viper/etcd 旧链路）。
-- 索引 DTO 可选 body 属性顺序、`--flag value<TAB>` 空格形式补全、MCP 限流跨进程。
+- 索引 DTO 可选 body 属性顺序、MCP 限流跨进程、`pkg/config/test_helpers.go` 的 testing import。
 - 剩余 P2/P3 条目（见各领域详报）。
