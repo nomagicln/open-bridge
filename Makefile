@@ -1,5 +1,5 @@
 .PHONY: build test lint clean install all deps update-deps run docs \
-        test-short test-coverage test-integration vet lint-fix fmt-fix build-all \
+        test-short test-coverage test-integration vet check lint-fix fmt-fix build-all \
         install-lint check-tools help
 
 # ============================================================================
@@ -147,6 +147,35 @@ fmt-fix:
 	@echo "✓ Advanced formatting complete"
 
 # ============================================================================
+# Quality Gate
+# ============================================================================
+
+# Run all local gates: formatting checks, vet (both build tags), lint, short tests
+check:
+	@echo "==> gofmt check"
+	@out="$$(gofmt -l cmd pkg internal)"; \
+	if [ -n "$$out" ]; then \
+		echo "gofmt required for:"; \
+		echo "$$out"; \
+		exit 1; \
+	fi
+	$(call check_tool,goimports,Install with: go install golang.org/x/tools/cmd/goimports@latest)
+	@echo "==> goimports check"
+	@out="$$(goimports -l cmd pkg internal)"; \
+	if [ -n "$$out" ]; then \
+		echo "goimports required for:"; \
+		echo "$$out"; \
+		exit 1; \
+	fi
+	@echo "==> go vet (default + integration build tags)"
+	@$(MAKE) --no-print-directory vet
+	@echo "==> golangci-lint"
+	@$(MAKE) --no-print-directory lint
+	@echo "==> short tests"
+	@$(MAKE) --no-print-directory test-short
+	@echo "✓ All checks passed"
+
+# ============================================================================
 # Tool Installation Targets
 # ============================================================================
 
@@ -238,6 +267,9 @@ help:
 	@echo "  lint-fix        Run golangci-lint with auto-fix"
 	@echo "  vet             Run go vet (default + integration build tags)"
 	@echo "  fmt-fix         Advanced code formatting"
+	@echo ""
+	@echo "Quality Gate:"
+	@echo "  check           Run gofmt/goimports checks, vet, lint and short tests"
 	@echo ""
 	@echo "Tools:"
 	@echo "  check-tools     Check availability of required tools"
