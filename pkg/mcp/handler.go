@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -26,10 +27,14 @@ type Handler struct {
 	profileName    string
 }
 
+// defaultHTTPTimeout bounds every MCP tool call so a slow or unreachable API
+// cannot hang the server indefinitely. It matches the parser/cache/CLI clients.
+const defaultHTTPTimeout = 30 * time.Second
+
 // NewHandler creates a new MCP handler.
 func NewHandler(mapper *semantic.Mapper, requestBuilder *request.Builder, httpClient *http.Client) *Handler {
 	if httpClient == nil {
-		httpClient = &http.Client{}
+		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 	return &Handler{
 		mapper:         mapper,
