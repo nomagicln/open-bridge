@@ -23,16 +23,19 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/nomagicln/open-bridge/pkg/semantic"
 )
 
 const (
 	// DerivedIndexSchemaVersion is bumped whenever the DerivedIndex DTO fields or
 	// their semantics change in a way that invalidates persisted indexes.
-	DerivedIndexSchemaVersion = 1
+	DerivedIndexSchemaVersion = 2
 	// derivedIndexFormatVersion is the on-disk container format version.
 	derivedIndexFormatVersion = 1
 	// derivedIndexMagicSize is the length of the file magic.
@@ -48,6 +51,9 @@ const (
 	indexFileNamePrefix = "index-"
 	// indexFileNameHashLength is the number of hash characters kept in the name.
 	indexFileNameHashLength = 16
+	// indexDescriptionMaxLength is the maximum number of runes persisted for
+	// descriptions; command help does not need the full text.
+	indexDescriptionMaxLength = 200
 )
 
 // derivedIndexMagic identifies a derived index file and its container version.
@@ -93,7 +99,8 @@ type DerivedResource struct {
 	SubResources []DerivedResource
 }
 
-// DerivedOperation is the operation summary needed by application help.
+// DerivedOperation is the operation summary needed by application help and
+// command-level flag completion.
 type DerivedOperation struct {
 	Verb        string
 	Method      string
@@ -101,9 +108,51 @@ type DerivedOperation struct {
 	OperationID string
 	Summary     string
 	Description string
-	Resource    string
-	Aliases     []string
-	Tags        []string
+	// DescriptionTruncated reports that Description was trimmed to
+	// indexDescriptionMaxLength runes; command help falls back to parsing when
+	// the full description is required.
+	DescriptionTruncated bool
+	Resource             string
+	Aliases              []string
+	Tags                 []string
+	Parameters           []DerivedParameter
+	BodyFields           []DerivedField
+	BodyRequired         bool
+	BodyMediaType        string
+	HasBody              bool
+}
+
+// DerivedParameter is the parameter subset needed by command help and flag
+// completion. Enum values are stored pre-formatted with %v so help output is
+// byte-identical to the parsing path.
+type DerivedParameter struct {
+	Name                 string
+	In                   string
+	Required             bool
+	Type                 string
+	Types                []string
+	Enum                 []string
+	EnumAreStrings       bool
+	Description          string
+	DescriptionTruncated bool
+	HasExample           bool
+	Example              string
+	HasSchemaExample     bool
+	SchemaExample        string
+}
+
+// DerivedField is a request-body property subset needed by command help.
+type DerivedField struct {
+	Name                 string
+	Required             bool
+	Type                 string
+	Types                []string
+	Enum                 []string
+	EnumAreStrings       bool
+	Description          string
+	DescriptionTruncated bool
+	HasExample           bool
+	Example              string
 }
 
 // derivedIndexKey identifies one persisted index entry and is embedded in the
@@ -176,6 +225,7 @@ func (p *Parser) loadFileDerivedIndex(ctx context.Context, source, appName strin
 	idx := newDerivedIndex(appName, "file", key.Source, semantic.NewMapper().BuildCommandTree(doc))
 	idx.Size = key.Size
 	idx.ModTimeNanos = key.ModTimeNanos
+	populateDerivedOperationDetails(idx, doc)
 
 	_ = p.indexCache.store(key, idx)
 
@@ -205,6 +255,7 @@ func (p *Parser) loadRemoteDerivedIndex(ctx context.Context, source, appName str
 	}
 
 	idx := newDerivedIndex(appName, "url", source, semantic.NewMapper().BuildCommandTree(doc))
+	populateDerivedOperationDetails(idx, doc)
 
 	if _, meta := p.remoteCache.load(source); meta != nil && meta.SHA256 != "" {
 		key := urlDerivedIndexKey(source, appName, meta.SHA256)
@@ -635,3 +686,480 @@ func decodeDerivedIndexFile(data []byte, expected derivedIndexKey) ([]byte, erro
 
 	return payload, nil
 }
+
+// trimIndexText trims s to indexDescriptionMaxLength runes, reporting whether it
+// was truncated. The trim is rune-aware so multi-byte text stays valid UTF-8.
+func trimIndexText(s string) (string, bool) {
+	if len([]rune(s)) <= indexDescriptionMaxLength {
+		return s, false
+	}
+
+	trimmed := string([]rune(s)[:indexDescriptionMaxLength])
+
+	return trimmed, true
+}
+
+// populateDerivedOperationDetails enriches the persisted command tree with the
+// parameter and request-body details needed to render command-level help.
+func populateDerivedOperationDetails(idx *DerivedIndex, doc *openapi3.T) {
+	if idx == nil || doc == nil {
+		return
+	}
+
+	for i := range idx.Resources {
+		populateDerivedResourceDetails(&idx.Resources[i], doc)
+	}
+}
+
+// populateDerivedResourceDetails enriches one resource (and its sub-resources).
+func populateDerivedResourceDetails(resource *DerivedResource, doc *openapi3.T) {
+	for i := range resource.Operations {
+		op := &resource.Operations[i]
+		opSpec := operationSpecFromDoc(doc, op.Path, op.Method)
+		if opSpec == nil {
+			continue
+		}
+
+		op.applySpecDetails(opSpec)
+	}
+
+	for i := range resource.SubResources {
+		populateDerivedResourceDetails(&resource.SubResources[i], doc)
+	}
+}
+
+// applySpecDetails copies the help-relevant operation details into the DTO.
+func (op *DerivedOperation) applySpecDetails(opSpec *openapi3.Operation) {
+	if op.Description != "" {
+		op.Description, op.DescriptionTruncated = trimIndexText(op.Description)
+	}
+
+	op.Parameters = extractDerivedParameters(opSpec)
+	op.BodyFields, op.BodyRequired, op.BodyMediaType, op.HasBody = extractDerivedBody(opSpec)
+}
+
+// extractDerivedParameters converts OpenAPI parameters into the persisted form.
+func extractDerivedParameters(opSpec *openapi3.Operation) []DerivedParameter {
+	if opSpec == nil || len(opSpec.Parameters) == 0 {
+		return nil
+	}
+
+	params := make([]DerivedParameter, 0, len(opSpec.Parameters))
+
+	for _, ref := range opSpec.Parameters {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+
+		param := ref.Value
+		derived := DerivedParameter{
+			Name:     param.Name,
+			In:       param.In,
+			Required: param.Required,
+		}
+
+		if param.Description != "" {
+			derived.Description, derived.DescriptionTruncated = trimIndexText(param.Description)
+		}
+
+		if param.Example != nil {
+			derived.HasExample = true
+			derived.Example = fmt.Sprintf("%v", param.Example)
+		}
+
+		if param.Schema != nil && param.Schema.Value != nil {
+			schema := param.Schema.Value
+			derived.Types = append([]string(nil), schema.Type.Slice()...)
+			derived.Type = primarySchemaType(derived.Types)
+			derived.Enum, derived.EnumAreStrings = formatEnumValues(schema.Enum)
+
+			if schema.Example != nil {
+				derived.HasSchemaExample = true
+				derived.SchemaExample = fmt.Sprintf("%v", schema.Example)
+			}
+		}
+
+		params = append(params, derived)
+	}
+
+	return params
+}
+
+// extractDerivedBody converts a request body into the persisted field details.
+// Required fields keep their declared order; optional fields are sorted by name.
+func extractDerivedBody(opSpec *openapi3.Operation) (fields []DerivedField, required bool, mediaType string, hasBody bool) {
+	if opSpec == nil || opSpec.RequestBody == nil || opSpec.RequestBody.Value == nil {
+		return nil, false, "", false
+	}
+
+	requestBody := opSpec.RequestBody.Value
+
+	for media, content := range requestBody.Content {
+		if content == nil || content.Schema == nil || content.Schema.Value == nil {
+			continue
+		}
+
+		schema := content.Schema.Value
+		requiredSet := make(map[string]bool, len(schema.Required))
+		for _, name := range schema.Required {
+			requiredSet[name] = true
+		}
+
+		for _, name := range schema.Required {
+			if prop, ok := schema.Properties[name]; ok {
+				fields = append(fields, newDerivedField(name, prop, true))
+			}
+		}
+
+		remaining := make([]string, 0, len(schema.Properties))
+		for name := range schema.Properties {
+			if !requiredSet[name] {
+				remaining = append(remaining, name)
+			}
+		}
+		sort.Strings(remaining)
+
+		for _, name := range remaining {
+			fields = append(fields, newDerivedField(name, schema.Properties[name], false))
+		}
+
+		return fields, requestBody.Required, media, true
+	}
+
+	return nil, false, "", false
+}
+
+// newDerivedField converts one body property schema into the persisted form.
+func newDerivedField(name string, ref *openapi3.SchemaRef, required bool) DerivedField {
+	field := DerivedField{Name: name, Required: required}
+	if ref == nil || ref.Value == nil {
+		return field
+	}
+
+	schema := ref.Value
+	field.Types = append([]string(nil), schema.Type.Slice()...)
+	field.Type = primarySchemaType(field.Types)
+	field.Enum, field.EnumAreStrings = formatEnumValues(schema.Enum)
+
+	if schema.Description != "" {
+		field.Description, field.DescriptionTruncated = trimIndexText(schema.Description)
+	}
+
+	if schema.Example != nil {
+		field.HasExample = true
+		field.Example = fmt.Sprintf("%v", schema.Example)
+	}
+
+	return field
+}
+
+// formatEnumValues renders enum values with %v (matching command help output)
+// and reports whether every value was a Go string (matching flag-value
+// completion, which only offers string enums).
+func formatEnumValues(values []any) ([]string, bool) {
+	if len(values) == 0 {
+		return nil, false
+	}
+
+	formatted := make([]string, 0, len(values))
+	allStrings := true
+
+	for _, value := range values {
+		if _, ok := value.(string); !ok {
+			allStrings = false
+		}
+
+		formatted = append(formatted, fmt.Sprintf("%v", value))
+	}
+
+	return formatted, allStrings
+}
+
+// primarySchemaType returns the first declared schema type, if any.
+func primarySchemaType(types []string) string {
+	if len(types) == 0 {
+		return ""
+	}
+
+	return types[0]
+}
+
+// operationSpecFromDoc finds the OpenAPI operation for a method and path.
+func operationSpecFromDoc(doc *openapi3.T, path, method string) *openapi3.Operation {
+	if doc == nil || doc.Paths == nil {
+		return nil
+	}
+
+	pathItem := doc.Paths.Find(path)
+	if pathItem == nil {
+		return nil
+	}
+
+	switch strings.ToUpper(method) {
+	case "GET":
+		return pathItem.Get
+	case "POST":
+		return pathItem.Post
+	case "PUT":
+		return pathItem.Put
+	case "PATCH":
+		return pathItem.Patch
+	case "DELETE":
+		return pathItem.Delete
+	case "HEAD":
+		return pathItem.Head
+	case "OPTIONS":
+		return pathItem.Options
+	default:
+		return nil
+	}
+}
+
+// FindOperation looks up an operation by resource name and verb. Resource names
+// are matched like the CLI does: URL-style names ("store/order") are normalized
+// to kebab-case ("store-order"), and sub-resources are searched recursively.
+func (d *DerivedIndex) FindOperation(resource, verb string) (*DerivedOperation, bool) {
+	if d == nil {
+		return nil, false
+	}
+
+	normalized := strings.ReplaceAll(resource, "/", "-")
+
+	for i := range d.Resources {
+		if op, ok := d.Resources[i].findOperation(normalized, verb); ok {
+			return op, true
+		}
+	}
+
+	return nil, false
+}
+
+// findOperation searches a resource and its sub-resources for a verb.
+func (r *DerivedResource) findOperation(resource, verb string) (*DerivedOperation, bool) {
+	if r.Name == resource {
+		for i := range r.Operations {
+			if r.Operations[i].Verb == verb {
+				return &r.Operations[i], true
+			}
+		}
+	}
+
+	for i := range r.SubResources {
+		if op, ok := r.SubResources[i].findOperation(resource, verb); ok {
+			return op, true
+		}
+	}
+
+	return nil, false
+}
+
+// CommandHelpIndexable reports whether command-level help can be rendered from
+// this index entry with byte-identical output to the parsing path.
+func (op *DerivedOperation) CommandHelpIndexable() bool {
+	if op.Summary == "" && op.DescriptionTruncated {
+		return false
+	}
+
+	for i := range op.Parameters {
+		if op.Parameters[i].DescriptionTruncated {
+			return false
+		}
+	}
+
+	for i := range op.BodyFields {
+		if op.BodyFields[i].DescriptionTruncated {
+			return false
+		}
+	}
+
+	return true
+}
+
+// CommandSpec reconstructs a minimal *openapi3.Operation that renders command
+// help byte-identically to the parsing path.
+func (op *DerivedOperation) CommandSpec() *openapi3.Operation {
+	specOp := &openapi3.Operation{
+		Summary:     op.Summary,
+		Description: op.Description,
+		Parameters:  op.commandParameters(),
+		RequestBody: op.commandRequestBody(),
+	}
+
+	return specOp
+}
+
+// commandParameters reconstructs the OpenAPI parameter list.
+func (op *DerivedOperation) commandParameters() openapi3.Parameters {
+	if len(op.Parameters) == 0 {
+		return nil
+	}
+
+	params := make(openapi3.Parameters, 0, len(op.Parameters))
+
+	for _, param := range op.Parameters {
+		reconstructed := &openapi3.Parameter{
+			Name:        param.Name,
+			In:          param.In,
+			Required:    param.Required,
+			Description: param.Description,
+		}
+
+		if param.HasExample {
+			reconstructed.Example = param.Example
+		}
+
+		if len(param.Types) > 0 || len(param.Enum) > 0 || param.HasSchemaExample {
+			schema := &openapi3.Schema{}
+			schema.Type = schemaTypes(param.Types)
+			schema.Enum = enumValuesAsAny(param.Enum)
+			if param.HasSchemaExample {
+				schema.Example = param.SchemaExample
+			}
+
+			reconstructed.Schema = &openapi3.SchemaRef{Value: schema}
+		}
+
+		params = append(params, &openapi3.ParameterRef{Value: reconstructed})
+	}
+
+	return params
+}
+
+// commandRequestBody reconstructs the OpenAPI request body, if any.
+func (op *DerivedOperation) commandRequestBody() *openapi3.RequestBodyRef {
+	if !op.HasBody {
+		return nil
+	}
+
+	properties := make(map[string]*openapi3.SchemaRef, len(op.BodyFields))
+	required := make([]string, 0, len(op.BodyFields))
+
+	for _, field := range op.BodyFields {
+		if field.Required {
+			required = append(required, field.Name)
+		}
+
+		schema := &openapi3.Schema{}
+		schema.Type = schemaTypes(field.Types)
+		schema.Enum = enumValuesAsAny(field.Enum)
+		schema.Description = field.Description
+		if field.HasExample {
+			schema.Example = field.Example
+		}
+
+		properties[field.Name] = &openapi3.SchemaRef{Value: schema}
+	}
+
+	mediaType := op.BodyMediaType
+	if mediaType == "" {
+		mediaType = "application/json"
+	}
+
+	body := &openapi3.RequestBody{
+		Required: op.BodyRequired,
+		Content: openapi3.Content{
+			mediaType: &openapi3.MediaType{
+				Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: schemaTypes([]string{"object"}), Properties: properties, Required: required}},
+			},
+		},
+	}
+
+	return &openapi3.RequestBodyRef{Value: body}
+}
+
+// schemaTypes returns a pointer to a copy of types, or nil when empty.
+func schemaTypes(types []string) *openapi3.Types {
+	if len(types) == 0 {
+		return nil
+	}
+
+	values := openapi3.Types(append([]string(nil), types...))
+
+	return &values
+}
+
+// enumValuesAsAny converts pre-formatted enum strings back to []any. Command
+// help renders values with %v, so the formatted string is byte-identical.
+func enumValuesAsAny(values []string) []any {
+	if len(values) == 0 {
+		return nil
+	}
+
+	anyValues := make([]any, 0, len(values))
+	for _, value := range values {
+		anyValues = append(anyValues, value)
+	}
+
+	return anyValues
+}
+
+// FlagNames returns the --flag names derived from parameters and body fields,
+// restricted to prefix, sorted for deterministic completion output.
+func (op *DerivedOperation) FlagNames(prefix string) []string {
+	if op == nil {
+		return nil
+	}
+
+	flags := make([]string, 0, len(op.Parameters)+len(op.BodyFields))
+
+	for _, param := range op.Parameters {
+		flag := "--" + param.Name
+		if strings.HasPrefix(flag, prefix) {
+			flags = append(flags, flag)
+		}
+	}
+
+	for _, field := range op.BodyFields {
+		flag := "--" + field.Name
+		if strings.HasPrefix(flag, prefix) {
+			flags = append(flags, flag)
+		}
+	}
+
+	sort.Strings(flags)
+
+	return flags
+}
+
+// EnumValues returns the string enum values for a flag, mirroring
+// flag-value completion semantics. handled is true when the operation exists;
+// callers should not fall back to parsing in that case.
+func (op *DerivedOperation) EnumValues(flagName string) (values []string, handled bool) {
+	if op == nil {
+		return nil, false
+	}
+
+	for _, param := range op.Parameters {
+		if param.Name != flagName {
+			continue
+		}
+
+		return sortedStringEnums(param.Enum, param.EnumAreStrings), true
+	}
+
+	for _, field := range op.BodyFields {
+		if field.Name != flagName {
+			continue
+		}
+
+		return sortedStringEnums(field.Enum, field.EnumAreStrings), true
+	}
+
+	return nil, true
+}
+
+// sortedStringEnums returns a sorted copy of the enum values when they were
+// declared as strings (matching the parsing path's enum completion).
+func sortedStringEnums(values []string, areStrings bool) []string {
+	if !areStrings || len(values) == 0 {
+		return nil
+	}
+
+	sorted := append([]string(nil), values...)
+	sort.Strings(sorted)
+
+	return sorted
+}
+
+// ensure utf8 import is used for rune-aware trimming documentation helpers.
+var _ = utf8.ValidString
