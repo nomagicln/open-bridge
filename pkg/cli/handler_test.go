@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -373,5 +375,188 @@ func TestBuildRequestInjectsAuthWithRealAppName(t *testing.T) {
 	}
 	if got := query.Get("api-version"); got != "v1" {
 		t.Errorf("profile query parameter api-version = %q, want v1", got)
+	}
+}
+
+// withDefaultProfile returns a copy of the test app config whose default profile
+// is adjusted by mutate, keeping the original env untouched.
+func withDefaultProfile(env *cliTestEnv, mutate func(*config.Profile)) *config.AppConfig {
+	appConfig := *env.appConfig
+	appConfig.Profiles = make(map[string]config.Profile, len(env.appConfig.Profiles))
+	maps.Copy(appConfig.Profiles, env.appConfig.Profiles)
+	profile := appConfig.Profiles["default"]
+	mutate(&profile)
+	appConfig.Profiles["default"] = profile
+	return &appConfig
+}
+
+// TestExecuteCommandUsesProfileTLS verifies the CLI handler wires profile TLS
+// settings into the HTTP client: a self-signed server is accepted only when the
+// profile opts into InsecureSkipVerify.
+func TestExecuteCommandUsesProfileTLS(t *testing.T) {
+	env := newCLITestEnv(t)
+
+	var requests atomic.Int32
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(cliTestResponseJSON))
+	}))
+	t.Cleanup(tlsServer.Close)
+
+	t.Run("insecure skip verify accepts self-signed server", func(t *testing.T) {
+		env.reset()
+		appConfig := withDefaultProfile(env, func(profile *config.Profile) {
+			profile.BaseURL = tlsServer.URL
+			profile.TLSConfig = config.TLSConfig{InsecureSkipVerify: true}
+		})
+		if err := env.handler.ExecuteCommand(cliTestAppName, appConfig, []string{"pets", "list", "--json"}); err != nil {
+			t.Fatalf("ExecuteCommand() error: %v", err)
+		}
+		out := strings.TrimSpace(env.stdout.String())
+		var decoded any
+		if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+			t.Errorf("--json output is not valid JSON: %v\noutput:\n%s", err, out)
+		}
+	})
+
+	t.Run("default verification rejects self-signed server", func(t *testing.T) {
+		env.reset()
+		appConfig := withDefaultProfile(env, func(profile *config.Profile) {
+			profile.BaseURL = tlsServer.URL
+			profile.TLSConfig = config.TLSConfig{}
+		})
+		err := env.handler.ExecuteCommand(cliTestAppName, appConfig, []string{"pets", "list", "--json"})
+		if err == nil {
+			t.Fatal("ExecuteCommand() expected TLS verification error, got nil")
+		}
+		if !IsPrintedError(err) {
+			t.Errorf("ExecuteCommand() error = %T, want *PrintedError", err)
+		}
+	})
+}
+
+// TestExecuteCommandRetriesTransientFailures verifies the CLI handler uses the
+// profile retry policy and eventually returns the successful response.
+func TestExecuteCommandRetriesTransientFailures(t *testing.T) {
+	env := newCLITestEnv(t)
+
+	var attempts atomic.Int32
+	retryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"busy"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(cliTestResponseJSON))
+	}))
+	t.Cleanup(retryServer.Close)
+
+	appConfig := withDefaultProfile(env, func(profile *config.Profile) {
+		profile.BaseURL = retryServer.URL
+		profile.RetryConfig = config.RetryConfig{
+			MaxRetries:           2,
+			InitialDelay:         config.Duration{Duration: time.Millisecond},
+			MaxDelay:             config.Duration{Duration: 5 * time.Millisecond},
+			RetryableStatusCodes: []int{http.StatusServiceUnavailable},
+		}
+	})
+
+	if err := env.handler.ExecuteCommand(cliTestAppName, appConfig, []string{"pets", "list", "--json"}); err != nil {
+		t.Fatalf("ExecuteCommand() error: %v", err)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Errorf("server attempts = %d, want 3 (two retries)", got)
+	}
+	out := strings.TrimSpace(env.stdout.String())
+	var decoded any
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Errorf("--json output is not valid JSON: %v\noutput:\n%s", err, out)
+	}
+}
+
+// TestExecuteCommandProfileTimeout verifies a profile timeout is applied to CLI
+// requests instead of the 30s handler default.
+func TestExecuteCommandProfileTimeout(t *testing.T) {
+	env := newCLITestEnv(t)
+
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte(cliTestResponseJSON))
+	}))
+	t.Cleanup(slowServer.Close)
+
+	appConfig := withDefaultProfile(env, func(profile *config.Profile) {
+		profile.BaseURL = slowServer.URL
+		profile.Timeout = config.Duration{Duration: 50 * time.Millisecond}
+	})
+
+	start := time.Now()
+	err := env.handler.ExecuteCommand(cliTestAppName, appConfig, []string{"pets", "list", "--json"})
+	if err == nil {
+		t.Fatal("ExecuteCommand() expected timeout error, got nil")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("ExecuteCommand() took %v, profile timeout was not applied", elapsed)
+	}
+	if !IsPrintedError(err) {
+		t.Errorf("ExecuteCommand() error = %T, want *PrintedError", err)
+	}
+}
+
+// TestExecuteCommandInvalidTLSConfiguration verifies invalid profile TLS
+// configuration fails before any request is attempted.
+func TestExecuteCommandInvalidTLSConfiguration(t *testing.T) {
+	env := newCLITestEnv(t)
+
+	appConfig := withDefaultProfile(env, func(profile *config.Profile) {
+		profile.TLSConfig = config.TLSConfig{CAFile: filepath.Join(t.TempDir(), "does-not-exist.pem")}
+	})
+
+	err := env.handler.ExecuteCommand(cliTestAppName, appConfig, []string{"pets", "list", "--json"})
+	if err == nil {
+		t.Fatal("ExecuteCommand() expected TLS configuration error, got nil")
+	}
+	if !IsPrintedError(err) {
+		t.Errorf("ExecuteCommand() error = %T, want *PrintedError", err)
+	}
+	env.mu.Lock()
+	defer env.mu.Unlock()
+	if len(env.captured) != 0 {
+		t.Errorf("server received %d requests, want 0 (invalid TLS config must fail fast)", len(env.captured))
+	}
+}
+
+// TestClientForProfileFallback pins the Handler.httpClient injection/fallback
+// behavior and the fail-fast path for invalid TLS configuration.
+func TestClientForProfileFallback(t *testing.T) {
+	h := NewHandler(nil, nil, nil, nil)
+	injected := &http.Client{}
+	h.httpClient = injected
+
+	client, retryConfig, err := h.clientForProfile(nil)
+	if err != nil {
+		t.Fatalf("clientForProfile(nil) error: %v", err)
+	}
+	if client != injected {
+		t.Errorf("clientForProfile(nil) = %p, want the injected Handler.httpClient %p", client, injected)
+	}
+	if retryConfig.MaxRetries != 0 {
+		t.Errorf("retryConfig.MaxRetries = %d, want 0 for a nil profile", retryConfig.MaxRetries)
+	}
+
+	h.httpClient = nil
+	client, _, err = h.clientForProfile(nil)
+	if err != nil {
+		t.Fatalf("clientForProfile(nil) without injected client error: %v", err)
+	}
+	if client == nil {
+		t.Fatal("clientForProfile(nil) returned a nil client without an injected client")
+	}
+
+	_, _, err = h.clientForProfile(&config.Profile{Name: "broken", TLSConfig: config.TLSConfig{MinVersion: "1.0"}})
+	if err == nil {
+		t.Fatal("clientForProfile() expected error for invalid TLS configuration, got nil")
 	}
 }
