@@ -23,7 +23,7 @@ When you run the install command, `ob` will launch an interactive wizard to conf
     *   `Bearer`: Standard Bearer token (JWT).
     *   `API Key`: Key passed in Header or Query param.
     *   `Basic`: Username and Password.
-4.  **Security**: Configure TLS settings (like Client Certificates) if needed.
+4.  **Security**: Configure TLS settings (like Client Certificates) if needed. *Note: TLS settings are persisted in the app profile today; runtime TLS wiring is planned for a follow-up release.*
 5.  **MCP Options**:
     *   **Progressive Disclosure**: Enable this for large APIs to help AI agents discover tools efficiently. 
     *   **Read-Only Mode**: Restrict the AI to only safe `GET` operations.

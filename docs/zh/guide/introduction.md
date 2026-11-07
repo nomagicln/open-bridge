@@ -17,10 +17,10 @@
 
 ## 核心特性
 
-- **零代码生成**：所有行为均由 OpenAPI 规范动态驱动
+- **无需生成 SDK**：所有行为均由 OpenAPI 规范动态驱动，无需维护生成的客户端代码
 - **语义化 CLI**：资源导向型命令（`myapp user create --name "John"`）
 - **Shell 自动补全**：支持命令、资源、参数和枚举值的 Tab 补全
 - **MCP 服务器**：通过 Model Context Protocol 原生集成 AI 智能体
 - **跨平台**：支持 Linux, macOS 和 Windows
-- **安全凭据**：使用系统密钥环（Keychain, Credential Manager, Secret Service）
-- **快速启动**：冷启动时间通常低于 100ms
+- **安全凭据**：使用系统密钥环（Keychain, Credential Manager, Secret Service）；无桌面后端的环境可设置 `OPENBRIDGE_KEYRING_PASSWORD` 使用加密文件后端
+- **快速启动**：CLI 启动（`ob --version` / `--help`）为个位数毫秒；app 命令耗时取决于 OpenAPI 规范体积
