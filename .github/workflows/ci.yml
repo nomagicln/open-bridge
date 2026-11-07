@@ -41,6 +41,16 @@ jobs:
 
           missing=0
           for commit in $(git rev-list "$range"); do
+            # Dependency bots (Dependabot, GitHub Actions) cannot add a
+            # Signed-off-by trailer to their commits, so they are exempt from
+            # DCO just like their pull requests are.
+            author="$(git show -s --format='%an <%ae>' "$commit")"
+            case "$author" in
+              *dependabot*|*github-actions[bot]*)
+                echo "Skipping bot commit $commit ($author)"
+                continue
+                ;;
+            esac
             if ! git log -1 --pretty=%B "$commit" | grep -qi "^Signed-off-by: "; then
               echo "Missing Signed-off-by in commit $commit"
               missing=1
