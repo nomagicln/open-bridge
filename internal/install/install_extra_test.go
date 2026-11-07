@@ -357,11 +357,20 @@ func TestCreateShimUsesDefaultDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateShim failed: %v", err)
 	}
-	if filepath.Base(shimPath) != "defshim" {
-		t.Errorf("unexpected shim name: %s", shimPath)
+	wantDirFragment := filepath.Join(".local", "bin")
+	wantName := "defshim"
+	if runtime.GOOS == "windows" {
+		if os.Getenv("LOCALAPPDATA") == "" {
+			t.Skip("LOCALAPPDATA is not set")
+		}
+		wantDirFragment = filepath.Join("OpenBridge", "bin")
+		wantName = "defshim.cmd"
 	}
-	if !strings.Contains(shimPath, filepath.Join(".local", "bin")) {
-		t.Errorf("expected default shim dir under ~/.local/bin, got %s", shimPath)
+	if filepath.Base(shimPath) != wantName {
+		t.Errorf("unexpected shim name: %s (want %s)", shimPath, wantName)
+	}
+	if !strings.Contains(shimPath, wantDirFragment) {
+		t.Errorf("expected default shim dir containing %s, got %s", wantDirFragment, shimPath)
 	}
 	if !installer.ShimExists("defshim") {
 		t.Error("expected shim to exist")
@@ -395,7 +404,11 @@ func TestCreateShimInvalidDirectory(t *testing.T) {
 func TestGetOBBinaryPath(t *testing.T) {
 	t.Run("found in PATH", func(t *testing.T) {
 		binDir := t.TempDir()
-		fakeOb := filepath.Join(binDir, "ob")
+		obName := "ob"
+		if runtime.GOOS == "windows" {
+			obName = "ob.exe"
+		}
+		fakeOb := filepath.Join(binDir, obName)
 		if err := os.WriteFile(fakeOb, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatalf("write fake ob: %v", err)
 		}
@@ -405,7 +418,7 @@ func TestGetOBBinaryPath(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if got != fakeOb {
+		if filepath.Clean(got) != filepath.Clean(fakeOb) {
 			t.Errorf("expected %q, got %q", fakeOb, got)
 		}
 	})
