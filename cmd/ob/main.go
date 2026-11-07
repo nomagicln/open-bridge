@@ -60,8 +60,12 @@ func init() {
 		os.Exit(1)
 	}
 
-	// Spec parser
-	specParser = spec.NewParser()
+	// Spec parser. Remote specs are cached under the config directory so that
+	// later commands can reload them without a network round-trip (and can fall
+	// back to the cached copy when the remote source is unreachable).
+	specParser = spec.NewParser(
+		spec.WithRemoteCache(filepath.Join(configMgr.ConfigDir(), "spec-cache")),
+	)
 
 	// Credential manager
 	credMgr, err = credential.NewManager()
@@ -709,6 +713,13 @@ func printAppConfigText(cfg *config.AppConfig) {
 	// Basic info
 	fmt.Println("\n📋 Basic Information")
 	fmt.Printf("  Description:     %s\n", valueOrNone(cfg.Description))
+	if cfg.SpecTitle != "" || cfg.SpecVersion != "" {
+		api := cfg.SpecTitle
+		if cfg.SpecVersion != "" {
+			api = strings.TrimSpace(api + " (v" + cfg.SpecVersion + ")")
+		}
+		fmt.Printf("  API:             %s\n", valueOrNone(api))
+	}
 	fmt.Printf("  Spec Source:     %s\n", cfg.SpecSource)
 	if len(cfg.SpecSources) > 0 {
 		fmt.Printf("  Additional Specs: %s\n", strings.Join(cfg.SpecSources, ", "))
@@ -980,6 +991,12 @@ func startMCPServer(appConfig *config.AppConfig, args []string) error {
 	profile, ok := appConfig.GetProfile(opts.profileName)
 	if !ok {
 		return fmt.Errorf("profile '%s' not found", opts.profileName)
+	}
+
+	// Fail fast on invalid safety configuration (e.g. an uncompilable
+	// dangerous_operation_patterns regex) instead of failing on first tool call.
+	if err := mcp.ValidateSafetyConfig(&profile.SafetyConfig); err != nil {
+		return fmt.Errorf("invalid MCP safety configuration for profile %q: %w", opts.profileName, err)
 	}
 
 	factory := mcp.NewServerFactory(appConfig.Name, version)

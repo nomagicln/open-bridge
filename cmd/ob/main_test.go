@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -614,4 +615,22 @@ func TestRunRootCommandUnknownApp(t *testing.T) {
 	err := runRootCommand(cmd, []string{"definitely-not-an-app"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown command or app")
+}
+
+func TestPrintAppConfigTextShowsSpecMetadata(t *testing.T) {
+	cfg := &config.AppConfig{Name: "demo", SpecTitle: "Pet API", SpecVersion: "7.8.9"}
+
+	read, write, err := os.Pipe()
+	require.NoError(t, err)
+	originalStdout := os.Stdout
+	os.Stdout = write
+	printAppConfigText(cfg)
+	require.NoError(t, write.Close())
+	os.Stdout = originalStdout
+
+	data, err := io.ReadAll(read)
+	require.NoError(t, err)
+	out := string(data)
+	assert.Contains(t, out, "Pet API")
+	assert.Contains(t, out, "7.8.9")
 }
