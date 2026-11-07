@@ -23,4 +23,6 @@ Traditional API tools often require generating code or manually crafting CLI wra
 - **MCP Server**: Native AI agent integration via Model Context Protocol
 - **Multi-Platform**: Works on Linux, macOS, and Windows
 - **Secure Credentials**: Uses system keyring (Keychain, Credential Manager, Secret Service); on headless systems, set `OPENBRIDGE_KEYRING_PASSWORD` to use an encrypted file backend
+- **Resilient Requests**: Per-profile timeout, retry policy and TLS options (custom CA, client certificates, skip-verify)
+- **Offline-Friendly Remote Specs**: remote OpenAPI specs are cached locally and revalidated with `ETag` / `Last-Modified`
 - **Fast Startup**: CLI startup in single-digit milliseconds; app command latency depends on OpenAPI spec size
