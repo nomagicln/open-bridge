@@ -1,0 +1,49 @@
+# Codecov configuration for OpenBridge.
+# Coverage is uploaded by .github/workflows/ci.yml (ubuntu-latest only).
+# Docs: https://docs.codecov.com/docs/codecov-yaml
+#
+# Gates:
+#   - project: no regression versus the base commit (auto target, -1% allowed)
+#   - floor:   total coverage must never drop below 58%
+#              (current baseline ~59.2%)
+#   - patch:   changed lines must reach 70% coverage
+# fail_ci_if_error stays false in the upload step (fork tokens have no
+# access to the repository secret); the thresholds above are enforced by
+# Codecov status checks.
+
+codecov:
+  require_ci_to_pass: true
+
+coverage:
+  precision: 2
+  round: down
+  range: "50...80"
+
+  status:
+    project:
+      default:
+        # Compare against the base commit and allow at most a 1% drop.
+        target: auto
+        threshold: 1%
+      floor:
+        # Hard floor: never go below the batch-0 coverage baseline.
+        target: 58%
+        threshold: 0%
+    patch:
+      default:
+        target: 70%
+        threshold: 0%
+
+ignore:
+  - "docs/**"
+  - "design-system/**"
+  - "examples/**"
+  - "proposals/**"
+  - "scripts/**"
+  - "**/*.md"
+
+comment:
+  layout: "header, diff, flags, components, footer"
+  behavior: default
+  require_changes: false
+  require_head: true
