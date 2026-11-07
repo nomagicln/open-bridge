@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nomagicln/open-bridge/pkg/spec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -127,10 +128,11 @@ type SpecFetchAuthConfig struct {
 	// and retrieved at runtime, similar to API authentication.
 }
 
-// BuildSpecFetchOptions constructs SpecFetchOptions from profile settings and a credential token.
-// The token should be retrieved from the system keyring at runtime.
-func (p *Profile) BuildSpecFetchOptions(authToken string) *SpecFetchOptions {
-	opts := &SpecFetchOptions{}
+// BuildSpecFetchOptions constructs spec.SpecFetchOptions from profile settings
+// and a credential token. The token should be retrieved from the system keyring
+// at runtime.
+func (p *Profile) BuildSpecFetchOptions(authToken string) *spec.SpecFetchOptions {
+	opts := &spec.SpecFetchOptions{}
 
 	// Copy headers
 	if len(p.SpecFetchHeaders) > 0 {
