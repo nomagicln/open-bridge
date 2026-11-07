@@ -119,6 +119,7 @@ type Parser struct {
 	client       *http.Client
 	loader       *openapi3.Loader
 	fetchOptions *SpecFetchOptions
+	remoteCache  *remoteCache
 }
 
 // CachedSpec represents a cached OpenAPI specification with metadata.
@@ -267,30 +268,121 @@ func (p *Parser) loadFromURL(ctx context.Context, specURL string, perSpecOpts *S
 		return nil, err
 	}
 
-	req, err := p.createHTTPRequest(ctx, specURL)
-	if err != nil {
-		return nil, err
+	if p.remoteCache == nil {
+		return p.loadFromURLUncached(ctx, specURL, parsedURL, perSpecOpts)
 	}
 
-	p.setDefaultHeaders(req)
-	p.applyFetchOptions(req, p.fetchOptions.Merge(perSpecOpts))
+	return p.loadFromURLCached(ctx, specURL, parsedURL, perSpecOpts)
+}
 
-	resp, err := p.executeHTTPRequest(specURL, req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if err := p.checkHTTPResponse(specURL, resp); err != nil {
-		return nil, err
-	}
-
-	data, err := p.readResponseBody(specURL, resp)
+// loadFromURLUncached fetches and parses a remote specification without using
+// the persistent cache.
+func (p *Parser) loadFromURLUncached(ctx context.Context, specURL string, parsedURL *url.URL, perSpecOpts *SpecFetchOptions) (*openapi3.T, error) {
+	data, _, err := p.fetchRemoteSpec(ctx, specURL, perSpecOpts, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	return p.parseSpecWithBaseURL(ctx, data, parsedURL)
+}
+
+// loadFromURLCached loads a remote specification using the persistent cache:
+// a fresh cache entry is used directly, a stale entry is revalidated with a
+// conditional request (304 reuses the cached content), and network failures
+// fall back to the stale cached content when available.
+func (p *Parser) loadFromURLCached(ctx context.Context, specURL string, parsedURL *url.URL, perSpecOpts *SpecFetchOptions) (*openapi3.T, error) {
+	cachedData, meta := p.remoteCache.load(specURL)
+	now := time.Now()
+
+	if cachedData != nil && meta != nil && !meta.isExpired(now) {
+		if doc, err := p.parseSpecWithBaseURL(ctx, cachedData, parsedURL); err == nil {
+			return doc, nil
+		}
+	}
+
+	data, header, err := p.fetchRemoteSpec(ctx, specURL, perSpecOpts, meta)
+	if err != nil {
+		return p.staleCacheFallback(ctx, parsedURL, cachedData, err)
+	}
+
+	if data == nil {
+		return p.revalidatedSpec(ctx, specURL, parsedURL, cachedData, meta, header, now)
+	}
+
+	doc, err := p.parseSpecWithBaseURL(ctx, data, parsedURL)
+	if err != nil {
+		return nil, err
+	}
+
+	p.cacheRemoteSpec(specURL, data, header, now)
+	return doc, nil
+}
+
+// fetchRemoteSpec performs an HTTP request for a remote specification. When
+// conditional metadata is provided, If-None-Match/If-Modified-Since headers are
+// sent. The returned body is nil for HTTP 304 Not Modified.
+func (p *Parser) fetchRemoteSpec(ctx context.Context, specURL string, perSpecOpts *SpecFetchOptions, conditional *remoteCacheMeta) ([]byte, http.Header, error) {
+	req, err := p.createHTTPRequest(ctx, specURL)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	p.setDefaultHeaders(req)
+	p.applyFetchOptions(req, p.fetchOptions.Merge(perSpecOpts))
+	setConditionalHeaders(req, conditional)
+
+	resp, err := p.executeHTTPRequest(specURL, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotModified {
+		return nil, resp.Header, nil
+	}
+
+	if err := p.checkHTTPResponse(specURL, resp); err != nil {
+		return nil, resp.Header, err
+	}
+
+	data, err := p.readResponseBody(specURL, resp)
+	if err != nil {
+		return nil, resp.Header, err
+	}
+
+	return data, resp.Header, nil
+}
+
+// staleCacheFallback returns the stale cached specification when a network
+// failure occurs, otherwise it returns the original fetch error.
+func (p *Parser) staleCacheFallback(ctx context.Context, parsedURL *url.URL, cachedData []byte, fetchErr error) (*openapi3.T, error) {
+	if cachedData != nil {
+		if doc, err := p.parseSpecWithBaseURL(ctx, cachedData, parsedURL); err == nil {
+			return doc, nil
+		}
+	}
+
+	return nil, fetchErr
+}
+
+// revalidatedSpec handles a 304 Not Modified response by refreshing the cache
+// freshness metadata and parsing the cached content.
+func (p *Parser) revalidatedSpec(ctx context.Context, specURL string, parsedURL *url.URL, cachedData []byte, meta *remoteCacheMeta, header http.Header, now time.Time) (*openapi3.T, error) {
+	if cachedData == nil || meta == nil {
+		return nil, fmt.Errorf("received HTTP 304 Not Modified for '%s' without cached spec", specURL)
+	}
+
+	// Freshness metadata refresh is best-effort: the cached content is still
+	// usable even if persisting the new expiry fails.
+	_, _ = p.remoteCache.refresh(meta, header, now)
+
+	return p.parseSpecWithBaseURL(ctx, cachedData, parsedURL)
+}
+
+// cacheRemoteSpec stores freshly fetched content in the persistent cache.
+// Cache write failures are best-effort and never fail the spec load.
+func (p *Parser) cacheRemoteSpec(specURL string, data []byte, header http.Header, now time.Time) {
+	_ = p.remoteCache.store(specURL, data, newRemoteCacheMeta(specURL, data, header, now))
 }
 
 // validateAndParseURL validates and parses the URL.
