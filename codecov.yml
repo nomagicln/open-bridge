@@ -4,9 +4,8 @@
 #
 # Gates:
 #   - project: no regression versus the base commit (auto target, -1% allowed)
-#   - floor:   total coverage must never drop below 58%
-#              (current baseline ~59.2%)
-#   - patch:   changed lines must reach 70% coverage
+#   - floor:   total coverage must never drop below 70%
+#   - patch:   changed lines must reach 75% coverage
 # fail_ci_if_error stays false in the upload step (fork tokens have no
 # access to the repository secret); the thresholds above are enforced by
 # Codecov status checks.
@@ -26,12 +25,12 @@ coverage:
         target: auto
         threshold: 1%
       floor:
-        # Hard floor: never go below the batch-0 coverage baseline.
-        target: 58%
+        # Hard floor: total coverage must stay at or above 70%.
+        target: 70%
         threshold: 0%
     patch:
       default:
-        target: 70%
+        target: 75%
         threshold: 0%
 
 ignore:

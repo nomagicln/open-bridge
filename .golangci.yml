@@ -98,10 +98,6 @@ linters:
           - gocognit
           - funlen
           - unparam
-      - path: cmd/ob/main\.go
-        linters:
-          - gocyclo
-        text: "newInstallCmd"
       - path: pkg/cli/handler\.go
         linters:
           - gocyclo

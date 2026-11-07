@@ -1,6 +1,6 @@
 .PHONY: build test lint clean install all deps update-deps run docs \
-        test-short test-coverage test-integration vet check lint-fix fmt-fix build-all \
-        install-lint check-tools help
+        test-short test-coverage test-integration bench vet check lint-fix fmt-fix \
+        build-all install-lint check-tools help
 
 # ============================================================================
 # Build Variables
@@ -112,6 +112,14 @@ test-coverage:
 # Run integration tests (build tag: integration; skips when no backend is available)
 test-integration:
 	go test -tags=integration ./...
+
+# Run benchmarks for spec parsing/derived index and CLI hot paths (non-blocking)
+bench:
+	@echo "==> pkg/spec benchmarks"
+	@go test -run '^$$' -bench . -benchmem ./pkg/spec/... || true
+	@echo "==> CLI hot-path benchmarks"
+	@go test -run '^$$' -bench . -benchmem ./pkg/cli/... || true
+	@echo "✓ Benchmarks complete"
 
 # ============================================================================
 # Lint & Format Targets
@@ -261,6 +269,7 @@ help:
 	@echo "  test-short      Run tests quickly (skip property tests)"
 	@echo "  test-coverage   Run tests with coverage report"
 	@echo "  test-integration Run integration tests (build tag: integration)"
+	@echo "  bench           Run benchmarks for spec + CLI hot paths (non-blocking)"
 	@echo ""
 	@echo "Lint & Format:"
 	@echo "  lint            Run golangci-lint"

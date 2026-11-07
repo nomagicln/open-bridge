@@ -1,8 +1,8 @@
 {
   "name": "open-bridge",
   "version": "1.0.0",
-  "description": "A universal bridge connecting AI agents with everything",
-  "main": "index.js",
+  "private": true,
+  "description": "A universal API runtime engine bridging OpenAPI specifications to a semantic CLI and an MCP server",
   "directories": {
     "doc": "docs",
     "example": "examples"
@@ -16,10 +16,22 @@
     "type": "git",
     "url": "git+https://github.com/nomagicln/open-bridge.git"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "openapi",
+    "swagger",
+    "cli",
+    "mcp",
+    "model-context-protocol",
+    "api",
+    "code-generation",
+    "ai-agents"
+  ],
+  "author": "nomagicln",
   "license": "Apache-2.0",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "bugs": {
     "url": "https://github.com/nomagicln/open-bridge/issues"
   },
