@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,6 +22,25 @@ const (
 
 	// KeyringPrefix is the prefix for all keyring entries.
 	KeyringPrefix = "ob"
+
+	// KeyringPasswordEnvVar explicitly enables the encrypted file backend when no
+	// system keyring is available. Its value is used as the file encryption password.
+	KeyringPasswordEnvVar = "OPENBRIDGE_KEYRING_PASSWORD"
+)
+
+// Errors returned when no secure credential backend can be initialized.
+var (
+	// ErrNoSecureKeyring indicates that no system keyring backend is available and
+	// the encrypted file backend was not explicitly enabled.
+	ErrNoSecureKeyring = errors.New(
+		"no secure keyring backend available; unlock a system keychain or set " +
+			KeyringPasswordEnvVar + " to enable the encrypted file backend")
+
+	// ErrKeyringPasswordRequired indicates that the encrypted file backend was
+	// requested without an explicit password source.
+	ErrKeyringPasswordRequired = errors.New(
+		"encrypted file backend requires an explicit password; set " +
+			KeyringPasswordEnvVar + " or provide a password function via WithFileBackend")
 )
 
 // CredentialType represents the type of credential.
@@ -187,13 +208,20 @@ func buildKeyringConfig(cfg *managerConfig, fileDir string, passwordFn func(stri
 	return config
 }
 
-// NewManager creates a new credential manager.
-// getPasswordFunc returns the password function to use for file backend.
+// getPasswordFunc returns the password function to use for the file backend, or
+// nil when no explicit password source is configured. There is deliberately no
+// hard-coded fallback password: a well-known password would only obfuscate
+// credentials instead of protecting them.
 func getPasswordFunc(cfg *managerConfig) func(string) (string, error) {
 	if cfg.filePasswordFn != nil {
 		return cfg.filePasswordFn
 	}
-	return keyring.FixedStringPrompt(ServiceName)
+	if password := os.Getenv(KeyringPasswordEnvVar); password != "" {
+		return func(string) (string, error) {
+			return password, nil
+		}
+	}
+	return nil
 }
 
 // getFileDir returns the file directory to use for file backend.
@@ -204,6 +232,70 @@ func getFileDir(cfg *managerConfig) (string, error) {
 	return getDefaultKeyringDir()
 }
 
+// backendCandidates returns the ordered list of keyring backends to try.
+// The encrypted file backend is only considered when it has been enabled
+// explicitly (WithFileBackend, WithAllowedBackends, or OPENBRIDGE_KEYRING_PASSWORD).
+func backendCandidates(cfg *managerConfig, passwordFn func(string) (string, error)) ([]keyring.BackendType, error) {
+	if len(cfg.allowedBackends) > 0 {
+		if slices.Contains(cfg.allowedBackends, keyring.FileBackend) && passwordFn == nil {
+			return nil, ErrKeyringPasswordRequired
+		}
+		return cfg.allowedBackends, nil
+	}
+
+	// An explicit file backend configuration (WithFileBackend) is opt-in.
+	if cfg.fileDir != "" || cfg.filePasswordFn != nil {
+		if passwordFn == nil {
+			return nil, ErrKeyringPasswordRequired
+		}
+		return []keyring.BackendType{keyring.FileBackend}, nil
+	}
+
+	// OPENBRIDGE_KEYRING_PASSWORD explicitly enables the encrypted file backend.
+	if os.Getenv(KeyringPasswordEnvVar) != "" {
+		return []keyring.BackendType{keyring.FileBackend}, nil
+	}
+
+	// Default: system backends only. Never silently fall back to the file backend.
+	available := keyring.AvailableBackends()
+	candidates := make([]keyring.BackendType, 0, len(available))
+	for _, backend := range available {
+		if backend == keyring.FileBackend {
+			continue
+		}
+		candidates = append(candidates, backend)
+	}
+	return candidates, nil
+}
+
+// openKeyring opens the first available backend and reports the backend that was
+// actually selected, instead of guessing from the platform.
+func openKeyring(cfg *managerConfig, fileDir string, passwordFn func(string) (string, error)) (keyring.Keyring, BackendType, error) {
+	candidates, err := backendCandidates(cfg, passwordFn)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var openErrors []error
+	for _, backend := range candidates {
+		config := buildKeyringConfig(cfg, fileDir, passwordFn)
+		config.AllowedBackends = []keyring.BackendType{backend}
+
+		ring, openErr := keyring.Open(config)
+		if openErr != nil {
+			openErrors = append(openErrors, fmt.Errorf("%s backend: %w", backend, openErr))
+			continue
+		}
+		return ring, BackendType(backend), nil
+	}
+
+	if len(openErrors) == 0 {
+		return nil, "", fmt.Errorf("%w (no backends available)", ErrNoSecureKeyring)
+	}
+	return nil, "", fmt.Errorf("%w (tried %v: %w)", ErrNoSecureKeyring, candidates, errors.Join(openErrors...))
+}
+
+// NewManager creates a new credential manager.
 func NewManager(opts ...ManagerOption) (*Manager, error) {
 	cfg := &managerConfig{}
 	for _, opt := range opts {
@@ -216,16 +308,15 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 	}
 
 	passwordFn := getPasswordFunc(cfg)
-	config := buildKeyringConfig(cfg, fileDir, passwordFn)
 
-	ring, err := keyring.Open(config)
+	ring, backend, err := openKeyring(cfg, fileDir, passwordFn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open keyring: %w", err)
+		return nil, err
 	}
 
 	return &Manager{
 		ring:        ring,
-		backend:     detectBackend(),
+		backend:     backend,
 		initialized: true,
 	}, nil
 }
@@ -282,10 +373,10 @@ func getDefaultKeyringDir() (string, error) {
 	}
 }
 
-// detectBackend attempts to detect which keyring backend is being used.
+// detectBackend returns the keyring backend recommended for the current platform.
+// It is used for platform information only: Manager.Backend reports the backend
+// that was actually opened.
 func detectBackend() BackendType {
-	// The keyring library doesn't expose which backend is in use,
-	// so we detect based on platform
 	switch runtime.GOOS {
 	case "darwin":
 		return BackendKeychain
@@ -403,7 +494,9 @@ func handleRemoveError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, keyring.ErrKeyNotFound) {
+	// The file backend reports a missing entry as a filesystem error rather than
+	// keyring.ErrKeyNotFound; deleting a missing credential must stay idempotent.
+	if errors.Is(err, keyring.ErrKeyNotFound) || errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	return fmt.Errorf("failed to delete credential: %w", err)
@@ -616,7 +709,7 @@ func getPlatformBackend(osName string) (bool, string, BackendType) {
 
 // GetPlatformInfo returns information about the current platform's keyring support.
 func GetPlatformInfo() PlatformInfo {
-	supportsNative, nativeStore, backend := getPlatformBackend(runtime.GOOS)
+	supportsNative, nativeStore, _ := getPlatformBackend(runtime.GOOS)
 
 	return PlatformInfo{
 		OS:                  runtime.GOOS,
@@ -624,7 +717,7 @@ func GetPlatformInfo() PlatformInfo {
 		SupportsNativeStore: supportsNative,
 		NativeStoreName:     nativeStore,
 		FallbackAvailable:   true,
-		RecommendedBackend:  backend,
+		RecommendedBackend:  detectBackend(),
 	}
 }
 
