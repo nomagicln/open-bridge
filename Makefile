@@ -1,5 +1,6 @@
 .PHONY: build test lint clean install all deps update-deps run docs \
-        test-short test-coverage lint-fix fmt-fix build-all install-lint check-tools help
+        test-short test-coverage test-integration vet lint-fix fmt-fix build-all \
+        install-lint check-tools help
 
 # ============================================================================
 # Build Variables
@@ -14,6 +15,13 @@ BINARY_NAME ?= ob
 CMD_PATH    ?= ./cmd/ob
 OUTPUT_DIR  ?= bin
 
+# Install destination: GOBIN when set, otherwise GOPATH/bin.
+# Resolved via `go env` so the bare $GOPATH environment variable is not required.
+GOBIN ?= $(shell go env GOBIN)
+ifeq ($(strip $(GOBIN)),)
+GOBIN := $(shell go env GOPATH)/bin
+endif
+
 # ============================================================================
 # Cross-Platform Build Configuration
 # ============================================================================
@@ -27,7 +35,7 @@ CGO_ENABLED ?= 0
 # ============================================================================
 # Tool Versions (for installation)
 # ============================================================================
-GOLANGCI_LINT_VERSION ?= latest
+GOLANGCI_LINT_VERSION ?= v2.15.0
 
 # ============================================================================
 # Tool Detection Functions
@@ -101,9 +109,18 @@ test-coverage:
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "✓ Coverage report generated: coverage.html"
 
+# Run integration tests (build tag: integration; skips when no backend is available)
+test-integration:
+	go test -tags=integration ./...
+
 # ============================================================================
 # Lint & Format Targets
 # ============================================================================
+
+# Run go vet with default and integration build tags
+vet:
+	go vet ./...
+	go vet -tags=integration ./...
 
 # Run linter (requires golangci-lint)
 lint:
@@ -166,14 +183,11 @@ update-deps:
 # Installation & Run
 # ============================================================================
 
-# Install the binary to GOPATH/bin
+# Install the binary to GOBIN (or GOPATH/bin); GOPATH is resolved via `go env`
 install: build
-	@if [ -z "$(GOPATH)" ]; then \
-		echo "Error: GOPATH is not set"; \
-		exit 1; \
-	fi
-	cp $(OUTPUT_DIR)/$(BINARY_NAME) $(GOPATH)/bin/$(BINARY_NAME)
-	@echo "✓ Installed to $(GOPATH)/bin/$(BINARY_NAME)"
+	@mkdir -p $(GOBIN)
+	cp $(OUTPUT_DIR)/$(BINARY_NAME) $(GOBIN)/$(BINARY_NAME)
+	@echo "✓ Installed to $(GOBIN)/$(BINARY_NAME)"
 
 # Run the development binary
 run: build
@@ -210,17 +224,19 @@ help:
 	@echo "Build Targets:"
 	@echo "  build           Build binary for current platform"
 	@echo "  build-all       Cross-compile for all configured platforms"
-	@echo "  install         Install binary to GOPATH/bin"
+	@echo "  install         Install binary to GOBIN (or GOPATH/bin)"
 	@echo "  clean           Remove build artifacts"
 	@echo ""
 	@echo "Test Targets:"
 	@echo "  test            Run all tests (unit + property)"
 	@echo "  test-short      Run tests quickly (skip property tests)"
 	@echo "  test-coverage   Run tests with coverage report"
+	@echo "  test-integration Run integration tests (build tag: integration)"
 	@echo ""
 	@echo "Lint & Format:"
 	@echo "  lint            Run golangci-lint"
 	@echo "  lint-fix        Run golangci-lint with auto-fix"
+	@echo "  vet             Run go vet (default + integration build tags)"
 	@echo "  fmt-fix         Advanced code formatting"
 	@echo ""
 	@echo "Tools:"
@@ -231,10 +247,12 @@ help:
 	@echo "  PLATFORMS       Target platforms for build-all (default: $(PLATFORMS))"
 	@echo "  BINARY_NAME     Output binary name (default: $(BINARY_NAME))"
 	@echo "  OUTPUT_DIR      Output directory (default: $(OUTPUT_DIR))"
+	@echo "  GOBIN           Install destination (default: $(GOBIN))"
 	@echo "  CGO_ENABLED     Enable CGO (default: $(CGO_ENABLED))"
 	@echo "  VERSION         Version string (default: auto-detected from git)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make build-all PLATFORMS=\"linux/amd64 darwin/arm64\""
 	@echo "  make build BINARY_NAME=myapp OUTPUT_DIR=dist"
-	@echo "  make install-lint GOLANGCI_LINT_VERSION=v2.0.0"
+	@echo "  make install-lint GOLANGCI_LINT_VERSION=v2.15.0"
+	@echo "  make test-integration"
