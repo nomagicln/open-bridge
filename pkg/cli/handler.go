@@ -10,7 +10,9 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/nomagicln/open-bridge/pkg/codegen"
@@ -21,6 +23,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// defaultOutputFormat is the output format used when the user does not pass an
+// explicit --output/--json/--yaml flag.
+const defaultOutputFormat = "yaml"
+
+// defaultHTTPTimeout bounds every CLI API request so a slow or unreachable
+// server cannot hang the process forever.
+const defaultHTTPTimeout = 30 * time.Second
+
 // Handler processes CLI commands and executes API operations.
 type Handler struct {
 	specParser     *spec.Parser
@@ -29,6 +39,9 @@ type Handler struct {
 	httpClient     *http.Client
 	errorFormatter *ErrorFormatter
 	configMgr      *config.Manager
+
+	// stdout receives command output (defaults to os.Stdout; overridable in tests).
+	stdout io.Writer
 }
 
 // NewHandler creates a new CLI handler.
@@ -42,9 +55,10 @@ func NewHandler(
 		specParser:     specParser,
 		mapper:         mapper,
 		reqBuilder:     reqBuilder,
-		httpClient:     &http.Client{},
+		httpClient:     &http.Client{Timeout: defaultHTTPTimeout},
 		errorFormatter: NewErrorFormatter(),
 		configMgr:      configMgr,
+		stdout:         os.Stdout,
 	}
 }
 
@@ -119,7 +133,7 @@ func (h *Handler) printAndWrapError(message string, underlying error) error {
 
 // executeAPIRequest builds and executes the API request.
 // buildRequest builds an HTTP request from operation details.
-func (h *Handler) buildRequest(op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile) (*http.Request, error) {
+func (h *Handler) buildRequest(appName string, op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile) (*http.Request, error) {
 	var requestBody *openapi3.RequestBody
 	if opSpec.RequestBody != nil && opSpec.RequestBody.Value != nil {
 		requestBody = opSpec.RequestBody.Value
@@ -130,11 +144,36 @@ func (h *Handler) buildRequest(op *semantic.Operation, opSpec *openapi3.Operatio
 		return nil, fmt.Errorf("failed to build request: %w", err)
 	}
 
-	if err := h.reqBuilder.InjectAuth(req, "", profile.Name, &profile.Auth); err != nil {
+	if err := h.reqBuilder.InjectAuth(req, appName, profile.Name, &profile.Auth); err != nil {
 		return nil, fmt.Errorf("failed to inject auth: %w", err)
 	}
 
+	applyProfileToRequest(req, profile)
+
 	return req, nil
+}
+
+// applyProfileToRequest layers profile-level headers and query parameters onto
+// the request. Existing headers are kept unless overridden, existing query
+// values and URL userinfo are preserved.
+func applyProfileToRequest(req *http.Request, profile *config.Profile) {
+	if req == nil || profile == nil {
+		return
+	}
+
+	for name, value := range profile.Headers {
+		req.Header.Set(name, value)
+	}
+
+	if req.URL == nil || len(profile.QueryParams) == 0 {
+		return
+	}
+
+	query := req.URL.Query()
+	for name, value := range profile.QueryParams {
+		query.Set(name, value)
+	}
+	req.URL.RawQuery = query.Encode()
 }
 
 // readResponse reads and validates the HTTP response.
@@ -152,8 +191,8 @@ func (h *Handler) readResponse(resp *http.Response) ([]byte, error) {
 }
 
 // executeAPIRequest executes an API request and returns the response body.
-func (h *Handler) executeAPIRequest(_ string, op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile) ([]byte, error) {
-	req, err := h.buildRequest(op, opSpec, params, profile)
+func (h *Handler) executeAPIRequest(appName string, op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile) ([]byte, error) {
+	req, err := h.buildRequest(appName, op, opSpec, params, profile)
 	if err != nil {
 		return nil, err
 	}
@@ -189,8 +228,8 @@ func writeCodeOutput(code, outputFile string) error {
 }
 
 // generateCode generates code for the API request and outputs it to stdout or a file.
-func (h *Handler) generateCode(_ string, op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile, format string, outputFile string) error {
-	req, err := h.buildRequest(op, opSpec, params, profile)
+func (h *Handler) generateCode(appName string, op *semantic.Operation, opSpec *openapi3.Operation, params map[string]any, profile *config.Profile, format string, outputFile string) error {
+	req, err := h.buildRequest(appName, op, opSpec, params, profile)
 	if err != nil {
 		return err
 	}
@@ -305,7 +344,7 @@ func extractCLIFlags(params map[string]any) (string, string, map[string]any) {
 	cleanParams := make(map[string]any, len(params))
 	for k, v := range params {
 		switch k {
-		case "generate", "generate-output", "output", "json", "yaml":
+		case "generate", "generate-output", "output", "json", "yaml", "profile":
 			continue
 		default:
 			cleanParams[k] = v
@@ -322,6 +361,13 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 
 	resource, verb, flagArgs := args[0], args[1], args[2:]
 
+	options := parseCLIOptions(flagArgs)
+
+	profile, err := h.getProfile(appConfig, options.profileName)
+	if err != nil {
+		return err
+	}
+
 	_, opSpec, op, err := h.resolveOperationSpec(appName, appConfig, resource, verb)
 	if err != nil {
 		return err
@@ -332,12 +378,13 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 		return err
 	}
 
-	generateFormat, generateOutput, cleanParams := extractCLIFlags(params)
-	profile := h.getProfile(appConfig)
+	// Strip CLI-only flags from the parameters forwarded to the request builder;
+	// their values have already been captured by parseCLIOptions.
+	_, _, cleanParams := extractCLIFlags(params)
 
 	// Handle code generation or API request execution
-	if generateFormat != "" {
-		return h.generateCode(appName, op, opSpec, cleanParams, profile, generateFormat, generateOutput)
+	if options.generateFormat != "" {
+		return h.generateCode(appName, op, opSpec, cleanParams, profile, options.generateFormat, options.generateOutput)
 	}
 
 	// API request path: validate parameters
@@ -351,30 +398,125 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 		return err
 	}
 
-	return h.formatAndPrintOutput(body, cleanParams)
+	outputFormat := options.outputFormat
+	if outputFormat == "" {
+		outputFormat = defaultOutputFormat
+	}
+
+	return h.formatAndPrintOutput(body, outputFormat)
 }
 
-// determineOutputFormat extracts the output format from parameters.
-func determineOutputFormat(params map[string]any) string {
-	if f, ok := params["output"].(string); ok {
-		return f
-	}
-	if _, ok := params["json"]; ok {
-		return "json"
-	}
-	if _, ok := params["yaml"]; ok {
-		return "yaml"
-	}
-	return "table"
+// cliOptions holds the CLI-only options consumed by the handler; they are never
+// forwarded to the API request.
+type cliOptions struct {
+	outputFormat   string
+	profileName    string
+	generateFormat string
+	generateOutput string
 }
 
-// formatAndPrintOutput formats the response body and prints it.
-func (h *Handler) formatAndPrintOutput(body []byte, params map[string]any) error {
-	output, err := h.FormatOutput(body, determineOutputFormat(params))
+// splitOptionArg splits "--name=value" style arguments into name and value.
+func splitOptionArg(arg string) (name, value string, hasValue bool) {
+	if namePart, valuePart, ok := strings.Cut(arg, "="); ok {
+		return namePart, valuePart, true
+	}
+	return arg, "", false
+}
+
+// isFlagToken reports whether arg looks like a flag, so that an option value is
+// never taken from the next flag token.
+func isFlagToken(arg string) bool {
+	return len(arg) > 1 && arg[0] == '-'
+}
+
+// optionValueAt returns an option's value either from the inline "--flag=value"
+// form or from the following argument.
+func optionValueAt(args []string, index int, inlineValue string, hasInlineValue bool) (value string, nextIndex int, ok bool) {
+	if hasInlineValue {
+		return inlineValue, index, true
+	}
+	if index+1 < len(args) && !isFlagToken(args[index+1]) {
+		return args[index+1], index + 1, true
+	}
+	return "", index, false
+}
+
+// parseCLIOptions parses CLI-only options from command arguments.
+//
+// Supported forms:
+//
+//	--output json | -o json | --output=json | -o=json
+//	--json | --yaml
+//	--profile staging | -p staging | --profile=staging
+//	--generate curl | -g curl | --generate=curl
+//	--generate-output file | -O file | --generate-output=file
+//
+// Arguments after the "--" delimiter are request parameters and are never
+// parsed as CLI options. Output format priority is: --output > --json/--yaml >
+// "" (the caller falls back to defaultOutputFormat).
+func parseCLIOptions(args []string) cliOptions {
+	var options cliOptions
+	explicitOutput := false
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			break
+		}
+
+		name, inlineValue, hasInlineValue := splitOptionArg(arg)
+		switch name {
+		case "--output", "-o":
+			if value, nextIndex, ok := optionValueAt(args, i, inlineValue, hasInlineValue); ok {
+				options.outputFormat = value
+				explicitOutput = true
+				i = nextIndex
+			}
+		case "--json":
+			if !explicitOutput {
+				options.outputFormat = "json"
+			}
+		case "--yaml":
+			if !explicitOutput {
+				options.outputFormat = "yaml"
+			}
+		case "--profile", "-p":
+			if value, nextIndex, ok := optionValueAt(args, i, inlineValue, hasInlineValue); ok {
+				options.profileName = value
+				i = nextIndex
+			}
+		case "--generate", "-g":
+			if value, nextIndex, ok := optionValueAt(args, i, inlineValue, hasInlineValue); ok {
+				options.generateFormat = value
+				i = nextIndex
+			}
+		case "--generate-output", "-O":
+			if value, nextIndex, ok := optionValueAt(args, i, inlineValue, hasInlineValue); ok {
+				options.generateOutput = value
+				i = nextIndex
+			}
+		default:
+			// Not a CLI-only option: leave it for request-parameter parsing.
+		}
+	}
+
+	return options
+}
+
+// formatAndPrintOutput formats the response body and writes it to Handler.stdout.
+func (h *Handler) formatAndPrintOutput(body []byte, format string) error {
+	output, err := h.FormatOutput(body, format)
 	if err != nil {
 		return fmt.Errorf("failed to format output: %w", err)
 	}
-	fmt.Println(output)
+
+	stdout := h.stdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	if _, err := fmt.Fprintln(stdout, output); err != nil {
+		return fmt.Errorf("failed to write output: %w", err)
+	}
 	return nil
 }
 
@@ -472,24 +614,37 @@ func (h *Handler) mergeRequestParams(cliParams map[string]any, reqParams *Reques
 	return merged
 }
 
-// getProfile returns the profile to use for the request.
-func (h *Handler) getProfile(appConfig *config.AppConfig) *config.Profile {
-	profileName := appConfig.DefaultProfile
+// getProfile resolves the profile to use for the request. An empty name falls
+// back to the app's default profile. A missing profile is an error that lists
+// the profiles available for the app.
+func (h *Handler) getProfile(appConfig *config.AppConfig, name string) (*config.Profile, error) {
+	if appConfig == nil {
+		return nil, fmt.Errorf("application configuration is missing")
+	}
+
+	profileName := name
+	if profileName == "" {
+		profileName = appConfig.DefaultProfile
+	}
 	if profileName == "" {
 		profileName = "default"
 	}
 
 	if profile, ok := appConfig.Profiles[profileName]; ok {
-		return &profile
+		return &profile, nil
 	}
 
-	// Return first profile if default not found
-	for _, profile := range appConfig.Profiles {
-		return &profile
+	available := make([]string, 0, len(appConfig.Profiles))
+	for availableName := range appConfig.Profiles {
+		available = append(available, availableName)
+	}
+	sort.Strings(available)
+
+	if len(available) == 0 {
+		return nil, fmt.Errorf("profile %q not found: application %q has no profiles configured", profileName, appConfig.Name)
 	}
 
-	// Return empty profile
-	return &config.Profile{Name: "default"}
+	return nil, fmt.Errorf("profile %q not found; available profiles: %s", profileName, strings.Join(available, ", "))
 }
 
 // FormatOutput formats the response body according to the specified format.
