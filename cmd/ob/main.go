@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -98,54 +99,61 @@ func main() {
 	}
 }
 
-// Execute runs the root command
-func Execute() error {
-	// Check if we're running as a shim (binary name is not 'ob')
-	binaryName := filepath.Base(os.Args[0])
-	binaryName = strings.TrimSuffix(binaryName, filepath.Ext(binaryName))
-
-	if binaryName != "ob" {
-		// Shim mode: route directly to app handler
-		return appRouter.Execute(os.Args)
-	}
-
-	// Normal 'ob' mode: use cobra CLI
-	rootCmd := &cobra.Command{
-		Use:   "ob",
-		Short: "OpenBridge - Universal API Runtime Engine",
-		Long: `OpenBridge is a universal API runtime engine that bridges OpenAPI specifications
+// rootCmdLong is the long description of the root command.
+const rootCmdLong = `OpenBridge is a universal API runtime engine that bridges OpenAPI specifications
 to two distinct interfaces:
   - A semantic CLI for human users
   - An MCP server for AI agents
 
-One Spec, Dual Interface.`,
-		Version:       fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, date),
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		// Handle unknown subcommands as app names
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
-			// First arg might be an app name
-			appName := args[0]
-			if configMgr.AppExists(appName) {
-				// Route to app handler
-				return appRouter.Execute(append([]string{os.Args[0]}, args...))
-			}
-			return fmt.Errorf("unknown command or app: %s\nRun 'ob --help' for usage", appName)
-		},
+One Spec, Dual Interface.`
+
+// rootCmdExample shows the supported invocation forms.
+const rootCmdExample = `  ob install petstore --spec https://petstore.swagger.io/v2/swagger.json
+  ob run petstore pets list
+  ob petstore pets list
+  ob petstore --help
+  ob petstore --mcp`
+
+// Execute runs the root command.
+func Execute() error {
+	// Check if we're running as a shim (binary name is not 'ob').
+	binaryName := filepath.Base(os.Args[0])
+	binaryName = strings.TrimSuffix(binaryName, filepath.Ext(binaryName))
+
+	if binaryName != "ob" {
+		// Shim mode: route directly to app handler.
+		return appRouter.Execute(os.Args)
 	}
 
-	// Disable the default completion command (we'll use our custom one)
+	// Normal 'ob' mode: use cobra CLI.
+	return newRootCmd().Execute()
+}
+
+// newRootCmd builds the root cobra command for 'ob' mode.
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{
+		Use:           "ob",
+		Short:         "OpenBridge - Universal API Runtime Engine",
+		Long:          rootCmdLong,
+		Example:       rootCmdExample,
+		Version:       fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, date),
+		Args:          cobra.ArbitraryArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          runRootCommand,
+	}
+
+	// Stop flag parsing at the first positional argument so that app-level
+	// flags (--help, --mcp, ...) reach the app handler instead of cobra.
+	rootCmd.Flags().SetInterspersed(false)
+
+	// Disable the default completion command (we'll use our custom one).
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
-	// Add global flags
 	rootCmd.PersistentFlags().StringP("profile", "p", "", "Profile to use for the operation")
 	rootCmd.PersistentFlags().Bool("mcp", false, "Start in MCP server mode")
 	rootCmd.PersistentFlags().StringP("output", "o", "yaml", "Output format: json, yaml")
 
-	// Add subcommands
 	rootCmd.AddCommand(
 		newInstallCmd(),
 		newUninstallCmd(),
@@ -155,7 +163,22 @@ One Spec, Dual Interface.`,
 		newCompletionCmd(),
 	)
 
-	return rootCmd.Execute()
+	return rootCmd
+}
+
+// runRootCommand treats an unknown subcommand as an app name.
+func runRootCommand(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return cmd.Help()
+	}
+
+	// First arg might be an app name.
+	appName := args[0]
+	if configMgr.AppExists(appName) {
+		return appRouter.ExecuteApp(appName, args[1:])
+	}
+
+	return fmt.Errorf("unknown command or app: %s\nRun 'ob --help' for usage", appName)
 }
 
 // prepareInteractiveInstall handles the interactive TUI installation flow.
@@ -296,9 +319,9 @@ func printInstallResult(appName string, result *config.InstallResult) {
 
 	fmt.Printf("\nUsage:\n")
 	if result.ShimPath != "" {
-		fmt.Printf("  %s <verb> <resource> [flags]\n", appName)
+		fmt.Printf("  %s <resource> <verb> [flags]\n", appName)
 	} else {
-		fmt.Printf("  ob run %s <verb> <resource> [flags]\n", appName)
+		fmt.Printf("  ob run %s <resource> <verb> [flags]\n", appName)
 	}
 	fmt.Printf("  ob run %s --help\n", appName)
 }
@@ -361,9 +384,10 @@ The specification can be provided as a local file path or a remote URL.
 
 After installation, you can call API operations using either:
   - Automatic parameter classification (recommended):
-    ob myapp get-user --id=123
+    ob run myapp users list
+    myapp users create --name "John"
   - Explicit parameter classification with '--' separator (use prefixes):
-    ob myapp get-user -- --path:id=123
+    ob run myapp pets get -- --path:petId=123
 
 Example:
   ob install myapi --spec ./openapi.yaml
@@ -602,32 +626,78 @@ func showAppInfo(appName, outputFormat string) error {
 func printAppConfig(cfg *config.AppConfig, format string) error {
 	switch format {
 	case "json":
-		return printAppConfigJSON(cfg)
+		return printAppConfigJSON(os.Stdout, cfg)
 	case "yaml":
-		return printAppConfigYAML(cfg)
+		return printAppConfigYAML(os.Stdout, cfg)
 	default:
 		printAppConfigText(cfg)
 		return nil
 	}
 }
 
+// redactAppConfig returns a deep copy of cfg with sensitive header values
+// replaced by masked placeholders, suitable for machine-readable output.
+// The original configuration is never modified.
+func redactAppConfig(cfg *config.AppConfig) *config.AppConfig {
+	if cfg == nil {
+		return nil
+	}
+
+	redacted := *cfg
+	if cfg.Profiles == nil {
+		return &redacted
+	}
+
+	redacted.Profiles = make(map[string]config.Profile, len(cfg.Profiles))
+	for name, profile := range cfg.Profiles {
+		cloned := profile
+		cloned.Headers = redactHeaders(profile.Headers)
+		cloned.SpecFetchHeaders = redactHeaders(profile.SpecFetchHeaders)
+		redacted.Profiles[name] = cloned
+	}
+
+	return &redacted
+}
+
+// redactHeaders returns a copy of headers with sensitive values masked.
+func redactHeaders(headers map[string]string) map[string]string {
+	if headers == nil {
+		return nil
+	}
+
+	redacted := make(map[string]string, len(headers))
+	for key, value := range headers {
+		if isSensitiveHeader(key) {
+			redacted[key] = maskValue(value)
+			continue
+		}
+		redacted[key] = value
+	}
+
+	return redacted
+}
+
 // printAppConfigJSON prints the app configuration as JSON.
-func printAppConfigJSON(cfg *config.AppConfig) error {
-	data, err := json.MarshalIndent(cfg, "", "  ")
+func printAppConfigJSON(w io.Writer, cfg *config.AppConfig) error {
+	data, err := json.MarshalIndent(redactAppConfig(cfg), "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config to JSON: %w", err)
 	}
-	fmt.Println(string(data))
+	if _, err := fmt.Fprintln(w, string(data)); err != nil {
+		return fmt.Errorf("failed to write config as JSON: %w", err)
+	}
 	return nil
 }
 
 // printAppConfigYAML prints the app configuration as YAML.
-func printAppConfigYAML(cfg *config.AppConfig) error {
-	data, err := yaml.Marshal(cfg)
+func printAppConfigYAML(w io.Writer, cfg *config.AppConfig) error {
+	data, err := yaml.Marshal(redactAppConfig(cfg))
 	if err != nil {
 		return fmt.Errorf("failed to marshal config to YAML: %w", err)
 	}
-	fmt.Print(string(data))
+	if _, err := fmt.Fprint(w, string(data)); err != nil {
+		return fmt.Errorf("failed to write config as YAML: %w", err)
+	}
 	return nil
 }
 
@@ -791,8 +861,8 @@ func newRunCmd() *cobra.Command {
 		Long: `Run commands for an installed API application.
 
 Example:
-  ob run petstore list pets
-  ob run petstore create pet --name "Fluffy" --status available
+  ob run petstore pets list
+  ob run petstore pets create --name "Fluffy" --status available
   ob run petstore --mcp  # Start MCP server`,
 		Args:               cobra.MinimumNArgs(1),
 		ValidArgsFunction:  completeRunArgs,

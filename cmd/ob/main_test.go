@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -495,4 +497,121 @@ paths: {}
 	require.True(t, ok)
 	// Should still be "X-API-Key"
 	assert.Equal(t, "X-API-Key", profile.Auth.KeyName)
+}
+
+// testAppConfigWithHeaders builds an AppConfig containing both regular and
+// spec-fetch headers so redaction can be exercised on both fields.
+func testAppConfigWithHeaders() *config.AppConfig {
+	return &config.AppConfig{
+		Name: "demo",
+		Profiles: map[string]config.Profile{
+			"default": {
+				Name: "default",
+				Headers: map[string]string{
+					"Authorization": "Bearer super-secret-token",
+					"X-Custom":      "public-value",
+				},
+				SpecFetchHeaders: map[string]string{
+					"X-API-Key": "sk-live-1234567890",
+					"Accept":    "application/json",
+				},
+			},
+			"prod": {
+				Name:    "prod",
+				Headers: map[string]string{"X-Auth-Token": "prod-token-abcdef"},
+			},
+		},
+	}
+}
+
+func TestRedactAppConfig(t *testing.T) {
+	cfg := testAppConfigWithHeaders()
+
+	redacted := redactAppConfig(cfg)
+	require.NotNil(t, redacted)
+
+	// Sensitive header values must be masked.
+	assert.NotEqual(t, "Bearer super-secret-token", redacted.Profiles["default"].Headers["Authorization"])
+	assert.Contains(t, redacted.Profiles["default"].Headers["Authorization"], "***")
+	assert.NotEqual(t, "sk-live-1234567890", redacted.Profiles["default"].SpecFetchHeaders["X-API-Key"])
+	assert.NotEqual(t, "prod-token-abcdef", redacted.Profiles["prod"].Headers["X-Auth-Token"])
+
+	// Non-sensitive header values must be preserved.
+	assert.Equal(t, "public-value", redacted.Profiles["default"].Headers["X-Custom"])
+	assert.Equal(t, "application/json", redacted.Profiles["default"].SpecFetchHeaders["Accept"])
+
+	// The original config must not be mutated.
+	assert.Equal(t, "Bearer super-secret-token", cfg.Profiles["default"].Headers["Authorization"])
+	assert.Equal(t, "sk-live-1234567890", cfg.Profiles["default"].SpecFetchHeaders["X-API-Key"])
+
+	// The copy must be deep: mutating the redacted headers must not leak back.
+	redacted.Profiles["default"].Headers["X-Custom"] = "mutated"
+	assert.Equal(t, "public-value", cfg.Profiles["default"].Headers["X-Custom"])
+
+	// Nil-safe.
+	assert.Nil(t, redactAppConfig(nil))
+}
+
+func TestPrintAppConfigJSONRedactsHeaders(t *testing.T) {
+	cfg := testAppConfigWithHeaders()
+
+	var buf bytes.Buffer
+	require.NoError(t, printAppConfigJSON(&buf, cfg))
+
+	out := buf.String()
+	assert.NotContains(t, out, "super-secret-token")
+	assert.NotContains(t, out, "sk-live-1234567890")
+	assert.NotContains(t, out, "prod-token-abcdef")
+	assert.Contains(t, out, "public-value")
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &decoded))
+	profiles, ok := decoded["Profiles"].(map[string]any)
+	require.True(t, ok, "JSON output should contain a Profiles object")
+	def, ok := profiles["default"].(map[string]any)
+	require.True(t, ok)
+	headers, ok := def["Headers"].(map[string]any)
+	require.True(t, ok)
+	assert.NotEqual(t, "Bearer super-secret-token", headers["Authorization"])
+	assert.Equal(t, "public-value", headers["X-Custom"])
+}
+
+func TestPrintAppConfigYAMLRedactsHeaders(t *testing.T) {
+	cfg := testAppConfigWithHeaders()
+
+	var buf bytes.Buffer
+	require.NoError(t, printAppConfigYAML(&buf, cfg))
+
+	out := buf.String()
+	assert.NotContains(t, out, "super-secret-token")
+	assert.NotContains(t, out, "sk-live-1234567890")
+	assert.NotContains(t, out, "prod-token-abcdef")
+	assert.Contains(t, out, "public-value")
+
+	// The original config is still intact after serialization.
+	assert.Equal(t, "Bearer super-secret-token", cfg.Profiles["default"].Headers["Authorization"])
+}
+
+func TestNewRootCmd(t *testing.T) {
+	cmd := newRootCmd()
+	require.NotNil(t, cmd)
+	assert.Equal(t, "ob", cmd.Use)
+	assert.NotNil(t, cmd.Args)
+	assert.NotNil(t, cmd.RunE)
+	assert.NotEmpty(t, cmd.Long)
+	assert.NotEmpty(t, cmd.Example)
+
+	subcommands := make([]string, 0, len(cmd.Commands()))
+	for _, sub := range cmd.Commands() {
+		subcommands = append(subcommands, sub.Name())
+	}
+	assert.Subset(t, subcommands, []string{"install", "uninstall", "list", "info", "run", "completion"})
+}
+
+func TestRunRootCommandUnknownApp(t *testing.T) {
+	cmd := newRootCmd()
+
+	err := runRootCommand(cmd, []string{"definitely-not-an-app"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown command or app")
 }
