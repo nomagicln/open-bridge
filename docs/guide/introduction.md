@@ -25,4 +25,5 @@ Traditional API tools often require generating code or manually crafting CLI wra
 - **Secure Credentials**: Uses system keyring (Keychain, Credential Manager, Secret Service); on headless systems, set `OPENBRIDGE_KEYRING_PASSWORD` to use an encrypted file backend
 - **Resilient Requests**: Per-profile timeout, retry policy and TLS options (custom CA, client certificates, skip-verify)
 - **Offline-Friendly Remote Specs**: remote OpenAPI specs are cached locally and revalidated with `ETag` / `Last-Modified`
+- **Instant Help & Completion**: app help and shell completion read a cached derived index (~10ms even for multi-MB specs)
 - **Fast Startup**: CLI startup in single-digit milliseconds; app command latency depends on OpenAPI spec size

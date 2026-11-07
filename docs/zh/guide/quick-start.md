@@ -96,7 +96,8 @@ myapi --mcp
 ## 配置
 
 远端 OpenAPI 规范缓存在 `<config-dir>/spec-cache`，并使用 `ETag` / `Last-Modified` 做条件重新验证；
-远端不可达时会使用缓存副本。
+远端不可达时会使用缓存副本。app help 与 shell 补全读取 `<config-dir>/index-cache` 中的派生索引
+（按源文件 size/mtime 或远端内容哈希失效），因此数 MB 的 spec 不会拖慢 `--help` 或 Tab 补全。
 
 配置文件存储在以下位置：
 

@@ -42,6 +42,18 @@ myapi users list --output json
 myapi users list --yaml
 ```
 
+## Caching
+
+OpenBridge stores derived data under the configuration directory:
+
+* `<config-dir>/spec-cache` — remote OpenAPI specifications, revalidated with `ETag` / `Last-Modified`
+  when stale and used as an offline fallback when the remote source is unreachable.
+* `<config-dir>/index-cache` — derived help/completion indexes. Local specs are keyed by absolute path,
+  size and modification time; remote specs are keyed by URL and content hash. Indexes are versioned and
+  rebuilt automatically when the source or the semantic rules change.
+
+Deleting either directory is always safe; the data is rebuilt on demand.
+
 ## Profile Configuration
 
 Each profile in `<config-dir>/apps/<app>.yaml` can tune HTTP behavior used by the CLI:

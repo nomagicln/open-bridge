@@ -42,6 +42,17 @@ myapi users list --output json
 myapi users list --yaml
 ```
 
+## 缓存
+
+OpenBridge 会在配置目录下保存派生数据：
+
+* `<config-dir>/spec-cache` — 远端 OpenAPI 规范缓存；过期时用 `ETag` / `Last-Modified` 条件重新验证，
+  远端不可达时作为离线回退。
+* `<config-dir>/index-cache` — 帮助/补全派生索引。本地 spec 以绝对路径 + 大小 + 修改时间作为键，
+  远端 spec 以 URL + 内容哈希作为键；索引带版本戳，源或语义规则变更时自动重建。
+
+删除任一目录都是安全的，需要时会自动重建。
+
 ## Profile 配置
 
 `<config-dir>/apps/<app>.yaml` 中的每个 profile 可以调整 CLI 的 HTTP 行为：

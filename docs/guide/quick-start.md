@@ -96,7 +96,9 @@ To handle large APIs efficiently, OpenBridge uses a **Progressive Disclosure** s
 ## Configuration
 
 Remote OpenAPI specs are cached under `<config-dir>/spec-cache` and revalidated with `ETag` /
-`Last-Modified`; if the remote source becomes unreachable, the cached copy is used.
+`Last-Modified`; if the remote source becomes unreachable, the cached copy is used. App help and
+shell completion read a derived index from `<config-dir>/index-cache` (invalidated by source size/
+mtime or remote content hash), so multi-MB specs do not slow down `--help` or Tab completion.
 
 Configuration files are stored in:
 
