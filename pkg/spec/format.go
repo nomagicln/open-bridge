@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
-	ghodssyaml "github.com/ghodss/yaml"
+	"gopkg.in/yaml.v3"
 )
 
 // =============================================================================
@@ -150,8 +151,194 @@ func (s *YAMLStrategy) Unmarshal(data []byte, v any) error {
 }
 
 // ToJSON converts YAML to JSON.
+//
+// It decodes the first document with gopkg.in/yaml.v3 and normalizes the value
+// tree to JSON-compatible data. The conversion intentionally preserves the
+// semantics of the archived github.com/ghodss/yaml implementation it replaces:
+//   - map keys are stringified (integer, float and boolean keys included);
+//   - YAML 1.1 boolean literals (yes/no/on/off/...) become JSON booleans while
+//     quoted scalars stay strings;
+//   - unquoted timestamps stay strings instead of becoming time.Time values;
+//   - duplicate mapping keys keep the last occurrence (lenient like yaml.v2).
 func (s *YAMLStrategy) ToJSON(data []byte) ([]byte, error) {
-	return ghodssyaml.YAMLToJSON(data)
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil, err
+	}
+
+	if len(root.Content) == 0 {
+		return []byte("null"), nil
+	}
+
+	normalizeYAMLNode(&root)
+
+	var value any
+	if err := root.Content[0].Decode(&value); err != nil {
+		return nil, err
+	}
+
+	converted, err := toJSONCompatible(value)
+	if err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(converted)
+}
+
+// normalizeYAMLNode rewrites a parsed YAML node tree so that decoding it
+// produces the same JSON semantics as the previous ghodss/yaml converter.
+func normalizeYAMLNode(n *yaml.Node) {
+	switch n.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, child := range n.Content {
+			normalizeYAMLNode(child)
+		}
+	case yaml.MappingNode:
+		dedupeMappingKeys(n)
+		for _, child := range n.Content {
+			normalizeYAMLNode(child)
+		}
+	case yaml.ScalarNode:
+		normalizeYAMLScalar(n)
+	default:
+		// Alias and zero nodes need no normalization; decoding resolves them.
+	}
+}
+
+// yamlKeyID identifies a mapping key the same way yaml.v3's duplicate-key
+// detection does (kind plus textual value).
+type yamlKeyID struct {
+	kind  yaml.Kind
+	value string
+}
+
+// dedupeMappingKeys keeps only the last occurrence of duplicate mapping keys.
+// yaml.v3 rejects duplicates while yaml.v2 (used by the previous ghodss/yaml
+// dependency) silently kept the last value; this restores that behavior.
+func dedupeMappingKeys(n *yaml.Node) {
+	last := make(map[yamlKeyID]int, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key := n.Content[i]
+		last[yamlKeyID{kind: key.Kind, value: key.Value}] = i
+	}
+
+	kept := make([]*yaml.Node, 0, len(n.Content))
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key := n.Content[i]
+		if last[yamlKeyID{kind: key.Kind, value: key.Value}] == i {
+			kept = append(kept, key, n.Content[i+1])
+		}
+	}
+
+	n.Content = kept
+}
+
+// legacyYAMLBooleans maps YAML 1.1 boolean spellings that yaml.v3 resolves as
+// strings but yaml.v2 (the previous implementation) resolved as booleans.
+var legacyYAMLBooleans = map[string]string{
+	"y": "true", "Y": "true", "yes": "true", "Yes": "true", "YES": "true",
+	"on": "true", "On": "true", "ON": "true",
+	"n": "false", "N": "false", "no": "false", "No": "false", "NO": "false",
+	"off": "false", "Off": "false", "OFF": "false",
+}
+
+// normalizeYAMLScalar rewrites a scalar node so that decoding it matches the
+// legacy ghodss/yaml semantics (quoted scalars are always left untouched).
+func normalizeYAMLScalar(n *yaml.Node) {
+	if n.Style != 0 {
+		return
+	}
+
+	switch n.Tag {
+	case "!!timestamp":
+		// yaml.v2 kept unquoted timestamps as strings; yaml.v3 resolves them
+		// to time.Time, which would change the JSON output.
+		n.Tag = "!!str"
+	case "!!str":
+		if normalized, ok := legacyYAMLBooleans[n.Value]; ok {
+			n.Tag = "!!bool"
+			n.Value = normalized
+		}
+	default:
+		// Numeric and native boolean scalars need no normalization.
+	}
+}
+
+// toJSONCompatible converts a decoded YAML value into data that encoding/json
+// can marshal, stringifying non-string map keys like the legacy converter.
+func toJSONCompatible(value any) (any, error) {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			converted, err := toJSONCompatible(item)
+			if err != nil {
+				return nil, err
+			}
+			out[key] = converted
+		}
+		return out, nil
+	case map[any]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			keyString, err := yamlMapKeyString(key)
+			if err != nil {
+				return nil, err
+			}
+			converted, err := toJSONCompatible(item)
+			if err != nil {
+				return nil, err
+			}
+			out[keyString] = converted
+		}
+		return out, nil
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			converted, err := toJSONCompatible(item)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, converted)
+		}
+		return out, nil
+	default:
+		return value, nil
+	}
+}
+
+// yamlMapKeyString converts a decoded YAML mapping key to a JSON object key.
+func yamlMapKeyString(key any) (string, error) {
+	switch typed := key.(type) {
+	case string:
+		return typed, nil
+	case int:
+		return strconv.Itoa(typed), nil
+	case int64:
+		return strconv.FormatInt(typed, 10), nil
+	case uint64:
+		return strconv.FormatUint(typed, 10), nil
+	case float64:
+		return formatYAMLFloatKey(typed), nil
+	case bool:
+		return strconv.FormatBool(typed), nil
+	default:
+		return "", fmt.Errorf("unsupported map key of type %T", key)
+	}
+}
+
+// formatYAMLFloatKey formats a float mapping key the same way yaml.v2 did.
+func formatYAMLFloatKey(value float64) string {
+	switch formatted := strconv.FormatFloat(value, 'g', -1, 32); formatted {
+	case "+Inf":
+		return ".inf"
+	case "-Inf":
+		return "-.inf"
+	case "NaN":
+		return ".nan"
+	default:
+		return formatted
+	}
 }
 
 // =============================================================================
