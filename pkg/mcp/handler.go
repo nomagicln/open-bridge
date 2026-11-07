@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"slices"
 	"time"
 
@@ -25,6 +26,8 @@ type Handler struct {
 	spec           *openapi3.T
 	appConfig      *config.AppConfig
 	profileName    string
+	safety         *safetyGuard
+	safetyErr      error
 }
 
 // defaultHTTPTimeout bounds every MCP tool call so a slow or unreachable API
@@ -54,6 +57,22 @@ func (h *Handler) SetAppConfig(appCfg *config.AppConfig, profileName string) {
 	h.profileName = profileName
 }
 
+// SetSafetyConfig validates and installs the MCP safety configuration enforced
+// at tool invocation time. It returns an error when the configuration is invalid
+// (for example an unparsable dangerous_operation_patterns regex). When validation
+// fails the handler fails closed: every tool call is rejected.
+func (h *Handler) SetSafetyConfig(cfg *config.SafetyConfig) error {
+	guard, err := newSafetyGuard(cfg)
+	if err != nil {
+		h.safety = nil
+		h.safetyErr = fmt.Errorf("invalid safety configuration: %w", err)
+		return h.safetyErr
+	}
+	h.safety = guard
+	h.safetyErr = nil
+	return nil
+}
+
 // GetRequestBuilder returns the request builder used by the handler.
 func (h *Handler) GetRequestBuilder() *request.Builder {
 	return h.requestBuilder
@@ -61,6 +80,14 @@ func (h *Handler) GetRequestBuilder() *request.Builder {
 
 // Register registers the tools with the MCP server.
 func (h *Handler) Register(s *mcp.Server, safetyConfig *config.SafetyConfig) {
+	// Register cannot return an error: invalid safety configuration is surfaced as
+	// a startup warning and then every tool call fails closed with an isError
+	// result. Callers that need a hard startup failure can call SetSafetyConfig or
+	// ValidateSafetyConfig directly.
+	if err := h.SetSafetyConfig(safetyConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: MCP safety configuration invalid: %v\n", err)
+	}
+
 	tools := h.GetTools(safetyConfig)
 	for _, t := range tools {
 		tool := t // capture loop variable
@@ -158,14 +185,27 @@ func (h *Handler) executeRequest(httpReq *http.Request) (*http.Response, error) 
 
 // HandleCallTool handles tool execution requests.
 func (h *Handler) HandleCallTool(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if h.safetyErr != nil {
+		return errorResult("%v", h.safetyErr), nil
+	}
+
 	arguments, err := parseToolArguments(req)
 	if err != nil {
 		return errorResult("Error unmarshaling arguments: %v", err), nil
 	}
 
+	// _confirm is an invocation-only flag: record it, then strip it so it is
+	// never forwarded to the API.
+	confirmed := confirmRequested(arguments)
+	stripConfirmArgument(arguments)
+
 	operation, method, path, err := h.MapToolToOperation(req.Params.Name)
 	if err != nil {
 		return errorResult("Error mapping tool: %v", err), nil
+	}
+
+	if safetyResult := h.safety.checkInvocation(req.Params.Name, method, path, confirmed); safetyResult != nil {
+		return safetyResult, nil
 	}
 
 	profileName, profile, err := h.getActiveProfile()
