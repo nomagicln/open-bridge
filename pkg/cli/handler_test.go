@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +25,8 @@ import (
 	"github.com/nomagicln/open-bridge/pkg/request"
 	"github.com/nomagicln/open-bridge/pkg/semantic"
 	"github.com/nomagicln/open-bridge/pkg/spec"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const cliTestAppName = "testapp"
@@ -51,12 +55,26 @@ const cliTestSpecJSON = `{
 
 const cliTestResponseJSON = `{"pets":[{"id":1,"name":"fluffy"}],"total":1}`
 
+// captureHTTPRequest snapshots an incoming HTTP request for assertions.
+func captureHTTPRequest(r *http.Request) capturedRequest {
+	body, _ := io.ReadAll(r.Body)
+
+	return capturedRequest{
+		method: r.Method,
+		path:   r.URL.Path,
+		query:  r.URL.Query(),
+		header: r.Header.Clone(),
+		body:   string(body),
+	}
+}
+
 // capturedRequest stores what the fake API server observed.
 type capturedRequest struct {
 	method string
 	path   string
 	query  url.Values
 	header http.Header
+	body   string
 }
 
 // cliTestEnv wires a Handler with real parser/mapper/builder plus an isolated
@@ -140,13 +158,10 @@ func newCLITestEnv(t *testing.T) *cliTestEnv {
 }
 
 func (e *cliTestEnv) handleAPI(w http.ResponseWriter, r *http.Request) {
+	captured := captureHTTPRequest(r)
+
 	e.mu.Lock()
-	e.captured = append(e.captured, capturedRequest{
-		method: r.Method,
-		path:   r.URL.Path,
-		query:  r.URL.Query(),
-		header: r.Header.Clone(),
-	})
+	e.captured = append(e.captured, captured)
 	e.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -892,4 +907,391 @@ func TestShowCommandHelpUnknownVerbErrors(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unknown verb") {
 		t.Errorf("expected unknown verb error, got: %v", err)
 	}
+}
+
+// TestResolveOperationReturnsTypedErrors verifies the producer migration: an
+// unknown resource/verb is reported as a typed error (discoverable with
+// errors.As) while keeping the batch-3 rich message text.
+func TestResolveOperationReturnsTypedErrors(t *testing.T) {
+	env := newCLITestEnv(t)
+	specDoc, ok := env.handler.specParser.GetCachedSpec(cliTestAppName)
+	if !ok {
+		t.Fatal("test spec was not cached")
+	}
+
+	_, err := env.handler.resolveOperation(specDoc, "nope", "list")
+	if err == nil {
+		t.Fatal("resolveOperation() expected error for unknown resource, got nil")
+	}
+	var unknownResource *UnknownResourceError
+	if !errors.As(err, &unknownResource) {
+		t.Fatalf("resolveOperation() error = %T, want *UnknownResourceError", err)
+	}
+	if unknownResource.Resource != "nope" {
+		t.Errorf("UnknownResourceError.Resource = %q, want nope", unknownResource.Resource)
+	}
+	wantResourceText := "Error: Unknown resource 'nope'.\n\nAvailable resources:\n  pets\n\nFor more information, use:\n  <app> --help\n"
+	if err.Error() != wantResourceText {
+		t.Errorf("unknown resource text changed:\n%q\nwant:\n%q", err.Error(), wantResourceText)
+	}
+
+	_, err = env.handler.resolveOperation(specDoc, "pets", "bogus")
+	if err == nil {
+		t.Fatal("resolveOperation() expected error for unknown verb, got nil")
+	}
+	var unknownVerb *UnknownVerbError
+	if !errors.As(err, &unknownVerb) {
+		t.Fatalf("resolveOperation() error = %T, want *UnknownVerbError", err)
+	}
+	if unknownVerb.Resource != "pets" || unknownVerb.Verb != "bogus" {
+		t.Errorf("UnknownVerbError = %+v, want resource=pets verb=bogus", unknownVerb)
+	}
+	wantVerbText := "Error: Unknown verb 'bogus' for resource 'pets'.\n\nAvailable verbs for 'pets':\n  list\n\nFor more information, use:\n  <app> pets --help\n"
+	if err.Error() != wantVerbText {
+		t.Errorf("unknown verb text changed:\n%q\nwant:\n%q", err.Error(), wantVerbText)
+	}
+}
+
+// TestExecuteCommandUnknownResourceTextUnchanged is the end-to-end guard for
+// the batch-3 user-visible message (byte-for-byte).
+func TestExecuteCommandUnknownResourceTextUnchanged(t *testing.T) {
+	env := newCLITestEnv(t)
+
+	err := env.handler.ExecuteCommand(cliTestAppName, env.appConfig, []string{"nope", "list", "--json"})
+	if err == nil {
+		t.Fatal("ExecuteCommand() expected error for unknown resource, got nil")
+	}
+	var unknownResource *UnknownResourceError
+	if !errors.As(err, &unknownResource) {
+		t.Fatalf("ExecuteCommand() error = %T, want *UnknownResourceError", err)
+	}
+	want := "Error: Unknown resource 'nope'.\n\nAvailable resources:\n  pets\n\nFor more information, use:\n  <app> --help\n"
+	if err.Error() != want {
+		t.Errorf("user-visible text changed:\n%q\nwant:\n%q", err.Error(), want)
+	}
+}
+
+// TestExecuteCommandSpecLoadErrorIsTyped verifies spec-load failures are typed
+// and keep the batch-3 "failed to load spec" wording.
+func TestExecuteCommandSpecLoadErrorIsTyped(t *testing.T) {
+	env := newCLITestEnv(t)
+
+	appConfig := withDefaultProfile(env, func(profile *config.Profile) {})
+	appConfig.Name = "missingapp"
+	appConfig.SpecSource = filepath.Join(t.TempDir(), "does-not-exist.yaml")
+
+	err := env.handler.ExecuteCommand("missingapp", appConfig, []string{"pets", "list", "--json"})
+	if err == nil {
+		t.Fatal("ExecuteCommand() expected spec load error, got nil")
+	}
+	if !IsPrintedError(err) {
+		t.Errorf("ExecuteCommand() error = %T, want *PrintedError", err)
+	}
+	var specErr *SpecLoadError
+	if !errors.As(err, &specErr) {
+		t.Fatalf("ExecuteCommand() error = %T, want a wrapped *SpecLoadError", err)
+	}
+	if specErr.Source != appConfig.SpecSource {
+		t.Errorf("SpecLoadError.Source = %q, want %q", specErr.Source, appConfig.SpecSource)
+	}
+	if !strings.HasPrefix(specErr.Error(), "failed to load spec: ") {
+		t.Errorf("SpecLoadError.Error() = %q, want prefix %q", specErr.Error(), "failed to load spec: ")
+	}
+}
+
+// fastPathSpecJSON contains indexable operations (scalar parameters, scalar and
+// string-array body fields) plus a non-indexable operation (nested object body)
+// used by the execution fast-path tests.
+const fastPathSpecJSON = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Fast Path API", "version": "1.0.0"},
+  "paths": {
+    "/pets": {
+      "get": {
+        "operationId": "listPets",
+        "summary": "List pets",
+        "parameters": [
+          {"name": "status", "in": "query", "required": true,
+           "schema": {"type": "string", "enum": ["available", "pending"]}},
+          {"name": "limit", "in": "query", "schema": {"type": "integer"}}
+        ],
+        "responses": {"200": {"description": "OK"}}
+      },
+      "post": {
+        "operationId": "createPet",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string"},
+              "tags": {"type": "array", "items": {"type": "string"}}
+            }
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    },
+    "/pets/{id}": {
+      "patch": {
+        "operationId": "updatePet",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}
+        ],
+        "requestBody": {"content": {"application/json": {"schema": {
+          "type": "object",
+          "properties": {"name": {"type": "string"}}
+        }}}},
+        "responses": {"200": {"description": "OK"}}
+      }
+    },
+    "/items/{id}": {
+      "get": {
+        "operationId": "getItem",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {"200": {"description": "OK"}}
+      }
+    },
+    "/orders": {
+      "post": {
+        "operationId": "createOrder",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "properties": {"meta": {"type": "object", "properties": {"x": {"type": "string"}}}}
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    }
+  }
+}`
+
+// fastPathEnv runs CLI commands against an httptest API and captures requests.
+type fastPathEnv struct {
+	specPath  string
+	appName   string
+	appConfig *config.AppConfig
+	server    *httptest.Server
+
+	mu       sync.Mutex
+	captured []capturedRequest
+}
+
+// newFastPathEnv writes the fast-path spec, starts the API server and builds the
+// app configuration.
+func newFastPathEnv(t *testing.T) *fastPathEnv {
+	t.Helper()
+
+	env := &fastPathEnv{appName: "fastpath"}
+
+	env.specPath = filepath.Join(t.TempDir(), "fastpath.json")
+	if err := os.WriteFile(env.specPath, []byte(fastPathSpecJSON), 0o600); err != nil {
+		t.Fatalf("write fast-path spec: %v", err)
+	}
+
+	env.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured := captureHTTPRequest(r)
+
+		env.mu.Lock()
+		env.captured = append(env.captured, captured)
+		env.mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(cliTestResponseJSON))
+	}))
+	t.Cleanup(env.server.Close)
+
+	env.appConfig = &config.AppConfig{
+		Name:           env.appName,
+		SpecSource:     env.specPath,
+		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{
+			"default": {Name: "default", BaseURL: env.server.URL},
+		},
+	}
+
+	return env
+}
+
+// newHandler builds a CLI handler around parser with captured stdout.
+func (e *fastPathEnv) newHandler(parser *spec.Parser) (*Handler, *bytes.Buffer) {
+	out := &bytes.Buffer{}
+	handler := NewHandler(parser, semantic.NewMapper(), request.NewBuilder(nil), nil)
+	handler.stdout = out
+
+	return handler, out
+}
+
+// run executes one command and returns the request it produced (if any).
+func (e *fastPathEnv) run(t *testing.T, handler *Handler, out *bytes.Buffer, args []string) (capturedRequest, error) {
+	t.Helper()
+
+	e.mu.Lock()
+	before := len(e.captured)
+	e.mu.Unlock()
+
+	err := handler.ExecuteCommand(e.appName, e.appConfig, args)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	var captured capturedRequest
+	if len(e.captured) > before {
+		captured = e.captured[before]
+	}
+
+	return captured, err
+}
+
+// assertSameRequest compares the observable HTTP request between two runs.
+func assertSameRequest(t *testing.T, cold, warm capturedRequest) {
+	t.Helper()
+
+	assert.Equal(t, cold.method, warm.method, "method")
+	assert.Equal(t, cold.path, warm.path, "path")
+	assert.Equal(t, cold.query, warm.query, "query")
+	assert.Equal(t, cold.body, warm.body, "body")
+	assert.Equal(t, cold.header.Get("Content-Type"), warm.header.Get("Content-Type"), "content-type")
+}
+
+func TestExecuteCommandFastPathMatchesParsePath(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"query parameters", []string{"pets", "list", "--status", "available", "--limit", "5"}},
+		{"path parameter", []string{"items", "get", "--id", "42"}},
+		{"body scalar and string array", []string{"pets", "create", "--name", "rex", "--tags", "a,b"}},
+		{"patch body", []string{"pets", "update", "--id", "1", "--name", "milo"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newFastPathEnv(t)
+
+			coldHandler, coldOut := env.newHandler(spec.NewParser())
+			coldRequest, coldErr := env.run(t, coldHandler, coldOut, tt.args)
+			require.NoError(t, coldErr)
+
+			warmParser := spec.NewParser(spec.WithIndexCache(t.TempDir()))
+			if _, err := warmParser.LoadDerivedIndex(context.Background(), env.specPath, env.appName); err != nil {
+				t.Fatalf("prime derived index: %v", err)
+			}
+
+			corruptCLIHelpSpec(t, env.specPath)
+
+			warmHandler, warmOut := env.newHandler(warmParser)
+			warmRequest, warmErr := env.run(t, warmHandler, warmOut, tt.args)
+			require.NoError(t, warmErr)
+
+			assertSameRequest(t, coldRequest, warmRequest)
+			assert.Equal(t, coldOut.String(), warmOut.String(), "stdout")
+			if _, ok := warmParser.GetCachedSpec(env.appName); ok {
+				t.Error("expected the execution fast path to skip spec parsing")
+			}
+		})
+	}
+}
+
+func TestExecuteCommandFastPathValidationErrorsMatch(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"missing required parameter", []string{"pets", "list"}},
+		{"invalid enum value", []string{"pets", "list", "--status", "bogus"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newFastPathEnv(t)
+
+			coldHandler, coldOut := env.newHandler(spec.NewParser())
+			_, coldErr := env.run(t, coldHandler, coldOut, tt.args)
+			require.Error(t, coldErr)
+
+			warmParser := spec.NewParser(spec.WithIndexCache(t.TempDir()))
+			if _, err := warmParser.LoadDerivedIndex(context.Background(), env.specPath, env.appName); err != nil {
+				t.Fatalf("prime derived index: %v", err)
+			}
+
+			corruptCLIHelpSpec(t, env.specPath)
+
+			warmHandler, warmOut := env.newHandler(warmParser)
+			_, warmErr := env.run(t, warmHandler, warmOut, tt.args)
+			require.Error(t, warmErr)
+			assert.Equal(t, coldErr.Error(), warmErr.Error(), "error text")
+			assert.Equal(t, coldOut.String(), warmOut.String(), "stdout")
+		})
+	}
+}
+
+func TestExecuteCommandFastPathSkipsParsingWhenSpecDeleted(t *testing.T) {
+	env := newFastPathEnv(t)
+	args := []string{"pets", "list", "--status", "available"}
+
+	coldHandler, coldOut := env.newHandler(spec.NewParser())
+	coldRequest, coldErr := env.run(t, coldHandler, coldOut, args)
+	require.NoError(t, coldErr)
+
+	warmParser := spec.NewParser(spec.WithIndexCache(t.TempDir()))
+	if _, err := warmParser.LoadDerivedIndex(context.Background(), env.specPath, env.appName); err != nil {
+		t.Fatalf("prime derived index: %v", err)
+	}
+
+	if err := os.Remove(env.specPath); err != nil {
+		t.Fatalf("remove spec: %v", err)
+	}
+
+	warmHandler, warmOut := env.newHandler(warmParser)
+	warmRequest, warmErr := env.run(t, warmHandler, warmOut, args)
+	require.NoError(t, warmErr)
+
+	assertSameRequest(t, coldRequest, warmRequest)
+	assert.Equal(t, coldOut.String(), warmOut.String(), "stdout")
+	if _, ok := warmParser.GetCachedSpec(env.appName); ok {
+		t.Error("expected the execution fast path to skip spec parsing")
+	}
+}
+
+func TestExecuteCommandNonIndexableOperationFallsBack(t *testing.T) {
+	env := newFastPathEnv(t)
+	args := []string{"orders", "create", "--body", `{"x":"1"}`}
+
+	coldHandler, coldOut := env.newHandler(spec.NewParser())
+	coldRequest, coldErr := env.run(t, coldHandler, coldOut, args)
+	require.NoError(t, coldErr)
+
+	indexDir := t.TempDir()
+	warmParser := spec.NewParser(spec.WithIndexCache(indexDir))
+	if _, err := warmParser.LoadDerivedIndex(context.Background(), env.specPath, env.appName); err != nil {
+		t.Fatalf("prime derived index: %v", err)
+	}
+
+	// The nested-object body operation is not indexable, so the handler must
+	// fall back to parsing the (still valid) spec.
+	warmHandler, warmOut := env.newHandler(warmParser)
+	warmRequest, warmErr := env.run(t, warmHandler, warmOut, args)
+	require.NoError(t, warmErr)
+	assertSameRequest(t, coldRequest, warmRequest)
+	assert.Equal(t, coldOut.String(), warmOut.String(), "stdout")
+
+	if _, ok := warmParser.GetCachedSpec(env.appName); !ok {
+		t.Error("expected non-indexable operation to fall back to spec parsing")
+	}
+
+	// With the spec corrupted the fallback path must fail as before.
+	corruptCLIHelpSpec(t, env.specPath)
+	failingParser := spec.NewParser(spec.WithIndexCache(indexDir))
+	failingHandler, failingOut := env.newHandler(failingParser)
+	_, failingErr := env.run(t, failingHandler, failingOut, args)
+	require.Error(t, failingErr)
+	assert.Contains(t, failingErr.Error(), "failed to load spec")
+
+	corruptCLIHelpSpec(t, env.specPath)
 }

@@ -35,7 +35,7 @@ import (
 const (
 	// DerivedIndexSchemaVersion is bumped whenever the DerivedIndex DTO fields or
 	// their semantics change in a way that invalidates persisted indexes.
-	DerivedIndexSchemaVersion = 2
+	DerivedIndexSchemaVersion = 3
 	// derivedIndexFormatVersion is the on-disk container format version.
 	derivedIndexFormatVersion = 1
 	// derivedIndexMagicSize is the length of the file magic.
@@ -120,6 +120,12 @@ type DerivedOperation struct {
 	BodyRequired         bool
 	BodyMediaType        string
 	HasBody              bool
+	// ExecutionIndexable reports that the operation can be reconstructed from
+	// the index for the CLI execution path without parsing the full spec.
+	ExecutionIndexable bool
+	// ExecutionBlockReason explains why the operation is not executable from the
+	// index (empty when ExecutionIndexable is true).
+	ExecutionBlockReason string
 }
 
 // DerivedParameter is the parameter subset needed by command help and flag
@@ -210,6 +216,12 @@ func (p *Parser) LoadDerivedIndex(ctx context.Context, source, appName string) (
 func (p *Parser) loadFileDerivedIndex(ctx context.Context, source, appName string) (*DerivedIndex, error) {
 	key, err := fileDerivedIndexKey(source, appName)
 	if err != nil {
+		// The source may have been removed after the index was built. Fall back
+		// to the stable identity entry so indexable commands keep working.
+		if idx := p.loadIdentityDerivedIndex(source, appName); idx != nil {
+			return idx, nil
+		}
+
 		return nil, err
 	}
 
@@ -230,6 +242,29 @@ func (p *Parser) loadFileDerivedIndex(ctx context.Context, source, appName strin
 	_ = p.indexCache.store(key, idx)
 
 	return idx, nil
+}
+
+// loadIdentityDerivedIndex looks up the persisted index by its stable identity
+// (app + source kind + source path) when the spec stat is unavailable.
+func (p *Parser) loadIdentityDerivedIndex(source, appName string) *DerivedIndex {
+	if p.indexCache == nil {
+		return nil
+	}
+
+	absPath, err := filepath.Abs(source)
+	if err != nil {
+		return nil
+	}
+
+	base := derivedIndexKey{
+		AppName:            appName,
+		SourceKind:         "file",
+		Source:             absPath,
+		ParserVersion:      parserVersion(),
+		IndexSchemaVersion: DerivedIndexSchemaVersion,
+	}
+
+	return p.indexCache.loadIdentity(base)
 }
 
 // loadRemoteDerivedIndex serves a remote source from the index cache. The index
@@ -641,15 +676,33 @@ func encodeDerivedIndexFile(key derivedIndexKey, payload []byte) ([]byte, error)
 	return data, nil
 }
 
-// decodeDerivedIndexFile validates the container header and returns the payload.
+// decodeDerivedIndexFile validates the container header and the embedded key,
+// and returns the payload.
 func decodeDerivedIndexFile(data []byte, expected derivedIndexKey) ([]byte, error) {
+	actualKey, payload, err := decodeDerivedIndexFileHeader(data)
+	if err != nil {
+		return nil, err
+	}
+
+	if actualKey != expected {
+		return nil, fmt.Errorf("derived index key mismatch")
+	}
+
+	return payload, nil
+}
+
+// decodeDerivedIndexFileHeader validates the container envelope (magic, format
+// version, lengths, CRC32C) and decodes the embedded key. It does not compare
+// the key with a caller expectation, which lets the loader fall back to the
+// stable identity of an entry whose source file has disappeared.
+func decodeDerivedIndexFileHeader(data []byte) (derivedIndexKey, []byte, error) {
 	headerSize := derivedIndexMagicSize + 4*4
 	if len(data) < headerSize {
-		return nil, fmt.Errorf("derived index file too short: %d bytes", len(data))
+		return derivedIndexKey{}, nil, fmt.Errorf("derived index file too short: %d bytes", len(data))
 	}
 
 	if !bytes.Equal(data[:derivedIndexMagicSize], derivedIndexMagic[:]) {
-		return nil, fmt.Errorf("invalid derived index magic")
+		return derivedIndexKey{}, nil, fmt.Errorf("invalid derived index magic")
 	}
 
 	offset := derivedIndexMagicSize
@@ -663,28 +716,66 @@ func decodeDerivedIndexFile(data []byte, expected derivedIndexKey) ([]byte, erro
 	offset += 4
 
 	if formatVersion != derivedIndexFormatVersion {
-		return nil, fmt.Errorf("unsupported derived index format version %d", formatVersion)
+		return derivedIndexKey{}, nil, fmt.Errorf("unsupported derived index format version %d", formatVersion)
 	}
 
 	if uint64(offset)+uint64(keyLen)+uint64(payloadLen) != uint64(len(data)) {
-		return nil, fmt.Errorf("derived index file has inconsistent lengths")
+		return derivedIndexKey{}, nil, fmt.Errorf("derived index file has inconsistent lengths")
 	}
 
-	var actualKey derivedIndexKey
-	if err := json.Unmarshal(data[offset:offset+int(keyLen)], &actualKey); err != nil {
-		return nil, fmt.Errorf("failed to decode derived index key: %w", err)
-	}
-
-	if actualKey != expected {
-		return nil, fmt.Errorf("derived index key mismatch")
+	var key derivedIndexKey
+	if err := json.Unmarshal(data[offset:offset+int(keyLen)], &key); err != nil {
+		return derivedIndexKey{}, nil, fmt.Errorf("failed to decode derived index key: %w", err)
 	}
 
 	payload := data[offset+int(keyLen):]
 	if crc32.Checksum(payload, castagnoliTable) != expectedCRC {
-		return nil, fmt.Errorf("derived index checksum mismatch")
+		return derivedIndexKey{}, nil, fmt.Errorf("derived index checksum mismatch")
 	}
 
-	return payload, nil
+	return key, payload, nil
+}
+
+// loadIdentity reads an entry by its stable identity (app + kind + source),
+// ignoring the volatile size/mtime/content-hash parts of the key. It is used
+// when the local spec file has been removed but the index is still usable.
+func (c *derivedIndexCache) loadIdentity(base derivedIndexKey) *DerivedIndex {
+	path := c.path(base)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+
+	headerKey, payload, err := decodeDerivedIndexFileHeader(data)
+	if err != nil {
+		_ = os.Remove(path)
+
+		return nil
+	}
+
+	if headerKey.AppName != base.AppName ||
+		headerKey.SourceKind != base.SourceKind ||
+		headerKey.Source != base.Source ||
+		headerKey.ParserVersion != base.ParserVersion ||
+		headerKey.IndexSchemaVersion != base.IndexSchemaVersion {
+		return nil
+	}
+
+	idx, err := unmarshalDerivedIndexPayload(payload)
+	if err != nil {
+		_ = os.Remove(path)
+
+		return nil
+	}
+
+	if !indexMatchesKey(idx, headerKey) {
+		_ = os.Remove(path)
+
+		return nil
+	}
+
+	return idx
 }
 
 // trimIndexText trims s to indexDescriptionMaxLength runes, reporting whether it
@@ -736,6 +827,176 @@ func (op *DerivedOperation) applySpecDetails(opSpec *openapi3.Operation) {
 
 	op.Parameters = extractDerivedParameters(opSpec)
 	op.BodyFields, op.BodyRequired, op.BodyMediaType, op.HasBody = extractDerivedBody(opSpec)
+	op.ExecutionIndexable, op.ExecutionBlockReason = executionIndexability(opSpec)
+}
+
+// executionIndexability reports whether the CLI execution path can be driven
+// from the persisted index alone for this operation, together with the reason
+// when it cannot. Only simple scalar parameters and scalar/string-array body
+// fields are supported; anything requiring the full schema (nested objects,
+// arrays of objects, composed or untyped schemas, non-JSON bodies) safely falls
+// back to parsing the spec.
+func executionIndexability(opSpec *openapi3.Operation) (bool, string) {
+	if opSpec == nil {
+		return false, "operation spec unavailable"
+	}
+
+	if reason := executionParametersBlockReason(opSpec.Parameters); reason != "" {
+		return false, reason
+	}
+
+	return executionBodyBlockReason(opSpec.RequestBody)
+}
+
+// executionParametersBlockReason checks the operation parameters for schemas
+// that the index cannot reconstruct faithfully.
+func executionParametersBlockReason(parameters openapi3.Parameters) string {
+	for _, ref := range parameters {
+		if ref == nil || ref.Value == nil {
+			return "parameter reference is not resolved"
+		}
+
+		param := ref.Value
+		if len(param.Content) > 0 {
+			return "parameter uses a content schema"
+		}
+
+		if param.Schema == nil || param.Schema.Value == nil {
+			return "parameter has no schema"
+		}
+
+		if reason := executionSchemaBlockReason(param.Schema.Value, "parameter "+param.Name); reason != "" {
+			return reason
+		}
+	}
+
+	return ""
+}
+
+// executionBodyBlockReason checks the request body for schemas that the index
+// cannot reconstruct faithfully.
+func executionBodyBlockReason(bodyRef *openapi3.RequestBodyRef) (bool, string) {
+	if bodyRef == nil || bodyRef.Value == nil {
+		return true, ""
+	}
+
+	body := bodyRef.Value
+	if len(body.Content) != 1 {
+		return false, "request body has multiple media types"
+	}
+
+	for media, content := range body.Content {
+		if media != "application/json" {
+			return false, "request body media type is not application/json"
+		}
+
+		if content == nil || content.Schema == nil || content.Schema.Value == nil {
+			return false, "request body has no schema"
+		}
+
+		if reason := executionBodySchemaBlockReason(content.Schema.Value); reason != "" {
+			return false, reason
+		}
+	}
+
+	return true, ""
+}
+
+// executionBodySchemaBlockReason validates the request body object schema.
+func executionBodySchemaBlockReason(schema *openapi3.Schema) string {
+	if schema.Type == nil || !schema.Type.Is("object") {
+		return "request body schema is not an object"
+	}
+
+	if len(schema.AllOf) > 0 || len(schema.OneOf) > 0 || len(schema.AnyOf) > 0 {
+		return "request body uses a composed schema"
+	}
+
+	if schema.AdditionalProperties.Schema != nil || schema.AdditionalProperties.Has != nil {
+		return "request body has additional properties"
+	}
+
+	for _, name := range schema.Required {
+		if _, ok := schema.Properties[name]; !ok {
+			return "request body required field is missing from properties"
+		}
+	}
+
+	for name, propRef := range schema.Properties {
+		if propRef == nil || propRef.Value == nil {
+			return "request body property reference is not resolved"
+		}
+
+		if reason := executionSchemaBlockReason(propRef.Value, "request body field "+name); reason != "" {
+			return reason
+		}
+	}
+
+	return ""
+}
+
+// executionSchemaBlockReason returns a non-empty reason when the schema needs
+// the full parser, or an empty string when it is a simple scalar or a string
+// array that the index can reconstruct faithfully.
+func executionSchemaBlockReason(schema *openapi3.Schema, what string) string {
+	if schema == nil || schema.Type == nil {
+		return what + " has no type"
+	}
+
+	if len(schema.AllOf) > 0 || len(schema.OneOf) > 0 || len(schema.AnyOf) > 0 {
+		return what + " uses a composed schema"
+	}
+
+	types := schema.Type.Slice()
+	if len(types) != 1 {
+		return what + " uses a union type"
+	}
+
+	switch types[0] {
+	case "string", "integer", "number", "boolean":
+		if len(schema.Properties) > 0 {
+			return what + " is an object"
+		}
+
+		return ""
+	case "array":
+		if schema.Items == nil || schema.Items.Value == nil || schema.Items.Value.Type == nil {
+			return what + " array has no item schema"
+		}
+
+		itemTypes := schema.Items.Value.Type.Slice()
+		if len(itemTypes) != 1 || itemTypes[0] != "string" {
+			return what + " is not an array of strings"
+		}
+
+		return ""
+	default:
+		if types[0] == "object" {
+			return what + " is a nested object"
+		}
+
+		return what + " has unsupported type " + types[0]
+	}
+}
+
+// SemanticOperation reconstructs the semantic operation metadata used by the
+// execution path, so the fast path avoids rebuilding the command tree.
+func (op *DerivedOperation) SemanticOperation() *semantic.Operation {
+	if op == nil {
+		return nil
+	}
+
+	return &semantic.Operation{
+		Name:        op.Verb,
+		Method:      op.Method,
+		Path:        op.Path,
+		OperationID: op.OperationID,
+		Summary:     op.Summary,
+		Description: op.Description,
+		Resource:    op.Resource,
+		Aliases:     append([]string(nil), op.Aliases...),
+		Tags:        append([]string(nil), op.Tags...),
+	}
 }
 
 // extractDerivedParameters converts OpenAPI parameters into the persisted form.
