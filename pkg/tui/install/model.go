@@ -506,10 +506,6 @@ func (m Model) updateSpecInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.Type == tea.KeyEnter {
 		val := m.specInput.Value()
 		if val == "" {
-			val = m.specInput.Placeholder
-		}
-
-		if val == "" {
 			m.err = fmt.Errorf("spec source cannot be empty")
 			return m, nil
 		}
@@ -574,9 +570,6 @@ func (m Model) updateDescription(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if val == "" {
 			val = m.defaultDescription
 		}
-		if val == "" {
-			val = m.descInput.Placeholder
-		}
 
 		m.options.Description = val
 		if val != "" {
@@ -595,10 +588,6 @@ func (m Model) updateBaseURL(msg tea.Msg) (tea.Model, tea.Cmd) {
 		val := m.baseUrlInput.Value()
 		if val == "" {
 			val = m.defaultBaseURL
-		}
-
-		if val == "" {
-			val = m.baseUrlInput.Placeholder
 		}
 
 		if val == "" {
@@ -838,22 +827,44 @@ func (m Model) handleAuthTypeEnter() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateShim(msg tea.Msg) (tea.Model, tea.Cmd) {
-	return m.updateOptionSelection(msg, &m.shimIndex, len(m.shimOptions), m.handleShimEnter)
+	return m.updateOptionSelection(
+		msg,
+		m.shimIndex,
+		len(m.shimOptions),
+		func(model *Model, index int) { model.shimIndex = index },
+		m.handleShimEnter,
+	)
 }
 
-// updateOptionSelection is a generic function to handle option selection with arrow keys.
-func (m Model) updateOptionSelection(msg tea.Msg, indexPtr *int, optionsLen int, enterHandler func() (tea.Model, tea.Cmd)) (tea.Model, tea.Cmd) {
-	if keyMsg, ok := msg.(tea.KeyMsg); ok {
-		switch keyMsg.String() {
-		case "left", "h":
-			*indexPtr = cycleOptionIndex(*indexPtr-1, optionsLen)
-		case "right", "l":
-			*indexPtr = cycleOptionIndex(*indexPtr+1, optionsLen)
-		case "enter":
-			return enterHandler()
-		default:
-		}
+// updateOptionSelection applies Left/Right navigation to a wizard option index
+// and delegates Enter to enterHandler.
+//
+// Update and its step handlers use value receivers, so a pointer to a caller
+// field would only mutate a temporary copy. The caller therefore passes a
+// setter that writes the new index into the model returned to bubbletea, which
+// keeps the user's selection across Update calls.
+func (m Model) updateOptionSelection(
+	msg tea.Msg,
+	currentIndex, optionsLen int,
+	setIndex func(*Model, int),
+	enterHandler func() (tea.Model, tea.Cmd),
+) (tea.Model, tea.Cmd) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
 	}
+
+	switch keyMsg.String() {
+	case "left", "h":
+		setIndex(&m, cycleOptionIndex(currentIndex-1, optionsLen))
+	case "right", "l":
+		setIndex(&m, cycleOptionIndex(currentIndex+1, optionsLen))
+	case "enter":
+		return enterHandler()
+	default:
+		// Ignore other keys
+	}
+
 	return m, nil
 }
 
@@ -1166,26 +1177,38 @@ func (m Model) confirmMCPProgressiveDisclosure() (tea.Model, tea.Cmd) {
 		m.addHistory("Progressive Disclosure", "Disabled")
 	}
 
-	m.step = m.determineNextMCPStep()
+	step, autoSearchEngine := m.determineNextMCPStep()
+	if autoSearchEngine != "" {
+		m.options.SearchEngine = autoSearchEngine
+	}
+	m.step = step
 	return m, nil
 }
 
-// determineNextMCPStep determines the next step in the MCP configuration flow.
-func (m Model) determineNextMCPStep() Step {
+// determineNextMCPStep determines the next step in the MCP configuration flow
+// and returns the search engine to auto-select, if any. The separate return
+// value is required because the model is passed by value.
+func (m Model) determineNextMCPStep() (Step, string) {
 	// Only show search engine selection if there are >= 2 options
 	if len(m.mcpSearchEngineOptions) >= 2 {
-		return StepMCPSearchEngine
+		return StepMCPSearchEngine, ""
 	}
 	// Auto-select the first (and only) search engine if available
 	if len(m.mcpSearchEngineOptions) == 1 {
-		m.options.SearchEngine = m.mcpSearchEngineOptions[0]
+		return StepMCPReadOnlyMode, m.mcpSearchEngineOptions[0]
 	}
-	return StepMCPReadOnlyMode
+	return StepMCPReadOnlyMode, ""
 }
 
 // updateMCPSearchEngine handles the search engine configuration step.
 func (m Model) updateMCPSearchEngine(msg tea.Msg) (tea.Model, tea.Cmd) {
-	return m.updateOptionSelection(msg, &m.mcpSearchEngineIndex, len(m.mcpSearchEngineOptions), m.handleMCPSearchEngineEnter)
+	return m.updateOptionSelection(
+		msg,
+		m.mcpSearchEngineIndex,
+		len(m.mcpSearchEngineOptions),
+		func(model *Model, index int) { model.mcpSearchEngineIndex = index },
+		m.handleMCPSearchEngineEnter,
+	)
 }
 
 // handleMCPSearchEngineEnter handles the enter key press in MCP search engine selection.
