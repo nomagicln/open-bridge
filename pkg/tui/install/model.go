@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/nomagicln/open-bridge/pkg/config"
+	"github.com/nomagicln/open-bridge/internal/install"
 	"github.com/nomagicln/open-bridge/pkg/spec"
 )
 
@@ -62,8 +62,8 @@ type Model struct {
 	// State
 	step    Step
 	appName string
-	options config.InstallOptions
-	result  *config.InstallOptions
+	options install.InstallOptions
+	result  *install.InstallOptions
 	err     error
 
 	// Flags
@@ -135,7 +135,7 @@ type Model struct {
 }
 
 // initializeBasicInputs sets up the basic text input fields (spec, description, baseURL).
-func (m *Model) initializeBasicInputs(opts config.InstallOptions) {
+func (m *Model) initializeBasicInputs(opts install.InstallOptions) {
 	m.specInput = textinput.New()
 	m.specInput.Placeholder = "https://example.com/openapi.json or ./spec.yaml"
 	m.specInput.Focus()
@@ -165,7 +165,7 @@ func (m *Model) initializeBasicInputs(opts config.InstallOptions) {
 }
 
 // initializeTLSInputs sets up the TLS certificate input fields.
-func (m *Model) initializeTLSInputs(opts config.InstallOptions) {
+func (m *Model) initializeTLSInputs(opts install.InstallOptions) {
 	m.tlsCACertInput = textinput.New()
 	m.tlsCACertInput.Placeholder = "/path/to/ca.pem (optional)"
 	m.tlsCACertInput.CharLimit = 200
@@ -205,7 +205,7 @@ func (m *Model) initializeHeaderInputs() {
 }
 
 // initializeTextInputs sets up all text input fields for the model.
-func (m *Model) initializeTextInputs(opts config.InstallOptions) {
+func (m *Model) initializeTextInputs(opts install.InstallOptions) {
 	m.initializeBasicInputs(opts)
 	m.initializeTLSInputs(opts)
 	m.initializeHeaderInputs()
@@ -219,7 +219,7 @@ func (m *Model) initializeSpinner() {
 	m.spinner = s
 }
 
-func NewModel(appName string, opts config.InstallOptions, appExists bool) Model {
+func NewModel(appName string, opts install.InstallOptions, appExists bool) Model {
 	m := Model{
 		step:                        StepSpecInput,
 		appName:                     appName,
@@ -545,7 +545,7 @@ func (m Model) updateLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Set progressive disclosure recommendation based on operation count
 		threshold := m.options.ProgressiveThreshold
 		if threshold <= 0 {
-			threshold = config.DefaultProgressiveThreshold
+			threshold = install.DefaultProgressiveThreshold
 		}
 		if msg.info.Operations > threshold {
 			m.progressiveRecommendation = fmt.Sprintf("Recommended: %d operations detected", msg.info.Operations)
@@ -665,7 +665,7 @@ func (m Model) updateTLSCACert(msg tea.Msg) (tea.Model, tea.Cmd) {
 		val := m.tlsCACertInput.Value()
 		if val != "" {
 			// Validate path
-			absPath, err := config.ValidateTLSCACertFile(val)
+			absPath, err := install.ValidateTLSCACertFile(val)
 			if err != nil {
 				m.err = fmt.Errorf("invalid CA certificate: %w", err)
 				return m, nil
@@ -711,14 +711,14 @@ func validateCertAndKeyPair(certVal, keyVal string) error {
 // validateAndSetTLSAssets validates and sets the TLS certificate and key.
 func (m *Model) validateAndSetTLSAssets(certVal, keyVal string) error {
 	// Validate certificate
-	absPath, err := config.ValidateTLSCertFile(certVal)
+	absPath, err := install.ValidateTLSCertFile(certVal)
 	if err != nil {
 		return fmt.Errorf("invalid client certificate: %w", err)
 	}
 	m.options.TLSClientCert = absPath
 
 	// Validate key
-	absKeyPath, err := config.ValidateTLSKeyFile(keyVal)
+	absKeyPath, err := install.ValidateTLSKeyFile(keyVal)
 	if err != nil {
 		return fmt.Errorf("invalid client key: %w", err)
 	}
@@ -1365,6 +1365,6 @@ func (m Model) renderChoice(label string, choices []string, selectedIdx int) str
 	return s.String()
 }
 
-func (m Model) Result() *config.InstallOptions {
+func (m Model) Result() *install.InstallOptions {
 	return m.result
 }

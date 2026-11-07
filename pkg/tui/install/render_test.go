@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/nomagicln/open-bridge/pkg/config"
+	"github.com/nomagicln/open-bridge/internal/install"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -36,7 +36,7 @@ func TestViewPendingStepContent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
-			m := newTestModel(t, config.InstallOptions{}, false)
+			m := newTestModel(t, install.InstallOptions{}, false)
 			m.step = tt.step
 			if tt.step == StepAuthDetails {
 				m.options.AuthType = "basic"
@@ -61,7 +61,7 @@ func TestViewDoneStepRendersOnlyHeader(t *testing.T) {
 }
 
 func TestViewShowsErrorAndHistory(t *testing.T) {
-	m := newTestModel(t, config.InstallOptions{}, false)
+	m := newTestModel(t, install.InstallOptions{}, false)
 	m.err = errors.New("boom")
 	m.addHistory("Spec Source", "spec.yaml")
 
@@ -116,7 +116,7 @@ func TestMCPAdvancedViewShowsRecommendation(t *testing.T) {
 }
 
 func TestRenderChoice(t *testing.T) {
-	m := newTestModel(t, config.InstallOptions{}, false)
+	m := newTestModel(t, install.InstallOptions{}, false)
 
 	withLabel := m.renderChoice("Pick one:", []string{"No", "Yes"}, 1)
 	assert.Contains(t, withLabel, "Pick one:")
@@ -130,7 +130,7 @@ func TestRenderChoice(t *testing.T) {
 }
 
 func TestRenderInputFocus(t *testing.T) {
-	m := newTestModel(t, config.InstallOptions{}, false)
+	m := newTestModel(t, install.InstallOptions{}, false)
 	input := textinput.New()
 	input.SetValue("typed")
 	focusedInput := textinput.New()
@@ -149,7 +149,7 @@ func TestRenderInputFocus(t *testing.T) {
 }
 
 func TestResultBeforeFinish(t *testing.T) {
-	m := newTestModel(t, config.InstallOptions{}, false)
+	m := newTestModel(t, install.InstallOptions{}, false)
 
 	assert.Nil(t, m.Result())
 

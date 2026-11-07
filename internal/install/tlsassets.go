@@ -1,6 +1,5 @@
-// Package config provides configuration management for OpenBridge.
 // This file contains path validation utilities for TLS certificates and other files.
-package config
+package install
 
 import (
 	"crypto/x509"

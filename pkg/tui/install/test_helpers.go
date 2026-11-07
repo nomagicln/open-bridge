@@ -14,7 +14,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nomagicln/open-bridge/pkg/config"
+	"github.com/nomagicln/open-bridge/internal/install"
 	"github.com/stretchr/testify/require"
 )
 
@@ -34,7 +34,7 @@ paths:
 `
 
 // newTestModel builds a fresh wizard model for the given options.
-func newTestModel(t *testing.T, opts config.InstallOptions, appExists bool) Model {
+func newTestModel(t *testing.T, opts install.InstallOptions, appExists bool) Model {
 	t.Helper()
 	return NewModel("demo", opts, appExists)
 }
@@ -42,7 +42,7 @@ func newTestModel(t *testing.T, opts config.InstallOptions, appExists bool) Mode
 // newTestModelAtStep builds a model positioned directly on the given step.
 func newTestModelAtStep(t *testing.T, step Step) Model {
 	t.Helper()
-	m := NewModel("demo", config.InstallOptions{}, false)
+	m := NewModel("demo", install.InstallOptions{}, false)
 	m.step = step
 	return m
 }

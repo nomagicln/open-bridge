@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/nomagicln/open-bridge/internal/install"
 	"github.com/nomagicln/open-bridge/internal/testutil"
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/semantic"
@@ -46,7 +47,7 @@ func setupProviderWithApp(t *testing.T) *Provider {
 	provider := NewProvider(configMgr, specParser, mapper)
 
 	testSpec := writeTestSpec(t)
-	_, err := configMgr.InstallApp("testapp", config.InstallOptions{
+	_, err := install.New(configMgr).InstallApp("testapp", install.InstallOptions{
 		SpecSource: testSpec,
 		BaseURL:    "https://api.test.com",
 	})
@@ -63,13 +64,13 @@ func TestCompleteAppNames(t *testing.T) {
 
 	// Install test apps
 	testSpec := writeTestSpec(t)
-	_, err := configMgr.InstallApp("testapp1", config.InstallOptions{
+	_, err := install.New(configMgr).InstallApp("testapp1", install.InstallOptions{
 		SpecSource: testSpec,
 		BaseURL:    "https://api.test1.com",
 	})
 	require.NoError(t, err)
 
-	_, err = configMgr.InstallApp("testapp2", config.InstallOptions{
+	_, err = install.New(configMgr).InstallApp("testapp2", install.InstallOptions{
 		SpecSource: testSpec,
 		BaseURL:    "https://api.test2.com",
 	})
@@ -147,7 +148,7 @@ func TestCompleteResourcesForVerb(t *testing.T) {
 
 	// Install test app
 	testSpec := writeTestSpec(t)
-	_, err := configMgr.InstallApp("testapp", config.InstallOptions{
+	_, err := install.New(configMgr).InstallApp("testapp", install.InstallOptions{
 		SpecSource: testSpec,
 		BaseURL:    "https://api.test.com",
 	})
@@ -178,7 +179,7 @@ func TestCompleteFlags(t *testing.T) {
 
 	// Install test app
 	testSpec := writeTestSpec(t)
-	_, err := configMgr.InstallApp("testapp", config.InstallOptions{
+	_, err := install.New(configMgr).InstallApp("testapp", install.InstallOptions{
 		SpecSource: testSpec,
 		BaseURL:    "https://api.test.com",
 	})
@@ -219,7 +220,7 @@ func TestCompleteFlagValues(t *testing.T) {
 		t.Fatalf("failed to write petstore spec: %v", err)
 	}
 
-	result, err := configMgr.InstallApp("testapp", config.InstallOptions{
+	result, err := install.New(configMgr).InstallApp("testapp", install.InstallOptions{
 		SpecSource: petstoreSpec,
 		BaseURL:    "https://api.test.com",
 	})

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nomagicln/open-bridge/pkg/config"
+	"github.com/nomagicln/open-bridge/internal/install"
 	"github.com/nomagicln/open-bridge/pkg/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,7 +15,7 @@ import (
 func TestNewModel(t *testing.T) {
 	tests := []struct {
 		name         string
-		opts         config.InstallOptions
+		opts         install.InstallOptions
 		wantStep     Step
 		wantAuthIdx  int
 		wantTLSIdx   int
@@ -23,32 +23,32 @@ func TestNewModel(t *testing.T) {
 	}{
 		{
 			name:         "default starts at spec input",
-			opts:         config.InstallOptions{},
+			opts:         install.InstallOptions{},
 			wantStep:     StepSpecInput,
 			wantViewText: "OpenAPI Specification Source",
 		},
 		{
 			name:         "prefilled spec source starts at base URL",
-			opts:         config.InstallOptions{SpecSource: "spec.yaml"},
+			opts:         install.InstallOptions{SpecSource: "spec.yaml"},
 			wantStep:     StepBaseURL,
 			wantViewText: "Base URL",
 		},
 		{
 			name:         "multiple spec sources start at base URL",
-			opts:         config.InstallOptions{SpecSources: []string{"a.yaml", "b.yaml"}},
+			opts:         install.InstallOptions{SpecSources: []string{"a.yaml", "b.yaml"}},
 			wantStep:     StepBaseURL,
 			wantViewText: "Base URL",
 		},
 		{
 			name:         "auth type selects initial index",
-			opts:         config.InstallOptions{AuthType: "basic"},
+			opts:         install.InstallOptions{AuthType: "basic"},
 			wantStep:     StepSpecInput,
 			wantAuthIdx:  3,
 			wantViewText: "OpenAPI Specification Source",
 		},
 		{
 			name:         "tls skip verify preselects yes",
-			opts:         config.InstallOptions{TLSSkipVerify: true},
+			opts:         install.InstallOptions{TLSSkipVerify: true},
 			wantStep:     StepSpecInput,
 			wantTLSIdx:   1,
 			wantViewText: "OpenAPI Specification Source",
@@ -72,7 +72,7 @@ func TestNewModel(t *testing.T) {
 }
 
 func TestNewModelPrefilledDefaults(t *testing.T) {
-	opts := config.InstallOptions{
+	opts := install.InstallOptions{
 		SpecSource:  "spec.yaml",
 		Description: "preset description",
 		BaseURL:     "https://preset.example.com",
@@ -88,7 +88,7 @@ func TestNewModelPrefilledDefaults(t *testing.T) {
 }
 
 func TestNewModelPrefilledTLSAssets(t *testing.T) {
-	opts := config.InstallOptions{
+	opts := install.InstallOptions{
 		SpecSource:    "spec.yaml",
 		TLSCACert:     "/preset/ca.pem",
 		TLSClientCert: "/preset/client.pem",
@@ -102,14 +102,14 @@ func TestNewModelPrefilledTLSAssets(t *testing.T) {
 }
 
 func TestInit(t *testing.T) {
-	assert.NotNil(t, newTestModel(t, config.InstallOptions{}, false).Init())
+	assert.NotNil(t, newTestModel(t, install.InstallOptions{}, false).Init())
 
 	loading := newTestModelAtStep(t, StepLoading)
 	assert.NotNil(t, loading.Init())
 }
 
 func TestUpdateCtrlCQuits(t *testing.T) {
-	m := newTestModel(t, config.InstallOptions{}, false)
+	m := newTestModel(t, install.InstallOptions{}, false)
 
 	next, cmd := pressKey(t, m, keyCtrlC())
 
@@ -130,7 +130,7 @@ func TestUpdateUnknownStepIsNoop(t *testing.T) {
 
 func TestSpecInputStep(t *testing.T) {
 	t.Run("typed value advances to base URL", func(t *testing.T) {
-		m := newTestModel(t, config.InstallOptions{}, false)
+		m := newTestModel(t, install.InstallOptions{}, false)
 
 		m, _ = typeText(t, m, "spec.yaml")
 		require.Equal(t, "spec.yaml", m.specInput.Value())
@@ -146,7 +146,7 @@ func TestSpecInputStep(t *testing.T) {
 	})
 
 	t.Run("empty input reports validation error", func(t *testing.T) {
-		m := newTestModel(t, config.InstallOptions{}, false)
+		m := newTestModel(t, install.InstallOptions{}, false)
 		require.NotEmpty(t, m.specInput.Placeholder, "placeholder hint must still be rendered")
 
 		next, cmd := pressKey(t, m, keyEnter())
@@ -159,14 +159,14 @@ func TestSpecInputStep(t *testing.T) {
 	})
 
 	t.Run("non-key message updates input", func(t *testing.T) {
-		m := newTestModel(t, config.InstallOptions{}, false)
+		m := newTestModel(t, install.InstallOptions{}, false)
 		next, _ := applyMsg(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 		assert.Equal(t, StepSpecInput, next.step)
 	})
 }
 
 // reachBaseURLStep builds a model positioned at the base URL step.
-func reachBaseURLStep(t *testing.T, opts config.InstallOptions) Model {
+func reachBaseURLStep(t *testing.T, opts install.InstallOptions) Model {
 	t.Helper()
 	m := newTestModel(t, opts, false)
 	require.Equal(t, StepBaseURL, m.step)
@@ -175,7 +175,7 @@ func reachBaseURLStep(t *testing.T, opts config.InstallOptions) Model {
 
 func TestBaseURLStep(t *testing.T) {
 	t.Run("generic placeholder is not used as value", func(t *testing.T) {
-		m := reachBaseURLStep(t, config.InstallOptions{SpecSource: "spec.yaml"})
+		m := reachBaseURLStep(t, install.InstallOptions{SpecSource: "spec.yaml"})
 		require.NotEmpty(t, m.baseUrlInput.Placeholder, "placeholder hint must still be rendered")
 
 		next, _ := pressKey(t, m, keyEnter())
@@ -187,7 +187,7 @@ func TestBaseURLStep(t *testing.T) {
 	})
 
 	t.Run("invalid URL reports error", func(t *testing.T) {
-		m := reachBaseURLStep(t, config.InstallOptions{SpecSource: "spec.yaml"})
+		m := reachBaseURLStep(t, install.InstallOptions{SpecSource: "spec.yaml"})
 		m, _ = typeText(t, m, "ftp://files.example.com")
 
 		next, _ := pressKey(t, m, keyEnter())
@@ -198,7 +198,7 @@ func TestBaseURLStep(t *testing.T) {
 	})
 
 	t.Run("http URL skips TLS steps", func(t *testing.T) {
-		m := reachBaseURLStep(t, config.InstallOptions{SpecSource: "spec.yaml"})
+		m := reachBaseURLStep(t, install.InstallOptions{SpecSource: "spec.yaml"})
 		m, _ = typeText(t, m, "http://api.example.com")
 
 		next, _ := pressKey(t, m, keyEnter())
@@ -210,7 +210,7 @@ func TestBaseURLStep(t *testing.T) {
 	})
 
 	t.Run("https URL goes to TLS steps", func(t *testing.T) {
-		m := reachBaseURLStep(t, config.InstallOptions{SpecSource: "spec.yaml"})
+		m := reachBaseURLStep(t, install.InstallOptions{SpecSource: "spec.yaml"})
 		m, _ = typeText(t, m, "https://api.example.com")
 
 		next, _ := pressKey(t, m, keyEnter())
@@ -220,7 +220,7 @@ func TestBaseURLStep(t *testing.T) {
 	})
 
 	t.Run("prefilled default is used for empty input", func(t *testing.T) {
-		m := reachBaseURLStep(t, config.InstallOptions{
+		m := reachBaseURLStep(t, install.InstallOptions{
 			SpecSource: "spec.yaml",
 			BaseURL:    "http://default.example.com",
 		})
@@ -236,13 +236,13 @@ func TestBaseURLStep(t *testing.T) {
 func TestNeedsTLSConfiguration(t *testing.T) {
 	tests := []struct {
 		name string
-		opts config.InstallOptions
+		opts install.InstallOptions
 		want bool
 	}{
-		{name: "no URLs", opts: config.InstallOptions{}, want: false},
-		{name: "http spec and http base", opts: config.InstallOptions{SpecSource: "http://x/spec", BaseURL: "http://x"}, want: false},
-		{name: "https spec", opts: config.InstallOptions{SpecSource: "https://x/spec", BaseURL: "http://x"}, want: true},
-		{name: "https base", opts: config.InstallOptions{SpecSource: "spec.yaml", BaseURL: "https://x"}, want: true},
+		{name: "no URLs", opts: install.InstallOptions{}, want: false},
+		{name: "http spec and http base", opts: install.InstallOptions{SpecSource: "http://x/spec", BaseURL: "http://x"}, want: false},
+		{name: "https spec", opts: install.InstallOptions{SpecSource: "https://x/spec", BaseURL: "http://x"}, want: true},
+		{name: "https base", opts: install.InstallOptions{SpecSource: "spec.yaml", BaseURL: "https://x"}, want: true},
 	}
 
 	for _, tt := range tests {
@@ -415,7 +415,7 @@ func TestTLSClientCertStep(t *testing.T) {
 // URL path (which skips the TLS steps).
 func reachAuthTypeStep(t *testing.T) Model {
 	t.Helper()
-	m := reachBaseURLStep(t, config.InstallOptions{SpecSource: "spec.yaml"})
+	m := reachBaseURLStep(t, install.InstallOptions{SpecSource: "spec.yaml"})
 	m, _ = typeText(t, m, "http://api.example.com")
 	m, _ = pressKey(t, m, keyEnter())
 	require.Equal(t, StepAuthType, m.step)
@@ -601,7 +601,7 @@ func TestLoadingStep(t *testing.T) {
 
 	t.Run("large spec recommends progressive disclosure", func(t *testing.T) {
 		m := newTestModelAtStep(t, StepLoading)
-		info := &spec.SpecInfo{Title: "Big API", Operations: config.DefaultProgressiveThreshold + 5}
+		info := &spec.SpecInfo{Title: "Big API", Operations: install.DefaultProgressiveThreshold + 5}
 
 		next, _ := applyMsg(t, m, specLoadedMsg{info: info})
 
@@ -689,7 +689,7 @@ func TestAddHeadersConfirmStep(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := newTestModel(t, config.InstallOptions{Force: tt.force}, tt.appExists)
+			m := newTestModel(t, install.InstallOptions{Force: tt.force}, tt.appExists)
 			m.step = StepAddHeadersConfirm
 
 			next, _ := pressKey(t, m, keyLeft())
@@ -881,7 +881,7 @@ func TestMCPReadOnlyAndProtectSensitiveSteps(t *testing.T) {
 
 func TestOverwriteConfirmStep(t *testing.T) {
 	t.Run("declining aborts", func(t *testing.T) {
-		m := newTestModel(t, config.InstallOptions{}, true)
+		m := newTestModel(t, install.InstallOptions{}, true)
 		m.step = StepOverwriteConfirm
 
 		next, _ := pressKey(t, m, keyLeft())
@@ -894,7 +894,7 @@ func TestOverwriteConfirmStep(t *testing.T) {
 	})
 
 	t.Run("accepting forces overwrite", func(t *testing.T) {
-		m := newTestModel(t, config.InstallOptions{}, true)
+		m := newTestModel(t, install.InstallOptions{}, true)
 		m.step = StepOverwriteConfirm
 
 		next, _ := pressKey(t, m, keyRight())
@@ -906,7 +906,7 @@ func TestOverwriteConfirmStep(t *testing.T) {
 	})
 
 	t.Run("non-key message is ignored", func(t *testing.T) {
-		m := newTestModel(t, config.InstallOptions{}, true)
+		m := newTestModel(t, install.InstallOptions{}, true)
 		m.step = StepOverwriteConfirm
 		next, _ := applyMsg(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 		assert.Equal(t, StepOverwriteConfirm, next.step)
@@ -914,7 +914,7 @@ func TestOverwriteConfirmStep(t *testing.T) {
 }
 
 func TestHappyPath(t *testing.T) {
-	m := newTestModel(t, config.InstallOptions{}, false)
+	m := newTestModel(t, install.InstallOptions{}, false)
 
 	m, _ = typeText(t, m, "spec.yaml")
 	m, _ = pressKey(t, m, keyEnter())
@@ -954,7 +954,7 @@ func TestHappyPath(t *testing.T) {
 
 func TestLoadSpecCmd(t *testing.T) {
 	t.Run("valid spec returns info and server URL", func(t *testing.T) {
-		m := newTestModel(t, config.InstallOptions{SpecSource: writeTestSpec(t)}, false)
+		m := newTestModel(t, install.InstallOptions{SpecSource: writeTestSpec(t)}, false)
 
 		msg := m.loadSpecCmd()()
 		loaded, ok := msg.(specLoadedMsg)
@@ -967,7 +967,7 @@ func TestLoadSpecCmd(t *testing.T) {
 	})
 
 	t.Run("missing spec returns error", func(t *testing.T) {
-		m := newTestModel(t, config.InstallOptions{
+		m := newTestModel(t, install.InstallOptions{
 			SpecSource: filepath.Join(t.TempDir(), "missing.yaml"),
 		}, false)
 
@@ -1073,13 +1073,13 @@ func TestRegressionAutoSelectSingleSearchEngine(t *testing.T) {
 // TestRegressionEmptyInputDoesNotUsePlaceholder locks B1: pressing Enter on an
 // empty field must not copy the rendered placeholder hint into the options.
 func TestRegressionEmptyInputDoesNotUsePlaceholder(t *testing.T) {
-	specModel := newTestModel(t, config.InstallOptions{}, false)
+	specModel := newTestModel(t, install.InstallOptions{}, false)
 	require.NotEmpty(t, specModel.specInput.Placeholder)
 	nextSpec, _ := pressKey(t, specModel, keyEnter())
 	require.Error(t, nextSpec.err)
 	assert.Empty(t, nextSpec.options.SpecSource)
 
-	baseModel := reachBaseURLStep(t, config.InstallOptions{SpecSource: "spec.yaml"})
+	baseModel := reachBaseURLStep(t, install.InstallOptions{SpecSource: "spec.yaml"})
 	require.NotEmpty(t, baseModel.baseUrlInput.Placeholder)
 	nextBase, _ := pressKey(t, baseModel, keyEnter())
 	require.Error(t, nextBase.err)

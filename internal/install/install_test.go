@@ -1,4 +1,4 @@
-package config
+package install
 
 import (
 	"bytes"
@@ -10,14 +10,17 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/nomagicln/open-bridge/pkg/config"
 )
 
 func TestInstallApp(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	// Create a test spec file
 	specPath := filepath.Join(tmpDir, "spec.yaml")
@@ -60,18 +63,18 @@ paths:
 	}
 
 	// Verify app was installed
-	if !m.AppExists("testapi") {
+	if !mgr.AppExists("testapi") {
 		t.Error("expected app to exist after installation")
 	}
 
 	// Verify config
-	config, err := m.GetAppConfig("testapi")
+	appConfig, err := mgr.GetAppConfig("testapi")
 	if err != nil {
 		t.Fatalf("GetAppConfig failed: %v", err)
 	}
 
-	if config.Description != "Test API application" {
-		t.Errorf("expected description 'Test API application', got '%s'", config.Description)
+	if appConfig.Description != "Test API application" {
+		t.Errorf("expected description 'Test API application', got '%s'", appConfig.Description)
 	}
 
 	absSpecPath, err := filepath.Abs(specPath)
@@ -79,12 +82,12 @@ paths:
 		t.Fatalf("filepath.Abs failed: %v", err)
 	}
 
-	if config.SpecSource != absSpecPath {
-		t.Errorf("expected spec source '%s', got '%s'", absSpecPath, config.SpecSource)
+	if appConfig.SpecSource != absSpecPath {
+		t.Errorf("expected spec source '%s', got '%s'", absSpecPath, appConfig.SpecSource)
 	}
 
 	// Verify default profile was created with base URL from spec
-	profile, ok := config.Profiles["default"]
+	profile, ok := appConfig.Profiles["default"]
 	if !ok {
 		t.Fatal("expected 'default' profile")
 	}
@@ -96,10 +99,11 @@ paths:
 
 func TestInstallAppWithExplicitBaseURL(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	// Create a test spec file without servers
 	specPath := filepath.Join(tmpDir, "spec.yaml")
@@ -129,8 +133,8 @@ paths:
 		t.Fatalf("InstallApp failed: %v", err)
 	}
 
-	config, _ := m.GetAppConfig(result.AppName)
-	profile := config.Profiles["default"]
+	appConfig, _ := mgr.GetAppConfig(result.AppName)
+	profile := appConfig.Profiles["default"]
 
 	if profile.BaseURL != "https://custom.example.com" {
 		t.Errorf("expected base URL 'https://custom.example.com', got '%s'", profile.BaseURL)
@@ -139,10 +143,11 @@ paths:
 
 func TestInstallAppAlreadyExists(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	specPath := filepath.Join(tmpDir, "spec.yaml")
 	specContent := `
@@ -182,10 +187,11 @@ paths: {}
 
 func TestInstallAppInvalidSpec(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	_, err = m.InstallApp("testapi", InstallOptions{
 		SpecSource: "/nonexistent/spec.yaml",
@@ -198,10 +204,11 @@ func TestInstallAppInvalidSpec(t *testing.T) {
 
 func TestInstallAppMissingSpecSource(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	_, err = m.InstallApp("testapi", InstallOptions{})
 
@@ -212,10 +219,11 @@ func TestInstallAppMissingSpecSource(t *testing.T) {
 
 func TestInstallAppInteractive(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	// Create a test spec
 	specPath := filepath.Join(tmpDir, "spec.yaml")
@@ -249,17 +257,17 @@ paths: {}
 		t.Errorf("expected app name 'testapi', got '%s'", result.AppName)
 	}
 
-	config, err := m.GetAppConfig("testapi")
+	appConfig, err := mgr.GetAppConfig("testapi")
 	if err != nil {
 		t.Fatalf("GetAppConfig failed: %v", err)
 	}
 
 	// Description should be from explicit option
-	if config.Description != "Custom Description" {
-		t.Errorf("expected description 'Custom Description', got '%s'", config.Description)
+	if appConfig.Description != "Custom Description" {
+		t.Errorf("expected description 'Custom Description', got '%s'", appConfig.Description)
 	}
 
-	profile := config.Profiles["default"]
+	profile := appConfig.Profiles["default"]
 	if profile.Auth.Type != "bearer" {
 		t.Errorf("expected auth type 'bearer', got '%s'", profile.Auth.Type)
 	}
@@ -268,10 +276,11 @@ paths: {}
 func TestInstallAppInteractivePrompts(t *testing.T) {
 	// Test the prompt helper functions separately to ensure they work correctly
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	specPath := filepath.Join(tmpDir, "spec.yaml")
 	specContent := `
@@ -328,10 +337,11 @@ paths: {}
 
 func TestUninstallApp(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	// Create a test spec and install app
 	specPath := filepath.Join(tmpDir, "spec.yaml")
@@ -354,7 +364,7 @@ paths: {}
 	}
 
 	// Verify app exists
-	if !m.AppExists("testapi") {
+	if !mgr.AppExists("testapi") {
 		t.Error("expected app to exist before uninstall")
 	}
 
@@ -365,17 +375,18 @@ paths: {}
 	}
 
 	// Verify app was removed
-	if m.AppExists("testapi") {
+	if mgr.AppExists("testapi") {
 		t.Error("expected app to not exist after uninstall")
 	}
 }
 
 func TestUninstallAppNotFound(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	err = m.UninstallApp("nonexistent", false)
 	assertNonexistentAppError(t, err)
@@ -383,10 +394,11 @@ func TestUninstallAppNotFound(t *testing.T) {
 
 func TestCreateAndRemoveShim(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	shimDir := filepath.Join(tmpDir, "bin")
 
@@ -437,10 +449,11 @@ func TestCreateAndRemoveShim(t *testing.T) {
 
 func TestGetInstalledAppInfo(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	// Create and install an app
 	specPath := filepath.Join(tmpDir, "spec.yaml")
@@ -499,10 +512,11 @@ paths:
 
 func TestUpdateApp(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	// Create and install initial app
 	specPath := filepath.Join(tmpDir, "spec.yaml")
@@ -535,9 +549,9 @@ paths: {}
 		t.Fatalf("UpdateApp failed: %v", err)
 	}
 
-	config, _ := m.GetAppConfig("updatetest")
-	if config.Description != "Updated description" {
-		t.Errorf("expected description 'Updated description', got '%s'", config.Description)
+	appConfig, _ := mgr.GetAppConfig("updatetest")
+	if appConfig.Description != "Updated description" {
+		t.Errorf("expected description 'Updated description', got '%s'", appConfig.Description)
 	}
 }
 
@@ -715,10 +729,11 @@ func TestIsShimDirInPath(t *testing.T) {
 
 func TestShimContentFormat(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	shimDir := filepath.Join(tmpDir, "bin")
 	shimPath, err := m.CreateShim("testapp", shimDir)
@@ -755,10 +770,11 @@ func TestShimContentFormat(t *testing.T) {
 
 func TestShimExists(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	// Initially should not exist
 	if m.ShimExists("testapp") {
@@ -779,10 +795,11 @@ func TestShimExists(t *testing.T) {
 
 func TestRemoveShimNotExists(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	// Removing non-existent shim should not error
 	err = m.RemoveShim("nonexistent")
@@ -880,17 +897,18 @@ func writeMetadataTestSpec(t *testing.T) string {
 
 func TestInstallAppPersistsSpecMetadata(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	specPath := writeMetadataTestSpec(t)
 	if _, err := m.InstallApp("metadataapp", InstallOptions{SpecSource: specPath}); err != nil {
 		t.Fatalf("InstallApp failed: %v", err)
 	}
 
-	cfg, err := m.GetAppConfig("metadataapp")
+	cfg, err := mgr.GetAppConfig("metadataapp")
 	if err != nil {
 		t.Fatalf("GetAppConfig failed: %v", err)
 	}
@@ -908,10 +926,11 @@ func TestInstallAppPersistsSpecMetadata(t *testing.T) {
 
 func TestGetInstalledAppInfoUsesPersistedSpecMetadata(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	specPath := writeMetadataTestSpec(t)
 	if _, err := m.InstallApp("noresolv", InstallOptions{SpecSource: specPath}); err != nil {
@@ -944,10 +963,11 @@ func TestGetInstalledAppInfoUsesPersistedSpecMetadata(t *testing.T) {
 
 func TestGetInstalledAppInfoFallsBackForLegacyConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	specPath := writeMetadataTestSpec(t)
 
@@ -961,7 +981,7 @@ func TestGetInstalledAppInfoFallsBackForLegacyConfig(t *testing.T) {
 		"    base_url: https://api.example.com\n" +
 		"default_profile: default\n" +
 		"version: \"1.0\"\n"
-	if err := os.WriteFile(m.getAppConfigPath("legacyapp"), []byte(legacyYAML), 0o600); err != nil {
+	if err := os.WriteFile(mgr.AppConfigPath("legacyapp"), []byte(legacyYAML), 0o600); err != nil {
 		t.Fatalf("write legacy config failed: %v", err)
 	}
 
@@ -979,10 +999,11 @@ func TestGetInstalledAppInfoFallsBackForLegacyConfig(t *testing.T) {
 
 func TestGetInstalledAppInfoLegacyConfigMissingSpec(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	legacyYAML := "name: legacymissing\n" +
 		"spec_source: " + filepath.Join(tmpDir, "does-not-exist.yaml") + "\n" +
@@ -992,7 +1013,7 @@ func TestGetInstalledAppInfoLegacyConfigMissingSpec(t *testing.T) {
 		"    base_url: https://api.example.com\n" +
 		"default_profile: default\n" +
 		"version: \"1.0\"\n"
-	if err := os.WriteFile(m.getAppConfigPath("legacymissing"), []byte(legacyYAML), 0o600); err != nil {
+	if err := os.WriteFile(mgr.AppConfigPath("legacymissing"), []byte(legacyYAML), 0o600); err != nil {
 		t.Fatalf("write legacy config failed: %v", err)
 	}
 
@@ -1015,10 +1036,11 @@ func TestInstallAppRemoteSpecDownloadsOnce(t *testing.T) {
 	defer server.Close()
 
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	result, err := m.InstallApp("remoteapp", InstallOptions{
 		SpecSource: server.URL + "/spec.yaml",
@@ -1035,7 +1057,7 @@ func TestInstallAppRemoteSpecDownloadsOnce(t *testing.T) {
 		t.Errorf("expected install result to carry spec info, got %+v", result.SpecInfo)
 	}
 
-	cfg, err := m.GetAppConfig("remoteapp")
+	cfg, err := mgr.GetAppConfig("remoteapp")
 	if err != nil {
 		t.Fatalf("GetAppConfig failed: %v", err)
 	}
