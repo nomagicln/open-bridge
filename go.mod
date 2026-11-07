@@ -7,7 +7,6 @@ require (
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/fsnotify/fsnotify v1.9.0
 	github.com/getkin/kin-openapi v0.149.0
 	github.com/ghodss/yaml v1.0.0
 	github.com/leanovate/gopter v0.2.11
