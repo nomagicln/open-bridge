@@ -396,3 +396,133 @@ func TestContentDetector_GetStrategy(t *testing.T) {
 		t.Error("expected nil for unknown format")
 	}
 }
+
+// =============================================================================
+// YAML -> JSON behavior equivalence (replacement of github.com/ghodss/yaml)
+// =============================================================================
+
+// TestYAMLStrategy_ToJSON_BehaviorEquivalence locks in the YAML->JSON semantics
+// that existed before the archived github.com/ghodss/yaml dependency was
+// replaced with gopkg.in/yaml.v3. Expected values were captured from the old
+// implementation.
+func TestYAMLStrategy_ToJSON_BehaviorEquivalence(t *testing.T) {
+	strategy := &YAMLStrategy{}
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "plain string", input: "hello", want: `"hello"`},
+		{name: "integer", input: "123", want: `123`},
+		{name: "negative exponent float", input: "-2.5e3", want: `-2500`},
+		{name: "float", input: "1.5", want: `1.5`},
+		{name: "hex integer", input: "0x1f", want: `31`},
+		{name: "yaml 1.2 octal integer", input: "0o17", want: `15`},
+		{name: "legacy octal integer", input: "0777", want: `511`},
+		{name: "boolean true", input: "true", want: `true`},
+		{name: "boolean false", input: "false", want: `false`},
+		{name: "yaml 1.1 boolean yes", input: "yes", want: `true`},
+		{name: "yaml 1.1 boolean on", input: "on", want: `true`},
+		{name: "yaml 1.1 boolean off", input: "off", want: `false`},
+		{name: "quoted legacy boolean stays string", input: `"yes"`, want: `"yes"`},
+		{name: "null", input: "null", want: `null`},
+		{name: "null tilde", input: "~", want: `null`},
+		{name: "empty document", input: "", want: `null`},
+		{name: "unquoted date stays string", input: "2024-01-01", want: `"2024-01-01"`},
+		{name: "unquoted timestamp stays string", input: "2024-01-01T10:00:00Z", want: `"2024-01-01T10:00:00Z"`},
+		{name: "quoted date stays string", input: `'2024-01-01'`, want: `"2024-01-01"`},
+		{
+			name:  "nested mapping scalars",
+			input: "a: 1\nb: true\nc: null\nd: 1.5\ne: 2024-01-01\n",
+			want:  `{"a":1,"b":true,"c":null,"d":1.5,"e":"2024-01-01"}`,
+		},
+		{
+			name:  "sequence scalars",
+			input: "list:\n  - 1\n  - true\n  - null\n  - yes\n  - '2024-01-01'\n",
+			want:  `{"list":[1,true,null,true,"2024-01-01"]}`,
+		},
+		{name: "integer key", input: "1: one\n", want: `{"1":"one"}`},
+		{name: "float key", input: "2.5: two\n", want: `{"2.5":"two"}`},
+		{name: "boolean key", input: "true: three\n", want: `{"true":"three"}`},
+		{
+			name:  "anchor and merge key",
+			input: "base: &b\n  a: 1\nchild:\n  <<: *b\n  c: 2\n",
+			want:  `{"base":{"a":1},"child":{"a":1,"c":2}}`,
+		},
+		{
+			name:  "merge sequence precedence",
+			input: "seq:\n  <<: [{a: 1}, {a: 2, b: 3}]\n",
+			want:  `{"seq":{"a":1,"b":3}}`,
+		},
+		{name: "duplicate keys keep last", input: "a: 1\na: 2\n", want: `{"a":2}`},
+		{name: "explicit string tag", input: "explicit: !!str 123\n", want: `{"explicit":"123"}`},
+		{name: "single document only", input: "a: 1\n---\nb: 2\n", want: `{"a":1}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := strategy.ToJSON([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("ToJSON(%q) returned unexpected error: %v", tt.input, err)
+			}
+			if string(got) != tt.want {
+				t.Errorf("ToJSON(%q) = %s, want %s", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestYAMLStrategy_ToJSON_Errors verifies error propagation for values that
+// cannot be represented in JSON and for malformed YAML.
+func TestYAMLStrategy_ToJSON_Errors(t *testing.T) {
+	strategy := &YAMLStrategy{}
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "positive infinity", input: ".inf"},
+		{name: "not a number", input: ".nan"},
+		{name: "malformed yaml", input: "invalid: [unclosed\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := strategy.ToJSON([]byte(tt.input)); err == nil {
+				t.Errorf("ToJSON(%q) expected an error, got nil", tt.input)
+			}
+		})
+	}
+}
+
+// TestYAMLStrategy_Unmarshal_ScalarSemantics verifies that unmarshaling through
+// the JSON bridge keeps number, boolean and null semantics stable.
+func TestYAMLStrategy_Unmarshal_ScalarSemantics(t *testing.T) {
+	strategy := &YAMLStrategy{}
+
+	var result map[string]any
+	input := "int: 42\nfloat: 1.5\nbool: true\nlegacy_bool: yes\nnull_value: null\ndate: 2024-01-01\n"
+	if err := strategy.Unmarshal([]byte(input), &result); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result["int"] != float64(42) {
+		t.Errorf("expected int 42, got %#v", result["int"])
+	}
+	if result["float"] != 1.5 {
+		t.Errorf("expected float 1.5, got %#v", result["float"])
+	}
+	if result["bool"] != true {
+		t.Errorf("expected bool true, got %#v", result["bool"])
+	}
+	if result["legacy_bool"] != true {
+		t.Errorf("expected legacy bool yes to be true, got %#v", result["legacy_bool"])
+	}
+	if result["null_value"] != nil {
+		t.Errorf("expected null, got %#v", result["null_value"])
+	}
+	if result["date"] != "2024-01-01" {
+		t.Errorf("expected date string, got %#v", result["date"])
+	}
+}
