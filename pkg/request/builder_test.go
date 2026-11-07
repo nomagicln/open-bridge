@@ -1618,3 +1618,111 @@ func TestBuilder_NilParamRefHandling(t *testing.T) {
 		assert.NoError(t, err)
 	})
 }
+
+// schemaType builds a minimal schema reference for typed error tests.
+func schemaType(types ...string) *openapi3.SchemaRef {
+	return &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{types[0]}}}
+}
+
+// TestValidateParamsReturnsTypedErrors verifies the request package produces
+// typed validation errors (errors.As) without changing their message text.
+func TestValidateParamsReturnsTypedErrors(t *testing.T) {
+	b := NewBuilder(nil)
+
+	requiredParam := func(name string) openapi3.Parameters {
+		return openapi3.Parameters{
+			&openapi3.ParameterRef{Value: &openapi3.Parameter{
+				Name:     name,
+				In:       "query",
+				Required: true,
+				Schema:   schemaType("string"),
+			}},
+		}
+	}
+
+	t.Run("missing required parameter", func(t *testing.T) {
+		err := b.ValidateParams(map[string]any{}, requiredParam("user_id"), nil)
+		var missing *MissingParameterError
+		if !errors.As(err, &missing) {
+			t.Fatalf("ValidateParams() error = %T, want *MissingParameterError", err)
+		}
+		if missing.Name != "user_id" || missing.BodyField {
+			t.Errorf("MissingParameterError = %+v, want Name=user_id BodyField=false", missing)
+		}
+		if want := "required parameter 'user_id' is missing"; err.Error() != want {
+			t.Errorf("Error() = %q, want %q", err.Error(), want)
+		}
+	})
+
+	t.Run("missing required body field", func(t *testing.T) {
+		requestBody := &openapi3.RequestBody{
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+						Properties: map[string]*openapi3.SchemaRef{
+							"name": schemaType("string"),
+						},
+						Required: []string{"name"},
+					}},
+				},
+			},
+		}
+		err := b.ValidateParams(map[string]any{}, nil, requestBody)
+		var missing *MissingParameterError
+		if !errors.As(err, &missing) {
+			t.Fatalf("ValidateParams() error = %T, want *MissingParameterError", err)
+		}
+		if !missing.BodyField || missing.Name != "name" {
+			t.Errorf("MissingParameterError = %+v, want Name=name BodyField=true", missing)
+		}
+		if want := "required body parameter 'name' is missing"; err.Error() != want {
+			t.Errorf("Error() = %q, want %q", err.Error(), want)
+		}
+	})
+
+	t.Run("parameter type mismatch", func(t *testing.T) {
+		err := b.ValidateParams(map[string]any{"user_id": 42}, requiredParam("user_id"), nil)
+		var validation *ParameterValidationError
+		if !errors.As(err, &validation) {
+			t.Fatalf("ValidateParams() error = %T, want *ParameterValidationError", err)
+		}
+		if validation.Parameter != "user_id" {
+			t.Errorf("ParameterValidationError.Parameter = %q, want user_id", validation.Parameter)
+		}
+		want := "parameter 'user_id' type mismatch: got integer, expected one of [string]"
+		if err.Error() != want {
+			t.Errorf("Error() = %q, want %q", err.Error(), want)
+		}
+	})
+
+	t.Run("parameter enum mismatch", func(t *testing.T) {
+		opParams := openapi3.Parameters{
+			&openapi3.ParameterRef{Value: &openapi3.Parameter{
+				Name: "status",
+				In:   "query",
+				Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+					Type: &openapi3.Types{"string"},
+					Enum: []any{"active", "inactive"},
+				}},
+			}},
+		}
+		err := b.ValidateParams(map[string]any{"status": "bogus"}, opParams, nil)
+		var validation *ParameterValidationError
+		if !errors.As(err, &validation) {
+			t.Fatalf("ValidateParams() error = %T, want *ParameterValidationError", err)
+		}
+		want := "parameter 'status' must be one of [active inactive], got bogus"
+		if err.Error() != want {
+			t.Errorf("Error() = %q, want %q", err.Error(), want)
+		}
+	})
+
+	t.Run("wrapped typed error is discoverable", func(t *testing.T) {
+		typed := &MissingParameterError{Name: "user_id"}
+		wrapped := fmt.Errorf("validation failed: %w", typed)
+		var missing *MissingParameterError
+		if !errors.As(wrapped, &missing) {
+			t.Fatal("wrapped MissingParameterError must be discoverable with errors.As")
+		}
+	})
+}

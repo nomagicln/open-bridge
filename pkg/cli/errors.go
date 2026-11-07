@@ -11,6 +11,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/nomagicln/open-bridge/pkg/config"
+	"github.com/nomagicln/open-bridge/pkg/request"
 )
 
 // PrintedError wraps an error that has already been printed to stderr.
@@ -20,9 +21,12 @@ type PrintedError struct {
 }
 
 func (e *PrintedError) Error() string {
-	// Return empty string since the error has already been printed.
-	// This prevents double printing when the error bubbles up.
-	return ""
+	// Expose the underlying text so logs and tests see the real cause;
+	// IsPrintedError tells main() not to print it a second time.
+	if e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
 }
 
 func (e *PrintedError) Unwrap() error {
@@ -49,42 +53,44 @@ func (f *ErrorFormatter) FormatError(err error) string {
 }
 
 // FormatErrorWithContext formats an error with additional context like installed apps.
+// Errors are classified with errors.As so wrapped typed errors are still
+// recognised; no error text is sniffed for keywords.
 func (f *ErrorFormatter) FormatErrorWithContext(err error, installedApps []string) string {
 	if err == nil {
 		return ""
 	}
 
-	// Check for specific error types
-	{
-		var e *config.AppNotFoundError
-		var e1 *url.Error
-		var e2 *net.OpError
-		switch {
-		case errors.As(err, &e):
-			return f.formatAppNotFoundError(e, installedApps)
-		case errors.As(err, &e1):
-			return f.formatNetworkError(e1)
-		case errors.As(err, &e2):
-			return f.formatNetworkError(e2)
-		default:
-			errMsg := err.Error()
-			if strings.Contains(errMsg, "unknown resource") {
-				return f.formatUnknownResourceError(errMsg)
-			}
-			if strings.Contains(errMsg, "unknown verb") {
-				return f.formatUnknownVerbError(errMsg)
-			}
-			if strings.Contains(errMsg, "required parameter") && strings.Contains(errMsg, "missing") {
-				return f.formatMissingParameterError(errMsg)
-			}
-			if strings.Contains(errMsg, "parameter validation failed") {
-				return f.formatParameterValidationError(errMsg)
-			}
-			if strings.Contains(errMsg, "failed to load spec") {
-				return f.formatSpecLoadError(errMsg)
-			}
-			return fmt.Sprintf("Error: %s", errMsg)
+	var appNotFound *config.AppNotFoundError
+	var urlErr *url.Error
+	var opErr *net.OpError
+	var unknownResource *UnknownResourceError
+	var unknownVerb *UnknownVerbError
+	var missingParameter *request.MissingParameterError
+	var validationError *request.ParameterValidationError
+	var specLoadError *SpecLoadError
+
+	switch {
+	case errors.As(err, &appNotFound):
+		return f.formatAppNotFoundError(appNotFound, installedApps)
+	case errors.As(err, &urlErr):
+		return f.formatNetworkError(urlErr)
+	case errors.As(err, &opErr):
+		return f.formatNetworkError(opErr)
+	case errors.As(err, &unknownResource):
+		return f.formatUnknownResourceError(unknownResource)
+	case errors.As(err, &unknownVerb):
+		return f.formatUnknownVerbError(unknownVerb)
+	case errors.As(err, &missingParameter):
+		if missingParameter.BodyField {
+			return fmt.Sprintf("Error: %s", missingParameter.Error())
 		}
+		return f.formatMissingParameterError(missingParameter)
+	case errors.As(err, &validationError):
+		return f.formatParameterValidationError(validationError)
+	case errors.As(err, &specLoadError):
+		return f.formatSpecLoadError(specLoadError)
+	default:
+		return fmt.Sprintf("Error: %s", err.Error())
 	}
 }
 
@@ -196,16 +202,9 @@ func (f *ErrorFormatter) formatNetworkError(err error) string {
 }
 
 // formatUnknownResourceError formats unknown resource errors.
-func (f *ErrorFormatter) formatUnknownResourceError(errMsg string) string {
-	// Extract resource name from error message
-	parts := strings.Split(errMsg, ":")
-	resourceName := ""
-	if len(parts) > 1 {
-		resourceName = strings.TrimSpace(parts[1])
-	}
-
+func (f *ErrorFormatter) formatUnknownResourceError(err *UnknownResourceError) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Error: Unknown resource '%s'.\n\n", resourceName)
+	fmt.Fprintf(&sb, "Error: Unknown resource '%s'.\n\n", err.Resource)
 	sb.WriteString("To see available resources, use:\n")
 	sb.WriteString("  <app> --help\n\n")
 	sb.WriteString("Or list all operations:\n")
@@ -215,9 +214,9 @@ func (f *ErrorFormatter) formatUnknownResourceError(errMsg string) string {
 }
 
 // formatUnknownVerbError formats unknown verb errors.
-func (f *ErrorFormatter) formatUnknownVerbError(errMsg string) string {
+func (f *ErrorFormatter) formatUnknownVerbError(err *UnknownVerbError) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Error: %s\n\n", errMsg)
+	fmt.Fprintf(&sb, "Error: %s\n\n", err.Error())
 	sb.WriteString("Common verbs include:\n")
 	sb.WriteString("  - create: Create a new resource\n")
 	sb.WriteString("  - list: List all resources\n")
@@ -231,9 +230,9 @@ func (f *ErrorFormatter) formatUnknownVerbError(errMsg string) string {
 }
 
 // formatMissingParameterError formats missing parameter errors.
-func (f *ErrorFormatter) formatMissingParameterError(errMsg string) string {
+func (f *ErrorFormatter) formatMissingParameterError(err *request.MissingParameterError) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Error: %s\n\n", errMsg)
+	fmt.Fprintf(&sb, "Error: %s\n\n", err.Error())
 	sb.WriteString("Usage:\n")
 	sb.WriteString("  <app> <resource> <verb> --<param-name> <value>\n\n")
 	sb.WriteString("To see all required parameters for this operation, use:\n")
@@ -270,24 +269,16 @@ func (f *ErrorFormatter) formatErrorWithList(errMsg, listTitle string, listItems
 }
 
 // formatParameterValidationError formats parameter validation errors.
-func (f *ErrorFormatter) formatParameterValidationError(errMsg string) string {
-	return f.formatErrorWithList(
-		errMsg,
-		"Please check:",
-		[]string{
-			"Parameter names are spelled correctly",
-			"Parameter values match the expected type",
-			"Required parameters are provided",
-		},
-		"To see parameter details, use:",
-		"<app> <resource> <verb> --help",
-	)
+// Schema/type validation errors were rendered as a single generic line before
+// the typed-error migration, so that rendering is kept byte-for-byte.
+func (f *ErrorFormatter) formatParameterValidationError(err *request.ParameterValidationError) string {
+	return fmt.Sprintf("Error: %s", err.Error())
 }
 
 // formatSpecLoadError formats spec loading errors.
-func (f *ErrorFormatter) formatSpecLoadError(errMsg string) string {
+func (f *ErrorFormatter) formatSpecLoadError(err *SpecLoadError) string {
 	return f.formatErrorWithList(
-		errMsg,
+		err.Error(),
 		"Possible causes:",
 		[]string{
 			"The OpenAPI specification file is not accessible",
