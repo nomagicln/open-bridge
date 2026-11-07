@@ -420,3 +420,112 @@ func TestCompletionFallsBackWhenIndexDisabled(t *testing.T) {
 	assert.Contains(t, provider.CompleteResources("noindex", ""), "pets")
 	assert.Contains(t, provider.CompleteVerbsForResource("noindex", "pets", ""), "list")
 }
+
+// completionCommandSpec describes a command with query parameters (including an
+// enum) and a required request body, so flag completion can be compared between
+// the parsing and derived-index paths.
+const completionCommandSpec = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Completion Command API", "version": "1.0.0"},
+  "paths": {
+    "/pets": {
+      "post": {
+        "operationId": "createPet",
+        "summary": "Create pet",
+        "parameters": [
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer"}},
+          {"name": "status", "in": "query", "required": true,
+           "schema": {"type": "string", "enum": ["available", "pending"]}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string"},
+              "kind": {"type": "string", "enum": ["cat", "dog"]}
+            }
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    }
+  }
+}`
+
+// writeCompletionCommandSpec writes the command fixture spec.
+func writeCompletionCommandSpec(t *testing.T) string {
+	t.Helper()
+
+	specPath := filepath.Join(t.TempDir(), "completion-command.json")
+	if err := os.WriteFile(specPath, []byte(completionCommandSpec), 0o600); err != nil {
+		t.Fatalf("write completion command spec: %v", err)
+	}
+
+	return specPath
+}
+
+func TestCompleteFlagsUsesDerivedIndexWithoutParsing(t *testing.T) {
+	configMgr, _, mapper := setupTestEnv(t)
+	specPath := writeCompletionCommandSpec(t)
+	saveCompletionIndexApp(t, configMgr, "idxflags", specPath)
+	indexDir := t.TempDir()
+
+	cold := NewProvider(configMgr, spec.NewParser(), mapper)
+	coldFlags := cold.CompleteFlags("idxflags", "pets", "create", "")
+	require.NotEmpty(t, coldFlags)
+	assert.Contains(t, coldFlags, "--limit")
+	assert.Contains(t, coldFlags, "--status")
+	assert.Contains(t, coldFlags, "--name")
+	assert.Contains(t, coldFlags, "--kind")
+	assert.Contains(t, coldFlags, "--json")
+
+	// Prime the index, then make the spec unparseable: a matching warm result
+	// proves the index path served the completion without parsing.
+	primer := newIndexedProvider(configMgr, indexDir)
+	require.NotEmpty(t, primer.CompleteFlags("idxflags", "pets", "create", ""))
+	corruptCompletionSpec(t, specPath)
+
+	warm := newIndexedProvider(configMgr, indexDir)
+	warmFlags := warm.CompleteFlags("idxflags", "pets", "create", "")
+	assert.Equal(t, coldFlags, warmFlags)
+	if _, ok := warm.specParser.GetCachedSpec("idxflags"); ok {
+		t.Error("expected flag completion to come from the derived index, not parsing")
+	}
+}
+
+func TestCompleteFlagValuesUsesDerivedIndexWithoutParsing(t *testing.T) {
+	configMgr, _, mapper := setupTestEnv(t)
+	specPath := writeCompletionCommandSpec(t)
+	saveCompletionIndexApp(t, configMgr, "idxvalues", specPath)
+	indexDir := t.TempDir()
+
+	cold := NewProvider(configMgr, spec.NewParser(), mapper)
+	coldStatus := cold.CompleteFlagValues("idxvalues", "pets", "create", "--status")
+	coldKind := cold.CompleteFlagValues("idxvalues", "pets", "create", "--kind")
+	require.Equal(t, []string{"available", "pending"}, coldStatus)
+	require.Equal(t, []string{"cat", "dog"}, coldKind)
+
+	primer := newIndexedProvider(configMgr, indexDir)
+	require.NotEmpty(t, primer.CompleteFlagValues("idxvalues", "pets", "create", "--status"))
+	corruptCompletionSpec(t, specPath)
+
+	warm := newIndexedProvider(configMgr, indexDir)
+	assert.Equal(t, coldStatus, warm.CompleteFlagValues("idxvalues", "pets", "create", "--status"))
+	assert.Equal(t, coldKind, warm.CompleteFlagValues("idxvalues", "pets", "create", "--kind"))
+	if _, ok := warm.specParser.GetCachedSpec("idxvalues"); ok {
+		t.Error("expected flag-value completion to come from the derived index, not parsing")
+	}
+}
+
+func TestCompleteFlagValuesFallsBackWhenIndexDisabled(t *testing.T) {
+	configMgr, specParser, mapper := setupTestEnv(t)
+	specPath := writeCompletionCommandSpec(t)
+	saveCompletionIndexApp(t, configMgr, "noindexvalues", specPath)
+
+	provider := NewProvider(configMgr, specParser, mapper)
+	assert.Equal(t, []string{"available", "pending"}, provider.CompleteFlagValues("noindexvalues", "pets", "create", "--status"))
+	assert.Equal(t, []string{"cat", "dog"}, provider.CompleteFlagValues("noindexvalues", "pets", "create", "--kind"))
+	assert.Contains(t, provider.CompleteFlags("noindexvalues", "pets", "create", ""), "--limit")
+}

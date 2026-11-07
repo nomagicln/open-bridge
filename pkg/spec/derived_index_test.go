@@ -5,15 +5,18 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"hash/crc32"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/leanovate/gopter"
 	"github.com/leanovate/gopter/gen"
@@ -601,12 +604,32 @@ func TestPropertyDerivedIndexGobRoundTrip(t *testing.T) {
 						Description: "pets",
 						Operations: []DerivedOperation{
 							{
-								Verb:        verb,
-								Method:      method,
-								Path:        path,
-								OperationID: operationID,
-								Summary:     summary,
-								Tags:        []string{"pets"},
+								Verb:                 verb,
+								Method:               method,
+								Path:                 path,
+								OperationID:          operationID,
+								Summary:              summary,
+								Description:          summary,
+								DescriptionTruncated: len([]rune(summary)) > indexDescriptionMaxLength,
+								Tags:                 []string{"pets"},
+								Parameters: []DerivedParameter{
+									{
+										Name: "status", In: "query", Required: true, Type: "string",
+										Types: []string{"string"}, Enum: []string{"available", "pending"},
+										EnumAreStrings: true, Description: "status filter",
+									},
+									{
+										Name: "limit", In: "query", Type: "integer", Types: []string{"integer"},
+										HasExample: true, Example: "10",
+									},
+								},
+								BodyFields: []DerivedField{
+									{Name: "name", Required: true, Type: "string", Types: []string{"string"}, Description: "pet name"},
+									{Name: "kind", Type: "string", Types: []string{"string"}, Enum: []string{"cat", "dog"}, EnumAreStrings: true},
+								},
+								BodyRequired:  true,
+								BodyMediaType: "application/json",
+								HasBody:       true,
 							},
 						},
 					},
@@ -635,4 +658,262 @@ func TestPropertyDerivedIndexGobRoundTrip(t *testing.T) {
 	))
 
 	properties.TestingRun(t)
+}
+
+// derivedIndexDetailsSpec has parameters (including an enum and descriptions)
+// and a request body so command-level help details can be asserted.
+const derivedIndexDetailsSpec = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Derived Index Details API", "version": "1.0.0"},
+  "paths": {
+    "/pets": {
+      "post": {
+        "operationId": "createPet",
+        "summary": "Create pet",
+        "parameters": [
+          {"name": "limit", "in": "query", "required": false, "description": "Max results",
+           "schema": {"type": "integer", "example": 10}},
+          {"name": "status", "in": "query", "required": true, "description": "Status filter",
+           "schema": {"type": "string", "enum": ["available", "pending"]}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string", "description": "Pet name", "example": "rex"},
+              "age": {"type": "integer", "description": "Pet age"}
+            }
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    }
+  }
+}`
+
+// writeDerivedIndexDetailsSpec writes the details spec and returns its path.
+func writeDerivedIndexDetailsSpec(t *testing.T) string {
+	t.Helper()
+
+	specPath := filepath.Join(t.TempDir(), "details-spec.json")
+	if err := os.WriteFile(specPath, []byte(derivedIndexDetailsSpec), 0o600); err != nil {
+		t.Fatalf("write details spec: %v", err)
+	}
+
+	return specPath
+}
+
+func TestDerivedIndexV2OperationDetails(t *testing.T) {
+	specPath := writeDerivedIndexDetailsSpec(t)
+	idx, err := NewParser(WithIndexCache(t.TempDir())).LoadDerivedIndex(context.Background(), specPath, "details")
+	if err != nil {
+		t.Fatalf("LoadDerivedIndex failed: %v", err)
+	}
+	if !reflect.DeepEqual(idx.IndexSchemaVersion, DerivedIndexSchemaVersion) || idx.IndexSchemaVersion != 2 {
+		t.Errorf("expected schema version 2, got %d", idx.IndexSchemaVersion)
+	}
+
+	op, ok := idx.FindOperation("pets", "create")
+	if !ok {
+		t.Fatalf("operation pets/create not found in index: %+v", idx.Resources)
+	}
+	if len(op.Parameters) != 2 {
+		t.Fatalf("expected 2 parameters, got %+v", op.Parameters)
+	}
+
+	limit := op.Parameters[0]
+	if limit.Name != "limit" || limit.In != "query" || limit.Required || limit.Type != "integer" || limit.Description != "Max results" {
+		t.Errorf("unexpected limit parameter: %+v", limit)
+	}
+	status := op.Parameters[1]
+	if status.Name != "status" || !status.Required || status.Type != "string" ||
+		!reflect.DeepEqual(status.Enum, []string{"available", "pending"}) || !status.EnumAreStrings {
+		t.Errorf("unexpected status parameter: %+v", status)
+	}
+
+	if !op.HasBody || !op.BodyRequired || op.BodyMediaType != "application/json" {
+		t.Errorf("unexpected body metadata: hasBody=%v required=%v media=%q", op.HasBody, op.BodyRequired, op.BodyMediaType)
+	}
+	if len(op.BodyFields) != 2 {
+		t.Fatalf("expected 2 body fields, got %+v", op.BodyFields)
+	}
+	nameField := op.BodyFields[0]
+	if nameField.Name != "name" || !nameField.Required || nameField.Type != "string" || nameField.Description != "Pet name" {
+		t.Errorf("unexpected required body field: %+v", nameField)
+	}
+	if !nameField.HasExample || nameField.Example != "rex" {
+		t.Errorf("unexpected body field example: %+v", nameField)
+	}
+	if age := op.BodyFields[1]; age.Name != "age" || age.Required || age.Type != "integer" {
+		t.Errorf("unexpected optional body field: %+v", age)
+	}
+}
+
+func TestDerivedIndexV2CommandSpecRoundTrip(t *testing.T) {
+	specPath := writeDerivedIndexDetailsSpec(t)
+	idx, err := NewParser(WithIndexCache(t.TempDir())).LoadDerivedIndex(context.Background(), specPath, "details")
+	if err != nil {
+		t.Fatalf("LoadDerivedIndex failed: %v", err)
+	}
+	op, ok := idx.FindOperation("pets", "create")
+	if !ok {
+		t.Fatal("operation not found")
+	}
+
+	specOp := op.CommandSpec()
+	if specOp == nil {
+		t.Fatal("CommandSpec returned nil")
+	}
+	if specOp.Summary != "Create pet" || len(specOp.Parameters) != 2 {
+		t.Errorf("unexpected reconstructed operation: %+v", specOp)
+	}
+	status := specOp.Parameters[1].Value
+	if status.Name != "status" || !status.Required || status.In != "query" || status.Description != "Status filter" {
+		t.Errorf("unexpected reconstructed parameter: %+v", status)
+	}
+	if status.Schema == nil || status.Schema.Value == nil || status.Schema.Value.Type.Slice()[0] != "string" {
+		t.Errorf("unexpected reconstructed parameter schema: %+v", status.Schema)
+	}
+	if !reflect.DeepEqual(status.Schema.Value.Enum, []any{"available", "pending"}) {
+		t.Errorf("unexpected reconstructed enum: %v", status.Schema.Value.Enum)
+	}
+	if specOp.RequestBody == nil || specOp.RequestBody.Value == nil || !specOp.RequestBody.Value.Required {
+		t.Errorf("unexpected reconstructed request body: %+v", specOp.RequestBody)
+	}
+	schema := specOp.RequestBody.Value.Content["application/json"].Schema.Value
+	if len(schema.Properties) != 2 || !reflect.DeepEqual(schema.Required, []string{"name"}) {
+		t.Errorf("unexpected reconstructed body schema: props=%v required=%v", schema.Properties, schema.Required)
+	}
+}
+
+func TestDerivedIndexDescriptionTrimming(t *testing.T) {
+	longDescription := strings.Repeat("中文描述", 100) // 400 runes, 1200 bytes
+	spec := `{"openapi":"3.0.0","info":{"title":"Trim API","version":"1.0.0"},"paths":{` +
+		`"/trim":{"get":{"operationId":"getTrim","summary":"Trimmed","description":"` + longDescription + `",` +
+		`"responses":{"200":{"description":"OK"}}}}}}`
+	specPath := filepath.Join(t.TempDir(), "trim-spec.json")
+	if err := os.WriteFile(specPath, []byte(spec), 0o600); err != nil {
+		t.Fatalf("write trim spec: %v", err)
+	}
+
+	idx, err := NewParser(WithIndexCache(t.TempDir())).LoadDerivedIndex(context.Background(), specPath, "trim")
+	if err != nil {
+		t.Fatalf("LoadDerivedIndex failed: %v", err)
+	}
+	op, ok := idx.FindOperation("trim", "get")
+	if !ok {
+		t.Fatal("operation not found")
+	}
+	if runes := []rune(op.Description); len(runes) > indexDescriptionMaxLength {
+		t.Errorf("description not trimmed: %d runes", len(runes))
+	}
+	if !op.DescriptionTruncated {
+		t.Error("expected DescriptionTruncated to be set")
+	}
+	if !utf8.ValidString(op.Description) {
+		t.Error("trimmed description is not valid UTF-8")
+	}
+}
+
+func TestDerivedIndexCommandHelpIndexable(t *testing.T) {
+	short := &DerivedOperation{Summary: "Summary", Description: "short"}
+	if !short.CommandHelpIndexable() {
+		t.Error("expected short operation to be indexable")
+	}
+
+	fallback := &DerivedOperation{Description: "trimmed...", DescriptionTruncated: true}
+	if fallback.CommandHelpIndexable() {
+		t.Error("expected truncated description without summary to require parsing")
+	}
+
+	withSummary := &DerivedOperation{Summary: "Summary", Description: "trimmed...", DescriptionTruncated: true}
+	if !withSummary.CommandHelpIndexable() {
+		t.Error("expected truncated description with summary to stay indexable")
+	}
+
+	paramTruncated := &DerivedOperation{Summary: "Summary", Parameters: []DerivedParameter{{Name: "q", Description: "x", DescriptionTruncated: true}}}
+	if paramTruncated.CommandHelpIndexable() {
+		t.Error("expected truncated parameter description to require parsing")
+	}
+}
+
+func TestDerivedIndexFlagHelpers(t *testing.T) {
+	op := &DerivedOperation{
+		Parameters: []DerivedParameter{
+			{Name: "status", In: "query", Type: "string", Enum: []string{"available", "pending"}, EnumAreStrings: true},
+			{Name: "limit", In: "query", Type: "integer"},
+		},
+		BodyFields: []DerivedField{
+			{Name: "name", Required: true, Type: "string"},
+			{Name: "kind", Type: "string", Enum: []string{"cat", "dog"}, EnumAreStrings: true},
+		},
+	}
+
+	flags := op.FlagNames("")
+	want := []string{"--kind", "--limit", "--name", "--status"}
+	if !reflect.DeepEqual(flags, want) {
+		t.Errorf("FlagNames = %v, want %v", flags, want)
+	}
+	if !reflect.DeepEqual(op.FlagNames("--s"), []string{"--status"}) {
+		t.Errorf("FlagNames(prefix) = %v", op.FlagNames("--s"))
+	}
+
+	values, handled := op.EnumValues("status")
+	if !handled || !reflect.DeepEqual(values, []string{"available", "pending"}) {
+		t.Errorf("status enum = %v handled=%v", values, handled)
+	}
+	values, handled = op.EnumValues("kind")
+	if !handled || !reflect.DeepEqual(values, []string{"cat", "dog"}) {
+		t.Errorf("body kind enum = %v handled=%v", values, handled)
+	}
+	if values, handled = op.EnumValues("limit"); !handled || values != nil {
+		t.Errorf("limit should be handled without values, got %v handled=%v", values, handled)
+	}
+	if _, handled = op.EnumValues("unknown"); !handled {
+		t.Error("expected unknown flag to be handled (operation exists)")
+	}
+}
+
+func TestDerivedIndexSizeRatio(t *testing.T) {
+	// A spec with long operation descriptions, similar in shape to the 4MB
+	// benchmark spec where the full-description index used 67% of the source.
+	description := strings.Repeat("Long operation description for size ratio check. ", 30)
+	var sb strings.Builder
+	sb.WriteString(`{"openapi":"3.0.0","info":{"title":"Size Ratio API","version":"1.0.0"},"paths":{`)
+	for i := range 500 {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, `"/resource%d":{"get":{"operationId":"listResource%d","summary":"List %d","description":%q,`+
+			`"parameters":[{"name":"limit","in":"query","schema":{"type":"integer"}}],`+
+			`"responses":{"200":{"description":"OK"}}}}`, i, i, i, description)
+	}
+	sb.WriteString(`}}`)
+
+	specPath := filepath.Join(t.TempDir(), "ratio-spec.json")
+	if err := os.WriteFile(specPath, []byte(sb.String()), 0o600); err != nil {
+		t.Fatalf("write ratio spec: %v", err)
+	}
+	specSize := int64(sb.Len())
+
+	cacheDir := t.TempDir()
+	if _, err := NewParser(WithIndexCache(cacheDir)).LoadDerivedIndex(context.Background(), specPath, "ratio"); err != nil {
+		t.Fatalf("LoadDerivedIndex failed: %v", err)
+	}
+
+	files := readIndexDirFiles(t, cacheDir)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 index file, got %v", files)
+	}
+	info, err := os.Stat(filepath.Join(cacheDir, files[0]))
+	if err != nil {
+		t.Fatalf("stat index: %v", err)
+	}
+	ratio := float64(info.Size()) / float64(specSize)
+	t.Logf("index ratio: %.1f%% (%d / %d bytes)", ratio*100, info.Size(), specSize)
+	if ratio > 0.30 {
+		t.Errorf("index size ratio %.1f%% exceeds the 30%% target", ratio*100)
+	}
 }

@@ -73,6 +73,26 @@ func (p *Provider) loadCommandTree(appName string) (*semantic.CommandTree, error
 	return p.mapper.BuildCommandTree(specDoc), nil
 }
 
+// loadDerivedIndex returns the persisted derived index for an app, or nil when
+// the index cache is disabled, unavailable or stale.
+func (p *Provider) loadDerivedIndex(appName string) *spec.DerivedIndex {
+	if p.specParser == nil || p.configMgr == nil {
+		return nil
+	}
+
+	appConfig, err := p.configMgr.GetAppConfig(appName)
+	if err != nil || appConfig.SpecSource == "" {
+		return nil
+	}
+
+	index, err := p.specParser.LoadDerivedIndex(context.Background(), appConfig.SpecSource, appName)
+	if err != nil || index == nil {
+		return nil
+	}
+
+	return index
+}
+
 // CompleteVerbs returns available verbs for an app.
 func (p *Provider) CompleteVerbs(appName, prefix string) []string {
 	tree, err := p.loadCommandTree(appName)
@@ -253,6 +273,15 @@ func collectBodyPropertyFlags(opSpec *openapi3.Operation, prefix string) []strin
 
 // CompleteFlags returns available flag names for a specific resource+verb combination.
 func (p *Provider) CompleteFlags(appName, resource, verb, prefix string) []string {
+	if index := p.loadDerivedIndex(appName); index != nil {
+		op, ok := index.FindOperation(resource, verb)
+		if !ok {
+			return nil
+		}
+
+		return p.withCommonFlags(op.FlagNames(prefix), prefix)
+	}
+
 	specDoc, err := p.loadSpec(appName)
 	if err != nil {
 		return nil
@@ -267,7 +296,11 @@ func (p *Provider) CompleteFlags(appName, resource, verb, prefix string) []strin
 	flags = append(flags, collectParameterFlags(opSpec, prefix)...)
 	flags = append(flags, collectBodyPropertyFlags(opSpec, prefix)...)
 
-	// Add common output flags
+	return p.withCommonFlags(flags, prefix)
+}
+
+// withCommonFlags appends the standard output flags and sorts the result.
+func (p *Provider) withCommonFlags(flags []string, prefix string) []string {
 	commonFlags := []string{"--json", "--yaml", "--output", "--profile"}
 	for _, flag := range commonFlags {
 		if prefix == "" || strings.HasPrefix(flag, prefix) {
@@ -276,6 +309,7 @@ func (p *Provider) CompleteFlags(appName, resource, verb, prefix string) []strin
 	}
 
 	sort.Strings(flags)
+
 	return flags
 }
 
@@ -354,6 +388,17 @@ func (p *Provider) CompleteFlagValues(appName, resource, verb, flagName string) 
 	cleanFlagName := cleanFlagName(flagName)
 
 	if values, handled := p.completeCommonFlagValues(appName, cleanFlagName); handled {
+		return values
+	}
+
+	if index := p.loadDerivedIndex(appName); index != nil {
+		op, ok := index.FindOperation(resource, verb)
+		if !ok {
+			return nil
+		}
+
+		values, _ := op.EnumValues(cleanFlagName)
+
 		return values
 	}
 

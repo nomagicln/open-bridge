@@ -810,11 +810,8 @@ func (h *Handler) loadCommandTree(appName string, appConfig *config.AppConfig) (
 		return nil, fmt.Errorf("spec parser is not configured")
 	}
 
-	if appConfig.SpecSource != "" {
-		index, err := h.specParser.LoadDerivedIndex(context.Background(), appConfig.SpecSource, appName)
-		if err == nil && index != nil {
-			return index.CommandTree(), nil
-		}
+	if index := h.loadDerivedIndex(appConfig, appName); index != nil {
+		return index.CommandTree(), nil
 	}
 
 	specDoc, ok := h.specParser.GetCachedSpec(appName)
@@ -829,6 +826,21 @@ func (h *Handler) loadCommandTree(appName string, appConfig *config.AppConfig) (
 	}
 
 	return h.mapper.BuildCommandTree(specDoc), nil
+}
+
+// loadDerivedIndex returns the persisted derived index for an app, or nil when
+// the index cache is disabled, unavailable or stale.
+func (h *Handler) loadDerivedIndex(appConfig *config.AppConfig, appName string) *spec.DerivedIndex {
+	if appConfig == nil || appConfig.SpecSource == "" || h.specParser == nil {
+		return nil
+	}
+
+	index, err := h.specParser.LoadDerivedIndex(context.Background(), appConfig.SpecSource, appName)
+	if err != nil || index == nil {
+		return nil
+	}
+
+	return index
 }
 
 // wrapSpecLoadError formats and prints a help-path spec load error exactly like
@@ -975,7 +987,51 @@ func (h *Handler) writeResourceExamples(sb *strings.Builder, appName string, tre
 
 // showCommandHelp displays help for a specific command.
 func (h *Handler) showCommandHelp(appName, resource, verb string, appConfig *config.AppConfig) error {
-	// Load spec
+	if specOp, ok := h.commandSpecFromIndex(appName, resource, verb, appConfig); ok {
+		return h.renderCommandHelp(appName, resource, verb, specOp)
+	}
+
+	return h.showCommandHelpFromSpec(appName, resource, verb, appConfig)
+}
+
+// commandSpecFromIndex reconstructs the operation details needed for command
+// help from the persisted derived index. It returns false when the index is
+// unavailable or cannot reproduce the parsing path byte-for-byte.
+func (h *Handler) commandSpecFromIndex(appName, resource, verb string, appConfig *config.AppConfig) (*openapi3.Operation, bool) {
+	index := h.loadDerivedIndex(appConfig, appName)
+	if index == nil {
+		return nil, false
+	}
+
+	derivedOp, ok := index.FindOperation(resource, verb)
+	if !ok || !derivedOp.CommandHelpIndexable() {
+		return nil, false
+	}
+
+	specOp := derivedOp.CommandSpec()
+	if specOp == nil {
+		return nil, false
+	}
+
+	return specOp, true
+}
+
+// renderCommandHelp renders command help from an index-reconstructed operation.
+func (h *Handler) renderCommandHelp(appName, resource, verb string, specOp *openapi3.Operation) error {
+	var requestBody *openapi3.RequestBody
+	if specOp.RequestBody != nil && specOp.RequestBody.Value != nil {
+		requestBody = specOp.RequestBody.Value
+	}
+
+	help := h.errorFormatter.FormatUsageHelpWithBody(appName, resource, verb, specOp, specOp.Parameters, requestBody)
+	h.writeOut(help)
+
+	return nil
+}
+
+// showCommandHelpFromSpec renders command help by parsing the spec. It is the
+// fallback path when the derived index is disabled or cannot serve the command.
+func (h *Handler) showCommandHelpFromSpec(appName, resource, verb string, appConfig *config.AppConfig) error {
 	specDoc, ok := h.specParser.GetCachedSpec(appName)
 	if !ok {
 		var err error
@@ -986,7 +1042,6 @@ func (h *Handler) showCommandHelp(appName, resource, verb string, appConfig *con
 		h.specParser.CacheSpec(appName, specDoc)
 	}
 
-	// Build command tree and find operation
 	tree := h.mapper.BuildCommandTree(specDoc)
 	res := h.findResource(tree, resource)
 	if res == nil {
@@ -1003,14 +1058,7 @@ func (h *Handler) showCommandHelp(appName, resource, verb string, appConfig *con
 		return err
 	}
 
-	var requestBody *openapi3.RequestBody
-	if opSpec.RequestBody != nil && opSpec.RequestBody.Value != nil {
-		requestBody = opSpec.RequestBody.Value
-	}
-
-	help := h.errorFormatter.FormatUsageHelpWithBody(appName, resource, verb, opSpec, opSpec.Parameters, requestBody)
-	fmt.Print(help)
-	return nil
+	return h.renderCommandHelp(appName, resource, verb, opSpec)
 }
 
 // getOperationFromSpec retrieves the operation spec from the spec document.

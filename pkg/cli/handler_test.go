@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"maps"
 	"net/http"
@@ -746,5 +747,149 @@ func TestHelpTextIdenticalWithAndWithoutIndex(t *testing.T) {
 
 	if coldOut.String() != warmOut.String() {
 		t.Errorf("help text differs between parse and index paths:\ncold:\n%s\nwarm:\n%s", coldOut.String(), warmOut.String())
+	}
+}
+
+// cliCommandHelpSpecJSON describes a single POST command with query parameters
+// (including an enum) and a required request body, so command-level help can be
+// compared between the parse and derived-index paths.
+const cliCommandHelpSpecJSON = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Command Help API", "version": "1.0.0"},
+  "paths": {
+    "/pets": {
+      "post": {
+        "operationId": "createPet",
+        "summary": "Create pet",
+        "parameters": [
+          {"name": "limit", "in": "query", "required": false, "description": "Max results",
+           "schema": {"type": "integer"}},
+          {"name": "status", "in": "query", "required": true, "description": "Status filter",
+           "schema": {"type": "string", "enum": ["available", "pending"], "example": "available"}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string", "description": "Pet name"},
+              "kind": {"type": "string", "description": "Pet kind", "enum": ["cat", "dog"]}
+            }
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    }
+  }
+}`
+
+// writeCLICommandHelpSpec writes the command-help fixture spec.
+func writeCLICommandHelpSpec(t *testing.T) string {
+	t.Helper()
+
+	specPath := filepath.Join(t.TempDir(), "command-help.json")
+	if err := os.WriteFile(specPath, []byte(cliCommandHelpSpecJSON), 0o600); err != nil {
+		t.Fatalf("write command help spec: %v", err)
+	}
+
+	return specPath
+}
+
+// primeDerivedIndex builds the persisted derived index for an app.
+func primeDerivedIndex(t *testing.T, handler *Handler, appName, specSource string) {
+	t.Helper()
+
+	if _, err := handler.specParser.LoadDerivedIndex(context.Background(), specSource, appName); err != nil {
+		t.Fatalf("prime derived index: %v", err)
+	}
+}
+
+func TestShowCommandHelpUsesDerivedIndexWithoutParsing(t *testing.T) {
+	specPath := writeCLICommandHelpSpec(t)
+	indexDir := t.TempDir()
+	appConfig := helpAppConfig("cmdhelp", specPath)
+
+	cold, coldOut := newIndexedHelpHandler(t, "")
+	if err := cold.showCommandHelp("cmdhelp", "pets", "create", appConfig); err != nil {
+		t.Fatalf("cold showCommandHelp failed: %v", err)
+	}
+	coldText := coldOut.String()
+	if !strings.Contains(coldText, "Usage: cmdhelp pets create [flags]") || !strings.Contains(coldText, "Allowed values: available, pending") {
+		t.Fatalf("cold command help missing expected sections:\n%s", coldText)
+	}
+
+	warm, _ := newIndexedHelpHandler(t, indexDir)
+	primeDerivedIndex(t, warm, "cmdhelp", specPath)
+
+	corruptCLIHelpSpec(t, specPath)
+
+	warm2, warmOut := newIndexedHelpHandler(t, indexDir)
+	if err := warm2.showCommandHelp("cmdhelp", "pets", "create", appConfig); err != nil {
+		t.Fatalf("index-backed showCommandHelp failed: %v", err)
+	}
+	if _, ok := warm2.specParser.GetCachedSpec("cmdhelp"); ok {
+		t.Error("expected command help to render from the derived index without parsing")
+	}
+	if warmOut.String() != coldText {
+		t.Errorf("command help rendered from the index differs from the parsing path:\nparse:\n%s\nindex:\n%s", coldText, warmOut.String())
+	}
+}
+
+func TestShowCommandHelpFallsBackWhenDescriptionTruncated(t *testing.T) {
+	longDescription := strings.Repeat("long description ", 30)
+	specJSON := `{"openapi":"3.0.0","info":{"title":"Trunc API","version":"1.0.0"},"paths":{` +
+		`"/items":{"get":{"operationId":"listItems","description":"` + longDescription + `",` +
+		`"responses":{"200":{"description":"OK"}}}}}}`
+	specPath := filepath.Join(t.TempDir(), "trunc-help.json")
+	if err := os.WriteFile(specPath, []byte(specJSON), 0o600); err != nil {
+		t.Fatalf("write trunc spec: %v", err)
+	}
+
+	indexDir := t.TempDir()
+	appConfig := helpAppConfig("truncapp", specPath)
+
+	primer, _ := newIndexedHelpHandler(t, indexDir)
+	primeDerivedIndex(t, primer, "truncapp", specPath)
+
+	// The operation has no summary and a trimmed description, so command help
+	// must fall back to parsing to keep byte-identical output.
+	handler, out := newIndexedHelpHandler(t, indexDir)
+	if err := handler.showCommandHelp("truncapp", "items", "list", appConfig); err != nil {
+		t.Fatalf("showCommandHelp failed: %v", err)
+	}
+	if _, ok := handler.specParser.GetCachedSpec("truncapp"); !ok {
+		t.Error("expected the truncated-description case to fall back to parsing")
+	}
+	if !strings.Contains(out.String(), "Description: "+longDescription) {
+		t.Errorf("fallback help missing full description:\n%s", out.String())
+	}
+}
+
+func TestShowCommandHelpFallsBackWhenIndexDisabled(t *testing.T) {
+	specPath := writeCLICommandHelpSpec(t)
+	appConfig := helpAppConfig("noindexcmd", specPath)
+
+	handler, out := newIndexedHelpHandler(t, "")
+	if err := handler.showCommandHelp("noindexcmd", "pets", "create", appConfig); err != nil {
+		t.Fatalf("showCommandHelp failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "Usage: noindexcmd pets create [flags]") {
+		t.Errorf("unexpected help output:\n%s", out.String())
+	}
+}
+
+func TestShowCommandHelpUnknownVerbErrors(t *testing.T) {
+	specPath := writeCLICommandHelpSpec(t)
+	indexDir := t.TempDir()
+	appConfig := helpAppConfig("badverb", specPath)
+
+	primer, _ := newIndexedHelpHandler(t, indexDir)
+	primeDerivedIndex(t, primer, "badverb", specPath)
+
+	handler, _ := newIndexedHelpHandler(t, indexDir)
+	err := handler.showCommandHelp("badverb", "pets", "nope", appConfig)
+	if err == nil || !strings.Contains(err.Error(), "unknown verb") {
+		t.Errorf("expected unknown verb error, got: %v", err)
 	}
 }
