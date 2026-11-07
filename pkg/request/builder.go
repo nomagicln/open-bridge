@@ -160,8 +160,7 @@ func (b *Builder) InjectAuth(req *http.Request, appName, profileName string, aut
 
 	cred, err := b.credMgr.GetCredential(appName, profileName)
 	if err != nil {
-		var notFound *credential.CredentialNotFoundError
-		if errors.As(err, &notFound) {
+		if _, notFound := errors.AsType[*credential.CredentialNotFoundError](err); notFound {
 			return nil // No credential configured: legitimate, stay silent.
 		}
 		return fmt.Errorf("failed to load credential for %s/%s: %w", appName, profileName, err)

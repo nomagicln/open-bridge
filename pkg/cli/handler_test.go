@@ -961,8 +961,7 @@ func TestExecuteCommandUnknownResourceTextUnchanged(t *testing.T) {
 	if err == nil {
 		t.Fatal("ExecuteCommand() expected error for unknown resource, got nil")
 	}
-	var unknownResource *UnknownResourceError
-	if !errors.As(err, &unknownResource) {
+	if _, ok := errors.AsType[*UnknownResourceError](err); !ok {
 		t.Fatalf("ExecuteCommand() error = %T, want *UnknownResourceError", err)
 	}
 	want := "Error: Unknown resource 'nope'.\n\nAvailable resources:\n  pets\n\nFor more information, use:\n  <app> --help\n"

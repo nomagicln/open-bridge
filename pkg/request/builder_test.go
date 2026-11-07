@@ -1682,8 +1682,8 @@ func TestValidateParamsReturnsTypedErrors(t *testing.T) {
 
 	t.Run("parameter type mismatch", func(t *testing.T) {
 		err := b.ValidateParams(map[string]any{"user_id": 42}, requiredParam("user_id"), nil)
-		var validation *ParameterValidationError
-		if !errors.As(err, &validation) {
+		validation, ok := errors.AsType[*ParameterValidationError](err)
+		if !ok {
 			t.Fatalf("ValidateParams() error = %T, want *ParameterValidationError", err)
 		}
 		if validation.Parameter != "user_id" {
@@ -1707,8 +1707,7 @@ func TestValidateParamsReturnsTypedErrors(t *testing.T) {
 			}},
 		}
 		err := b.ValidateParams(map[string]any{"status": "bogus"}, opParams, nil)
-		var validation *ParameterValidationError
-		if !errors.As(err, &validation) {
+		if _, ok := errors.AsType[*ParameterValidationError](err); !ok {
 			t.Fatalf("ValidateParams() error = %T, want *ParameterValidationError", err)
 		}
 		want := "parameter 'status' must be one of [active inactive], got bogus"
@@ -1720,9 +1719,8 @@ func TestValidateParamsReturnsTypedErrors(t *testing.T) {
 	t.Run("wrapped typed error is discoverable", func(t *testing.T) {
 		typed := &MissingParameterError{Name: "user_id"}
 		wrapped := fmt.Errorf("validation failed: %w", typed)
-		var missing *MissingParameterError
-		if !errors.As(wrapped, &missing) {
-			t.Fatal("wrapped MissingParameterError must be discoverable with errors.As")
+		if _, ok := errors.AsType[*MissingParameterError](wrapped); !ok {
+			t.Fatal("wrapped MissingParameterError must be discoverable with errors.AsType")
 		}
 	})
 }
