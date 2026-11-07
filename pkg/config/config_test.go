@@ -740,3 +740,46 @@ func contains(s, substr string) bool {
 	}
 	return false
 }
+
+func TestAppConfigSpecMetadataRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	m, err := NewManager(WithConfigDir(tmpDir))
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+
+	original := &AppConfig{
+		Name:           "metaroundtrip",
+		SpecSource:     "/tmp/spec.yaml",
+		Description:    "metadata round trip",
+		DefaultProfile: "default",
+		Profiles: map[string]Profile{
+			"default": {
+				Name:    "default",
+				BaseURL: "https://api.example.com",
+			},
+		},
+		OperationCount: 7,
+		SpecTitle:      "Round Trip API",
+		SpecVersion:    "4.5.6",
+	}
+
+	if err := m.SaveAppConfig(original); err != nil {
+		t.Fatalf("SaveAppConfig failed: %v", err)
+	}
+
+	loaded, err := m.GetAppConfig("metaroundtrip")
+	if err != nil {
+		t.Fatalf("GetAppConfig failed: %v", err)
+	}
+
+	if loaded.SpecTitle != original.SpecTitle {
+		t.Errorf("SpecTitle = %q, want %q", loaded.SpecTitle, original.SpecTitle)
+	}
+	if loaded.SpecVersion != original.SpecVersion {
+		t.Errorf("SpecVersion = %q, want %q", loaded.SpecVersion, original.SpecVersion)
+	}
+	if loaded.OperationCount != original.OperationCount {
+		t.Errorf("OperationCount = %d, want %d", loaded.OperationCount, original.OperationCount)
+	}
+}
