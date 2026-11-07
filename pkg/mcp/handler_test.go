@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -372,5 +373,52 @@ func TestFormatMCPResult(t *testing.T) {
 				t.Error("Expected non-empty text")
 			}
 		})
+	}
+}
+
+// TestNewHandlerDefaultClientTimeout verifies the default HTTP client has a
+// positive timeout so a slow upstream API cannot hang an MCP tool call forever.
+func TestNewHandlerDefaultClientTimeout(t *testing.T) {
+	handler := NewHandler(nil, nil, nil)
+	if handler.httpClient == nil {
+		t.Fatal("expected default http client to be initialized")
+	}
+	if handler.httpClient.Timeout <= 0 {
+		t.Errorf("expected default http client timeout > 0, got %v", handler.httpClient.Timeout)
+	}
+	if handler.httpClient.Timeout != defaultHTTPTimeout {
+		t.Errorf("expected default http client timeout %v, got %v", defaultHTTPTimeout, handler.httpClient.Timeout)
+	}
+}
+
+// TestNewHandlerPreservesProvidedClient verifies a caller-supplied client is
+// not replaced by the default timeout client.
+func TestNewHandlerPreservesProvidedClient(t *testing.T) {
+	custom := &http.Client{Timeout: 5 * time.Second}
+	handler := NewHandler(nil, nil, custom)
+	if handler.httpClient != custom {
+		t.Error("expected provided http client to be preserved")
+	}
+}
+
+// TestNewProgressiveHandlerDefaultClientTimeout verifies the progressive handler
+// applies the same default timeout as NewHandler.
+func TestNewProgressiveHandlerDefaultClientTimeout(t *testing.T) {
+	handler, err := NewProgressiveHandler(request.NewBuilder(nil), nil, SearchEnginePredicate)
+	if err != nil {
+		t.Fatalf("NewProgressiveHandler failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = handler.Close()
+	})
+
+	if handler.httpClient == nil {
+		t.Fatal("expected default http client to be initialized")
+	}
+	if handler.httpClient.Timeout <= 0 {
+		t.Errorf("expected default http client timeout > 0, got %v", handler.httpClient.Timeout)
+	}
+	if handler.httpClient.Timeout != defaultHTTPTimeout {
+		t.Errorf("expected default http client timeout %v, got %v", defaultHTTPTimeout, handler.httpClient.Timeout)
 	}
 }

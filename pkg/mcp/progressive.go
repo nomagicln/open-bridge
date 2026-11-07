@@ -77,7 +77,7 @@ func NewProgressiveHandler(
 	engineType SearchEngineType,
 ) (*ProgressiveHandler, error) {
 	if httpClient == nil {
-		httpClient = &http.Client{}
+		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 
 	engine, err := NewSearchEngine(engineType)
@@ -293,7 +293,7 @@ func formatSearchResults(results []ToolMetadata) string {
 	fmt.Fprintf(&sb, "Found %d tool(s):\n\n", len(results))
 
 	for _, tool := range results {
-		sb.WriteString(fmt.Sprintf("**%s** (`%s`)\n", tool.Name, tool.ID))
+		fmt.Fprintf(&sb, "**%s** (`%s`)\n", tool.Name, tool.ID)
 		if tool.Description != "" {
 			fmt.Fprintf(&sb, "  %s\n", tool.Description)
 		}
