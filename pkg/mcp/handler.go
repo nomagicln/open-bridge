@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -22,12 +23,18 @@ import (
 type Handler struct {
 	mapper         *semantic.Mapper
 	requestBuilder *request.Builder
-	httpClient     *http.Client
 	spec           *openapi3.T
 	appConfig      *config.AppConfig
 	profileName    string
 	safety         *safetyGuard
 	safetyErr      error
+
+	// httpClient is either the explicitly injected client or the default fallback.
+	// clientInjected records whether the caller supplied it: an injected client is
+	// always used as-is, while a nil injection enables per-profile clients.
+	httpClient     *http.Client
+	clientInjected bool
+	clients        *profileClientCache
 }
 
 // defaultHTTPTimeout bounds every MCP tool call so a slow or unreachable API
@@ -36,14 +43,59 @@ const defaultHTTPTimeout = 30 * time.Second
 
 // NewHandler creates a new MCP handler.
 func NewHandler(mapper *semantic.Mapper, requestBuilder *request.Builder, httpClient *http.Client) *Handler {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
-	}
-	return &Handler{
+	handler := &Handler{
 		mapper:         mapper,
 		requestBuilder: requestBuilder,
-		httpClient:     httpClient,
+		clients:        newProfileClientCache(),
 	}
+	if httpClient != nil {
+		handler.httpClient = httpClient
+		handler.clientInjected = true
+	} else {
+		handler.httpClient = &http.Client{Timeout: defaultHTTPTimeout}
+	}
+	return handler
+}
+
+// profileClientCache caches HTTP clients built from profile timeout/TLS settings.
+type profileClientCache struct {
+	mu      sync.Mutex
+	clients map[string]*http.Client
+}
+
+// newProfileClientCache creates an empty per-profile client cache.
+func newProfileClientCache() *profileClientCache {
+	return &profileClientCache{clients: make(map[string]*http.Client)}
+}
+
+// get returns the cached client for profileName, building it on first use.
+// Construction failures (e.g. invalid TLS configuration) are returned to the
+// caller and are not cached.
+func (c *profileClientCache) get(profileName string, profile *config.Profile) (*http.Client, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if client, ok := c.clients[profileName]; ok {
+		return client, nil
+	}
+
+	client, err := request.NewHTTPClient(profile)
+	if err != nil {
+		return nil, err
+	}
+	c.clients[profileName] = client
+
+	return client, nil
+}
+
+// httpClientForProfile returns the client used for a profile. An explicitly
+// injected client always wins; otherwise the per-profile client is built from
+// the profile timeout/TLS settings and cached by profile name.
+func (h *Handler) httpClientForProfile(profileName string, profile *config.Profile) (*http.Client, error) {
+	if h.clientInjected {
+		return h.httpClient, nil
+	}
+	return h.clients.get(profileName, profile)
 }
 
 // SetSpec sets the OpenAPI specification for the handler.
@@ -141,7 +193,12 @@ func (h *Handler) buildAndExecuteRequest(operation *openapi3.Operation, method, 
 		return nil, fmt.Errorf("failed to inject authentication: %w", err)
 	}
 
-	httpResp, err := h.executeRequest(httpReq)
+	client, err := h.httpClientForProfile(profileName, profile)
+	if err != nil {
+		return errorResult("Failed to create HTTP client for profile %q: %v", profileName, err), nil
+	}
+
+	httpResp, err := h.executeRequest(client, httpReq, profile)
 	if err != nil {
 		return errorResult("Failed to execute API call: %v", err), nil
 	}
@@ -178,9 +235,14 @@ func (h *Handler) injectAuthAndHeaders(httpReq *http.Request, profileName string
 	return nil
 }
 
-// executeRequest performs the HTTP request and returns the response.
-func (h *Handler) executeRequest(httpReq *http.Request) (*http.Response, error) {
-	return h.httpClient.Do(httpReq)
+// executeRequest performs the HTTP request with the profile's retry policy.
+func (h *Handler) executeRequest(client *http.Client, httpReq *http.Request, profile *config.Profile) (*http.Response, error) {
+	retry := config.RetryConfig{}
+	if profile != nil {
+		retry = profile.RetryConfig
+	}
+
+	return request.DoWithRetry(client, httpReq, retry)
 }
 
 // HandleCallTool handles tool execution requests.
