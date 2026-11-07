@@ -1,6 +1,6 @@
 //go:build integration
 
-package config
+package install
 
 import (
 	"os"
@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/nomagicln/open-bridge/pkg/config"
 )
 
 // TestShimIntegration tests the full shim creation and execution flow.
@@ -18,10 +20,11 @@ func TestShimIntegration(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	// Create a test spec
 	specPath := filepath.Join(tmpDir, "spec.yaml")
@@ -139,10 +142,11 @@ paths:
 // TestShimWithOBBinary tests that the shim correctly references the ob binary.
 func TestShimWithOBBinary(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	shimDir := filepath.Join(tmpDir, "bin")
 	shimPath, err := m.CreateShim("testapp", shimDir)
@@ -229,10 +233,11 @@ func TestShimExecutionSimulation(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	m, err := NewManager(WithConfigDir(tmpDir))
+	mgr, err := config.NewManager(config.WithConfigDir(tmpDir))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
+	m := New(mgr)
 
 	shimDir := filepath.Join(tmpDir, "bin")
 	shimPath, err := m.CreateShim("testapp", shimDir)

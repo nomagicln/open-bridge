@@ -1,6 +1,6 @@
-// Package config provides configuration management for OpenBridge.
-// This file contains app installation and management functionality.
-package config
+// Package install provides app installation, uninstallation, shim management
+// and TLS asset validation on top of the config domain model.
+package install
 
 import (
 	"bufio"
@@ -16,12 +16,23 @@ import (
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/spec"
 )
 
 // DefaultProgressiveThreshold is the default number of operations above which
 // progressive disclosure is recommended.
 const DefaultProgressiveThreshold = 25
+
+// Installer performs app installation and management on top of a config.Manager.
+type Installer struct {
+	manager *config.Manager
+}
+
+// New creates an Installer backed by the given config manager.
+func New(manager *config.Manager) *Installer {
+	return &Installer{manager: manager}
+}
 
 // InstallOptions contains options for app installation.
 type InstallOptions struct {
@@ -114,7 +125,7 @@ type InstallResult struct {
 }
 
 // mergeSpecInfo merges spec information into options.
-func mergeSpecInfo(opts InstallOptions, existing *AppConfig) InstallOptions {
+func mergeSpecInfo(opts InstallOptions, existing *config.AppConfig) InstallOptions {
 	if opts.SpecSource == "" && len(opts.SpecSources) == 0 {
 		opts.SpecSource = existing.SpecSource
 		opts.SpecSources = existing.SpecSources
@@ -126,7 +137,7 @@ func mergeSpecInfo(opts InstallOptions, existing *AppConfig) InstallOptions {
 }
 
 // mergeProfileInfo merges profile information into options.
-func mergeProfileInfo(opts InstallOptions, profile Profile) InstallOptions {
+func mergeProfileInfo(opts InstallOptions, profile config.Profile) InstallOptions {
 	if opts.BaseURL == "" {
 		opts.BaseURL = profile.BaseURL
 	}
@@ -137,7 +148,7 @@ func mergeProfileInfo(opts InstallOptions, profile Profile) InstallOptions {
 }
 
 // mergeTLSInfo merges TLS configuration into options.
-func mergeTLSInfo(opts InstallOptions, profile Profile) InstallOptions {
+func mergeTLSInfo(opts InstallOptions, profile config.Profile) InstallOptions {
 	if opts.TLSCACert == "" {
 		opts.TLSCACert = profile.TLSConfig.CAFile
 	}
@@ -154,7 +165,7 @@ func mergeTLSInfo(opts InstallOptions, profile Profile) InstallOptions {
 }
 
 // mergeSafetyInfo merges safety/MCP configuration into options.
-func mergeSafetyInfo(opts InstallOptions, profile Profile) InstallOptions {
+func mergeSafetyInfo(opts InstallOptions, profile config.Profile) InstallOptions {
 	if opts.ProgressiveDisclosure == nil && profile.SafetyConfig.ProgressiveDisclosure {
 		progressive := true
 		opts.ProgressiveDisclosure = &progressive
@@ -169,7 +180,7 @@ func mergeSafetyInfo(opts InstallOptions, profile Profile) InstallOptions {
 }
 
 // mergeExistingAppConfig merges existing app config into install options if options are empty.
-func mergeExistingAppConfig(opts InstallOptions, existing *AppConfig) InstallOptions {
+func mergeExistingAppConfig(opts InstallOptions, existing *config.AppConfig) InstallOptions {
 	opts = mergeSpecInfo(opts, existing)
 
 	if profile, ok := existing.Profiles[existing.DefaultProfile]; ok {
@@ -225,8 +236,8 @@ func resolveBaseURL(opts InstallOptions, specDoc *openapi3.T) (string, error) {
 }
 
 // buildTLSConfig creates the TLS configuration from install options.
-func buildTLSConfig(opts InstallOptions) TLSConfig {
-	return TLSConfig{
+func buildTLSConfig(opts InstallOptions) config.TLSConfig {
+	return config.TLSConfig{
 		InsecureSkipVerify: opts.TLSSkipVerify,
 		CAFile:             opts.TLSCACert,
 		CertFile:           opts.TLSClientCert,
@@ -235,8 +246,8 @@ func buildTLSConfig(opts InstallOptions) TLSConfig {
 }
 
 // buildSafetyConfig creates the safety configuration for MCP from install options.
-func buildSafetyConfig(opts InstallOptions) SafetyConfig {
-	safetyConfig := SafetyConfig{
+func buildSafetyConfig(opts InstallOptions) config.SafetyConfig {
+	safetyConfig := config.SafetyConfig{
 		ReadOnlyMode: opts.ReadOnlyMode,
 		SearchEngine: opts.SearchEngine,
 	}
@@ -261,12 +272,12 @@ func buildSafetyConfig(opts InstallOptions) SafetyConfig {
 }
 
 // createAppConfig creates the app configuration structure.
-func createAppConfig(appName, specSource string, specSources []string, opts InstallOptions, baseURL string, specInfo *spec.SpecInfo) *AppConfig {
+func createAppConfig(appName, specSource string, specSources []string, opts InstallOptions, baseURL string, specInfo *spec.SpecInfo) *config.AppConfig {
 	now := time.Now()
 	tlsConfig := buildTLSConfig(opts)
 	safetyConfig := buildSafetyConfig(opts)
 
-	config := &AppConfig{
+	appConfig := &config.AppConfig{
 		Name:           appName,
 		SpecSource:     specSource,
 		SpecSources:    specSources,
@@ -275,28 +286,28 @@ func createAppConfig(appName, specSource string, specSources []string, opts Inst
 		Version:        "1.0",
 		CreatedAt:      now,
 		UpdatedAt:      now,
-		Profiles: map[string]Profile{
+		Profiles: map[string]config.Profile{
 			"default": {
 				Name:         "default",
 				BaseURL:      baseURL,
-				Auth:         AuthConfig{Type: opts.AuthType},
+				Auth:         config.AuthConfig{Type: opts.AuthType},
 				Headers:      opts.Headers,
 				TLSConfig:    tlsConfig,
 				SafetyConfig: safetyConfig,
-				Timeout:      Duration{Duration: 30 * time.Second},
+				Timeout:      config.Duration{Duration: 30 * time.Second},
 				IsDefault:    true,
 			},
 		},
 	}
 
 	if specInfo != nil {
-		config.Description = firstNonEmpty(config.Description, specInfo.Title)
-		config.SpecTitle = specInfo.Title
-		config.SpecVersion = specInfo.Version
-		config.OperationCount = specInfo.Operations
+		appConfig.Description = firstNonEmpty(appConfig.Description, specInfo.Title)
+		appConfig.SpecTitle = specInfo.Title
+		appConfig.SpecVersion = specInfo.Version
+		appConfig.OperationCount = specInfo.Operations
 	}
 
-	return config
+	return appConfig
 }
 
 // firstNonEmpty returns primary when it is not empty, otherwise fallback.
@@ -309,12 +320,12 @@ func firstNonEmpty(primary, fallback string) string {
 }
 
 // createShimIfRequested creates a shim for the app if requested.
-func (m *Manager) createShimIfRequested(opts InstallOptions, appName string, result *InstallResult) {
+func (i *Installer) createShimIfRequested(opts InstallOptions, appName string, result *InstallResult) {
 	if !opts.CreateShim {
 		return
 	}
 
-	shimPath, err := m.CreateShim(appName, opts.ShimDir)
+	shimPath, err := i.CreateShim(appName, opts.ShimDir)
 	if err != nil {
 		_, _ = fmt.Fprintf(opts.Writer, "Warning: failed to create shim: %v\n", err)
 		return
@@ -330,14 +341,14 @@ func (m *Manager) createShimIfRequested(opts InstallOptions, appName string, res
 }
 
 // handleExistingApp checks if app exists and handles force option.
-func (m *Manager) handleExistingApp(appName string, opts InstallOptions) (InstallOptions, error) {
-	if !m.AppExists(appName) {
+func (i *Installer) handleExistingApp(appName string, opts InstallOptions) (InstallOptions, error) {
+	if !i.manager.AppExists(appName) {
 		return opts, nil
 	}
 	if !opts.Force {
 		return opts, fmt.Errorf("app '%s' already exists (use --force to overwrite)", appName)
 	}
-	if existingConfig, err := m.GetAppConfig(appName); err == nil {
+	if existingConfig, err := i.manager.GetAppConfig(appName); err == nil {
 		opts = mergeExistingAppConfig(opts, existingConfig)
 	}
 	return opts, nil
@@ -355,12 +366,12 @@ func setDefaultIO(opts InstallOptions) InstallOptions {
 }
 
 // InstallApp installs an API as a CLI application.
-func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResult, error) {
-	if err := validateAppName(appName); err != nil {
+func (i *Installer) InstallApp(appName string, opts InstallOptions) (*InstallResult, error) {
+	if err := config.ValidateAppName(appName); err != nil {
 		return nil, err
 	}
 
-	opts, err := m.handleExistingApp(appName, opts)
+	opts, err := i.handleExistingApp(appName, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +379,7 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 	opts = setDefaultIO(opts)
 
 	if opts.Interactive {
-		opts, err = m.promptForMissingInfo(opts)
+		opts, err = i.promptForMissingInfo(opts)
 		if err != nil {
 			return nil, err
 		}
@@ -378,11 +389,11 @@ func (m *Manager) InstallApp(appName string, opts InstallOptions) (*InstallResul
 		return nil, fmt.Errorf("spec source is required")
 	}
 
-	return m.doInstall(appName, opts)
+	return i.doInstall(appName, opts)
 }
 
 // doInstall performs the actual installation after validation.
-func (m *Manager) doInstall(appName string, opts InstallOptions) (*InstallResult, error) {
+func (i *Installer) doInstall(appName string, opts InstallOptions) (*InstallResult, error) {
 	specSource, specSources, primarySource, err := prepareSpecSources(opts.SpecSource, opts.SpecSources)
 	if err != nil {
 		return nil, err
@@ -406,19 +417,19 @@ func (m *Manager) doInstall(appName string, opts InstallOptions) (*InstallResult
 		opts.OperationCount = specInfo.Operations
 	}
 
-	config := createAppConfig(appName, specSource, specSources, opts, baseURL, specInfo)
+	appConfig := createAppConfig(appName, specSource, specSources, opts, baseURL, specInfo)
 
-	if err := m.SaveAppConfig(config); err != nil {
+	if err := i.manager.SaveAppConfig(appConfig); err != nil {
 		return nil, fmt.Errorf("failed to save config: %w", err)
 	}
 
 	result := &InstallResult{
 		AppName:    appName,
-		ConfigPath: m.getAppConfigPath(appName),
+		ConfigPath: i.manager.AppConfigPath(appName),
 		SpecInfo:   specInfo,
 	}
 
-	m.createShimIfRequested(opts, appName, result)
+	i.createShimIfRequested(opts, appName, result)
 	return result, nil
 }
 
@@ -495,7 +506,7 @@ func promptAndNormalizeSpec(opts InstallOptions) (InstallOptions, error) {
 }
 
 // promptForMissingInfo prompts the user for missing installation information.
-func (m *Manager) promptForMissingInfo(opts InstallOptions) (InstallOptions, error) {
+func (i *Installer) promptForMissingInfo(opts InstallOptions) (InstallOptions, error) {
 	reader, writer := opts.Reader, opts.Writer
 
 	opts, err := promptAndNormalizeSpec(opts)
@@ -530,27 +541,27 @@ func (m *Manager) promptForMissingInfo(opts InstallOptions) (InstallOptions, err
 }
 
 // UninstallApp removes an installed application and cleans up resources.
-func (m *Manager) UninstallApp(appName string, removeShim bool) error {
+func (i *Installer) UninstallApp(appName string, removeShim bool) error {
 	// Validate app name
-	if err := validateAppName(appName); err != nil {
+	if err := config.ValidateAppName(appName); err != nil {
 		return err
 	}
 
 	// Check if app exists
-	if !m.AppExists(appName) {
-		return &AppNotFoundError{AppName: appName}
+	if !i.manager.AppExists(appName) {
+		return &config.AppNotFoundError{AppName: appName}
 	}
 
 	// Remove shim if requested
 	if removeShim {
-		if err := m.RemoveShim(appName); err != nil {
+		if err := i.RemoveShim(appName); err != nil {
 			// Don't fail uninstall, just warn
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove shim: %v\n", err)
 		}
 	}
 
 	// Delete app configuration
-	if err := m.DeleteAppConfig(appName); err != nil {
+	if err := i.manager.DeleteAppConfig(appName); err != nil {
 		return fmt.Errorf("failed to delete config: %w", err)
 	}
 
@@ -558,7 +569,7 @@ func (m *Manager) UninstallApp(appName string, removeShim bool) error {
 }
 
 // CreateShim creates a shim script for the app in the specified directory.
-func (m *Manager) CreateShim(appName, shimDir string) (string, error) {
+func (i *Installer) CreateShim(appName, shimDir string) (string, error) {
 	if shimDir == "" {
 		var err error
 		shimDir, err = getDefaultShimDir()
@@ -613,7 +624,7 @@ func (m *Manager) CreateShim(appName, shimDir string) (string, error) {
 }
 
 // RemoveShim removes the shim script for an app.
-func (m *Manager) RemoveShim(appName string) error {
+func (i *Installer) RemoveShim(appName string) error {
 	shimDir, err := getDefaultShimDir()
 	if err != nil {
 		return err
@@ -638,7 +649,7 @@ func (m *Manager) RemoveShim(appName string) error {
 }
 
 // ShimExists checks if a shim exists for the app.
-func (m *Manager) ShimExists(appName string) bool {
+func (i *Installer) ShimExists(appName string) bool {
 	shimDir, err := getDefaultShimDir()
 	if err != nil {
 		return false
@@ -846,8 +857,8 @@ func promptChoice(reader io.Reader, writer io.Writer, prompt string, choices []s
 }
 
 // UpdateApp updates an existing app's spec or configuration.
-func (m *Manager) UpdateApp(appName string, opts InstallOptions) error {
-	config, err := m.GetAppConfig(appName)
+func (i *Installer) UpdateApp(appName string, opts InstallOptions) error {
+	appConfig, err := i.manager.GetAppConfig(appName)
 	if err != nil {
 		return err
 	}
@@ -858,27 +869,27 @@ func (m *Manager) UpdateApp(appName string, opts InstallOptions) error {
 		if err != nil {
 			return err
 		}
-		config.SpecSource = normalized
+		appConfig.SpecSource = normalized
 	}
 	if len(opts.SpecSources) > 0 {
 		normalized, err := normalizeSpecSources(opts.SpecSources)
 		if err != nil {
 			return err
 		}
-		config.SpecSources = normalized
+		appConfig.SpecSources = normalized
 	}
 
 	// Update description if provided
 	if opts.Description != "" {
-		config.Description = opts.Description
+		appConfig.Description = opts.Description
 	}
 
 	// Reload spec to validate
 	if opts.SpecSource != "" || len(opts.SpecSources) > 0 {
 		parser := spec.NewParser()
-		specSource := config.SpecSource
-		if specSource == "" && len(config.SpecSources) > 0 {
-			specSource = config.SpecSources[0]
+		specSource := appConfig.SpecSource
+		if specSource == "" && len(appConfig.SpecSources) > 0 {
+			specSource = appConfig.SpecSources[0]
 		}
 
 		_, err := parser.LoadSpec(specSource)
@@ -887,32 +898,32 @@ func (m *Manager) UpdateApp(appName string, opts InstallOptions) error {
 		}
 	}
 
-	config.UpdatedAt = time.Now()
+	appConfig.UpdatedAt = time.Now()
 
-	return m.SaveAppConfig(config)
+	return i.manager.SaveAppConfig(appConfig)
 }
 
 // GetInstalledAppInfo returns detailed information about an installed app.
-func (m *Manager) GetInstalledAppInfo(appName string) (*InstalledAppInfo, error) {
-	config, err := m.GetAppConfig(appName)
+func (i *Installer) GetInstalledAppInfo(appName string) (*InstalledAppInfo, error) {
+	appConfig, err := i.manager.GetAppConfig(appName)
 	if err != nil {
 		return nil, err
 	}
 
 	info := &InstalledAppInfo{
-		Name:           config.Name,
-		Description:    config.Description,
-		SpecSource:     config.SpecSource,
-		ConfigPath:     m.getAppConfigPath(appName),
-		DefaultProfile: config.DefaultProfile,
-		ProfileCount:   len(config.Profiles),
-		Profiles:       config.ListProfiles(),
-		CreatedAt:      config.CreatedAt,
-		UpdatedAt:      config.UpdatedAt,
-		ShimExists:     m.ShimExists(appName),
+		Name:           appConfig.Name,
+		Description:    appConfig.Description,
+		SpecSource:     appConfig.SpecSource,
+		ConfigPath:     i.manager.AppConfigPath(appName),
+		DefaultProfile: appConfig.DefaultProfile,
+		ProfileCount:   len(appConfig.Profiles),
+		Profiles:       appConfig.ListProfiles(),
+		CreatedAt:      appConfig.CreatedAt,
+		UpdatedAt:      appConfig.UpdatedAt,
+		ShimExists:     i.ShimExists(appName),
 	}
 
-	info.SpecInfo = specInfoFromConfig(config)
+	info.SpecInfo = specInfoFromConfig(appConfig)
 
 	return info, nil
 }
@@ -921,23 +932,23 @@ func (m *Manager) GetInstalledAppInfo(appName string) (*InstalledAppInfo, error)
 // touching the spec source. Legacy configurations written before the metadata
 // was persisted fall back to parsing the spec once (and keep working if the
 // source is still reachable).
-func specInfoFromConfig(config *AppConfig) *spec.SpecInfo {
-	if config.SpecTitle != "" || config.SpecVersion != "" {
+func specInfoFromConfig(appConfig *config.AppConfig) *spec.SpecInfo {
+	if appConfig.SpecTitle != "" || appConfig.SpecVersion != "" {
 		return &spec.SpecInfo{
-			Title:      config.SpecTitle,
-			Version:    config.SpecVersion,
-			Source:     config.SpecSource,
-			Operations: config.OperationCount,
+			Title:      appConfig.SpecTitle,
+			Version:    appConfig.SpecVersion,
+			Source:     appConfig.SpecSource,
+			Operations: appConfig.OperationCount,
 		}
 	}
 
-	if config.SpecSource == "" {
+	if appConfig.SpecSource == "" {
 		return nil
 	}
 
 	parser := spec.NewParser()
-	if specDoc, err := parser.LoadSpec(config.SpecSource); err == nil {
-		return spec.GetSpecInfo(specDoc, config.SpecSource)
+	if specDoc, err := parser.LoadSpec(appConfig.SpecSource); err == nil {
+		return spec.GetSpecInfo(specDoc, appConfig.SpecSource)
 	}
 
 	return nil

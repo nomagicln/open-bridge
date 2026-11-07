@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nomagicln/open-bridge/internal/install"
 	"github.com/nomagicln/open-bridge/pkg/cli"
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/credential"
@@ -32,6 +33,7 @@ type testEnv struct {
 	t          *testing.T
 	configDir  string
 	configMgr  *config.Manager
+	installer  *install.Installer
 	specParser *spec.Parser
 	credMgr    *credential.Manager
 	mapper     *semantic.Mapper
@@ -69,6 +71,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		t:          t,
 		configDir:  configDir,
 		configMgr:  configMgr,
+		installer:  install.New(configMgr),
 		specParser: specParser,
 		credMgr:    credMgr,
 		mapper:     mapper,
@@ -146,7 +149,7 @@ func TestFullCLIWorkflow(t *testing.T) {
 
 	// Step 1: Install app
 	t.Run("Install", func(t *testing.T) {
-		result, err := env.configMgr.InstallApp("testapi", config.InstallOptions{
+		result, err := env.installer.InstallApp("testapi", install.InstallOptions{
 			SpecSource: specPath,
 			CreateShim: false,
 		})
@@ -202,7 +205,7 @@ func TestFullCLIWorkflow(t *testing.T) {
 
 	// Step 5: Uninstall app
 	t.Run("Uninstall", func(t *testing.T) {
-		err := env.configMgr.UninstallApp("testapi", false)
+		err := env.installer.UninstallApp("testapi", false)
 		if err != nil {
 			t.Fatalf("UninstallApp failed: %v", err)
 		}
@@ -243,7 +246,7 @@ func TestMCPServerWorkflow(t *testing.T) {
 	}
 
 	// Install app for credentials/config
-	_, err = env.configMgr.InstallApp("testapi", config.InstallOptions{
+	_, err = env.installer.InstallApp("testapi", install.InstallOptions{
 		SpecSource: specPath,
 		CreateShim: false,
 	})
@@ -328,7 +331,7 @@ func TestProfileSwitching(t *testing.T) {
 	specPath := env.writeSpec(specContent)
 
 	// Install app
-	_, err := env.configMgr.InstallApp("testapi", config.InstallOptions{
+	_, err := env.installer.InstallApp("testapi", install.InstallOptions{
 		SpecSource: specPath,
 		CreateShim: false,
 	})
@@ -336,25 +339,17 @@ func TestProfileSwitching(t *testing.T) {
 		t.Fatalf("InstallApp failed: %v", err)
 	}
 
-	// Create additional profiles
+	// Create additional profiles through the domain model.
 	t.Run("CreateProfile", func(t *testing.T) {
-		profileMgr, err := env.configMgr.NewProfileManager("testapi")
+		appConfig, err := env.configMgr.GetAppConfig("testapi")
 		if err != nil {
-			t.Fatalf("NewProfileManager failed: %v", err)
+			t.Fatalf("GetAppConfig failed: %v", err)
 		}
 
-		err = profileMgr.CreateProfile("staging", config.ProfileOptions{
-			BaseURL: "http://staging.example.com",
-		})
-		if err != nil {
-			t.Fatalf("CreateProfile failed: %v", err)
-		}
-
-		err = profileMgr.CreateProfile("production", config.ProfileOptions{
-			BaseURL: "http://production.example.com",
-		})
-		if err != nil {
-			t.Fatalf("CreateProfile (production) failed: %v", err)
+		appConfig.AddProfile(config.NewProfile("staging", "http://staging.example.com"))
+		appConfig.AddProfile(config.NewProfile("production", "http://production.example.com"))
+		if err := env.configMgr.SaveAppConfig(appConfig); err != nil {
+			t.Fatalf("SaveAppConfig failed: %v", err)
 		}
 	})
 
@@ -392,14 +387,14 @@ func TestProfileSwitching(t *testing.T) {
 
 	// Get specific profile
 	t.Run("GetProfile", func(t *testing.T) {
-		profileMgr, err := env.configMgr.NewProfileManager("testapi")
+		appConfig, err := env.configMgr.GetAppConfig("testapi")
 		if err != nil {
-			t.Fatalf("NewProfileManager failed: %v", err)
+			t.Fatalf("GetAppConfig failed: %v", err)
 		}
 
-		profile, err := profileMgr.GetProfile("production")
-		if err != nil {
-			t.Fatalf("GetProfile failed: %v", err)
+		profile, ok := appConfig.GetProfile("production")
+		if !ok {
+			t.Fatalf("GetProfile failed: profile not found")
 		}
 
 		if profile.BaseURL != "http://production.example.com" {
@@ -435,7 +430,7 @@ func TestErrorScenarios(t *testing.T) {
 
 	// Test 1: Install with invalid spec
 	t.Run("InstallInvalidSpec", func(t *testing.T) {
-		_, err := env.configMgr.InstallApp("badapi", config.InstallOptions{
+		_, err := env.installer.InstallApp("badapi", install.InstallOptions{
 			SpecSource: "/nonexistent/spec.yaml",
 			CreateShim: false,
 		})
@@ -449,7 +444,7 @@ func TestErrorScenarios(t *testing.T) {
 		specContent := createTestSpec("http://localhost:8080")
 		specPath := env.writeSpec(specContent)
 
-		_, err := env.configMgr.InstallApp("dupapi", config.InstallOptions{
+		_, err := env.installer.InstallApp("dupapi", install.InstallOptions{
 			SpecSource: specPath,
 			CreateShim: false,
 		})
@@ -457,7 +452,7 @@ func TestErrorScenarios(t *testing.T) {
 			t.Fatalf("first install failed: %v", err)
 		}
 
-		_, err = env.configMgr.InstallApp("dupapi", config.InstallOptions{
+		_, err = env.installer.InstallApp("dupapi", install.InstallOptions{
 			SpecSource: specPath,
 			CreateShim: false,
 		})
@@ -468,7 +463,7 @@ func TestErrorScenarios(t *testing.T) {
 
 	// Test 3: Uninstall non-existent app
 	t.Run("UninstallNonExistent", func(t *testing.T) {
-		err := env.configMgr.UninstallApp("nonexistent", false)
+		err := env.installer.UninstallApp("nonexistent", false)
 		if err == nil {
 			t.Error("expected error for non-existent app")
 		}

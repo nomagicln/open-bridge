@@ -398,6 +398,11 @@ func (m *Manager) AppsDir() string {
 	return filepath.Join(m.configDir, "apps")
 }
 
+// AppConfigPath returns the on-disk path of the configuration file for appName.
+func (m *Manager) AppConfigPath(appName string) string {
+	return m.getAppConfigPath(appName)
+}
+
 // readAndParseConfig reads and parses a configuration file.
 func readAndParseConfig(configPath string) (*AppConfig, error) {
 	data, err := os.ReadFile(configPath)
@@ -635,6 +640,11 @@ var reservedAppNames = map[string]bool{
 // validateAppName validates an application name.
 func validateAppName(name string) error {
 	return validateAppNameWithRules(name, 64, reservedAppNames)
+}
+
+// ValidateAppName reports whether name is a valid, non-reserved app name.
+func ValidateAppName(name string) error {
+	return validateAppName(name)
 }
 
 // validateAppNameWithRules validates an app name with custom rules.

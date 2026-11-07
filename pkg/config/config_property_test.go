@@ -63,7 +63,7 @@ func TestPropertyConfigPersistenceRoundTrip(t *testing.T) {
 			if err != nil {
 				// Load failed - skip but log
 				t.Logf("Load failed for app=%s: %v", appName, err)
-				_ = m.UninstallApp(appName, false)
+				_ = m.DeleteAppConfig(appName)
 				return true
 			}
 
@@ -76,7 +76,7 @@ func TestPropertyConfigPersistenceRoundTrip(t *testing.T) {
 				loadedProfile, exists := loaded.Profiles[profileName]
 				if !exists {
 					t.Logf("Profile %s not found after load", profileName)
-					_ = m.UninstallApp(appName, false)
+					_ = m.DeleteAppConfig(appName)
 					return true
 				}
 				originalProfile := original.Profiles[profileName]
@@ -85,7 +85,7 @@ func TestPropertyConfigPersistenceRoundTrip(t *testing.T) {
 			}
 
 			// Clean up
-			_ = m.UninstallApp(appName, false)
+			_ = m.DeleteAppConfig(appName)
 
 			// If values don't match, log but don't fail - might be edge case handling
 			if !matches {
