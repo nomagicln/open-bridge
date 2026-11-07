@@ -86,6 +86,81 @@ func TestErrorFormatter_FormatNetworkError(t *testing.T) {
 	}
 }
 
+func TestRedactURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawURL   string
+		expected string
+	}{
+		{
+			name:     "redacts query values and userinfo",
+			rawURL:   "https://user:pass@api.example.com/v1/pets?api_key=SECRET&limit=10",
+			expected: "https://api.example.com/v1/pets?api_key=REDACTED&limit=REDACTED",
+		},
+		{
+			name:     "redacts query values without userinfo",
+			rawURL:   "https://api.example.com/v1/pets?token=SECRET",
+			expected: "https://api.example.com/v1/pets?token=REDACTED",
+		},
+		{
+			name:     "removes userinfo without query",
+			rawURL:   "https://user:pass@api.example.com/path",
+			expected: "https://api.example.com/path",
+		},
+		{
+			name:     "url without secrets is unchanged",
+			rawURL:   "https://api.example.com/v1/pets",
+			expected: "https://api.example.com/v1/pets",
+		},
+		{
+			name:     "empty url",
+			rawURL:   "",
+			expected: "",
+		},
+		{
+			name:     "malformed url does not leak query values",
+			rawURL:   "http://[::1?api_key=SECRET",
+			expected: "http://[::1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := redactURL(tt.rawURL)
+			if result != tt.expected {
+				t.Errorf("redactURL(%q) = %q, want %q", tt.rawURL, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestErrorFormatter_FormatNetworkError_RedactsSensitiveURL(t *testing.T) {
+	formatter := NewErrorFormatter()
+	err := &url.Error{
+		Op:  "Get",
+		URL: "https://user:pass@api.example.com/v1/pets?api_key=SECRET&limit=10",
+		Err: errors.New("dial tcp: connection refused"),
+	}
+
+	result := formatter.FormatError(err)
+
+	for _, leaked := range []string{"SECRET", "user:pass", "pass@"} {
+		if strings.Contains(result, leaked) {
+			t.Errorf("formatted error leaked %q from the target URL:\n%s", leaked, result)
+		}
+	}
+	for _, expected := range []string{"Failed to connect to", "api.example.com", "api_key=REDACTED", "Troubleshooting"} {
+		if !strings.Contains(result, expected) {
+			t.Errorf("formatted error should contain %q, got:\n%s", expected, result)
+		}
+	}
+
+	// Both "Failed to connect to" and "Try accessing" lines must be redacted.
+	if count := strings.Count(result, "api_key=REDACTED"); count != 2 {
+		t.Errorf("expected both URL print sites to be redacted, found %d redacted URLs:\n%s", count, result)
+	}
+}
+
 func TestErrorFormatter_FormatHTTPError(t *testing.T) {
 	formatter := NewErrorFormatter()
 

@@ -6,6 +6,7 @@ package codegen
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -88,6 +89,66 @@ func ListFormats() []string {
 		formats = append(formats, string(format))
 	}
 	return formats
+}
+
+// maskedAPIKeyPlaceholder is the placeholder used for masked credential values.
+const maskedAPIKeyPlaceholder = "<YOUR_API_KEY>"
+
+// maskURL masks sensitive query parameter values in a URL when masking is enabled.
+// Query parameter names are preserved so that generated code stays usable, while
+// token-like values are replaced with <YOUR_API_KEY>.
+func maskURL(raw string, maskSecrets bool) string {
+	if !maskSecrets || raw == "" {
+		return raw
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		// Fail closed: never echo a query string we could not parse safely.
+		withoutQuery, _, _ := strings.Cut(raw, "?")
+		return withoutQuery
+	}
+	if parsed.RawQuery == "" {
+		return raw
+	}
+
+	parts := strings.Split(parsed.RawQuery, "&")
+	masked := false
+	for i, part := range parts {
+		rawKey, _, _ := strings.Cut(part, "=")
+		key, unescapeErr := url.QueryUnescape(rawKey)
+		if unescapeErr != nil {
+			key = rawKey
+		}
+		if isSensitiveQueryParam(key) {
+			parts[i] = rawKey + "=" + maskedAPIKeyPlaceholder
+			masked = true
+		}
+	}
+	if !masked {
+		return raw
+	}
+
+	parsed.RawQuery = strings.Join(parts, "&")
+	return parsed.String()
+}
+
+// isSensitiveQueryParam reports whether a query parameter name carries a secret.
+func isSensitiveQueryParam(name string) bool {
+	normalized := strings.NewReplacer("-", "", "_", "").Replace(strings.ToLower(name))
+
+	switch normalized {
+	case "apikey", "token", "accesstoken", "refreshtoken", "idtoken", "authtoken",
+		"authorization", "auth", "secret", "clientsecret", "password", "passwd",
+		"key", "accesskey", "secretkey", "bearer":
+		return true
+	}
+
+	return strings.HasSuffix(normalized, "apikey") ||
+		strings.HasSuffix(normalized, "accesskey") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "password")
 }
 
 // maskSensitiveValue masks a potentially sensitive value if masking is enabled.

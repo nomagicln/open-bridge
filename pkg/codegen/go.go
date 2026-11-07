@@ -39,7 +39,7 @@ func (g *GoGenerator) Generate(req *http.Request) (string, error) {
 		buf.WriteString("	req, err := http.NewRequest(\"")
 		buf.WriteString(req.Method)
 		buf.WriteString("\", \"")
-		buf.WriteString(req.URL.String())
+		buf.WriteString(g.requestURL(req))
 		buf.WriteString("\", nil)\n")
 	}
 
@@ -56,6 +56,11 @@ func (g *GoGenerator) Generate(req *http.Request) (string, error) {
 	g.writeExecuteRequest(&buf)
 
 	return buf.String(), nil
+}
+
+// requestURL returns the request URL with sensitive query values masked when configured.
+func (g *GoGenerator) requestURL(req *http.Request) string {
+	return maskURL(req.URL.String(), g.opts.MaskSecrets)
 }
 
 func (g *GoGenerator) writeImports(buf *bytes.Buffer, hasBody bool) {
@@ -112,7 +117,7 @@ func (g *GoGenerator) writeRequestCreation(buf *bytes.Buffer, req *http.Request,
 	buf.WriteString("	req, err := http.NewRequest(\"")
 	buf.WriteString(req.Method)
 	buf.WriteString("\", \"")
-	buf.WriteString(req.URL.String())
+	buf.WriteString(g.requestURL(req))
 	buf.WriteString("\", ")
 	buf.WriteString(payloadVar)
 	buf.WriteString(")\n")
