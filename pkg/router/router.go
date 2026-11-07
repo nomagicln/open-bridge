@@ -41,24 +41,30 @@ func NewRouter(
 }
 
 // Execute determines the mode and routes to the appropriate handler.
+// It is used by shim-mode invocations where the application is identified by
+// the binary name (argv[0]).
 func (r *Router) Execute(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("no command provided")
 	}
 
-	var appName string
-	// Detect app name from invocation
-	appName, args = r.detectAppName(args)
+	appName, appArgs := r.detectAppName(args)
+	return r.ExecuteApp(appName, appArgs)
+}
 
-	// Handle ob-level commands
-	if appName == "ob" {
-		return r.handleOBCommand()
+// ExecuteApp executes a command for the explicitly named application.
+// It validates that the app exists, then dispatches to either the MCP server
+// (when args contain --mcp) or the semantic CLI. args must not include the app
+// name itself.
+func (r *Router) ExecuteApp(appName string, args []string) error {
+	if appName == "" {
+		return fmt.Errorf("no app name provided")
 	}
 
 	// Load app configuration
 	appConfig, err := r.configMgr.GetAppConfig(appName)
 	if err != nil {
-		return fmt.Errorf("app not found: %s (use 'ob install' to add it)", appName)
+		return fmt.Errorf("app not found: %s (use 'ob install' to add it): %w", appName, err)
 	}
 
 	// Check for MCP mode
@@ -70,28 +76,11 @@ func (r *Router) Execute(args []string) error {
 	return r.cliHandler.ExecuteCommand(appName, appConfig, args)
 }
 
-// detectAppName determines the app name from args or binary name.
+// detectAppName determines the app name from the shim binary name.
 func (r *Router) detectAppName(args []string) (string, []string) {
-	// Get binary name
 	binaryPath := args[0]
 	binaryName := filepath.Base(binaryPath)
 	binaryName = strings.TrimSuffix(binaryName, filepath.Ext(binaryName))
-
-	// If binary is 'ob', first arg is app name or ob command
-	if binaryName == "ob" {
-		return "ob", args[1:]
-	}
-
-	if strings.HasPrefix(binaryName, "__debug_") {
-		// In debug mode, use second arg as app name if available
-		// Example: __debug_ob run myapp
-		if len(os.Args) > 2 {
-			return os.Args[2], args[3:]
-		}
-		return "ob", args[1:]
-	}
-
-	// Binary name is the app name (shim mode)
 	return binaryName, args[1:]
 }
 
@@ -113,13 +102,6 @@ func (r *Router) detectProfile(args []string) string {
 		}
 	}
 	return ""
-}
-
-// handleOBCommand handles ob-level commands (install, uninstall, list, etc.)
-func (r *Router) handleOBCommand() error {
-	// This is handled by cobra in main.go
-	// This method is a fallback for direct router usage
-	return fmt.Errorf("ob commands should be handled by CLI framework")
 }
 
 // mcpOptions holds parsed MCP server options from command-line arguments.
