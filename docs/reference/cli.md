@@ -11,7 +11,7 @@ Global commands for managing OpenBridge applications.
 | `ob list` | List all installed applications |
 | `ob run <name> [args...]` | Run commands for an installed application |
 | `ob completion [bash\|zsh\|fish]` | Generate shell completion script |
-| `ob version` | Show version information |
+| `ob --version` | Show version information |
 | `ob help` | Show help |
 
 ## App Commands
@@ -31,13 +31,14 @@ Commands available for installed applications.
 Control the output format using flags:
 
 ```bash
-# Table output (default)
+# YAML output (default)
 myapi users list
 
 # JSON output
 myapi users list --json
 
-# YAML output
+# Explicit format selection
+myapi users list --output json
 myapi users list --yaml
 ```
 

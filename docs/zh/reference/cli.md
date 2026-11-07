@@ -11,7 +11,7 @@
 | `ob list` | 列出所有已安装的应用程序 |
 | `ob run <name> [args...]` | 运行已安装应用程序的命令 |
 | `ob completion [bash\|zsh\|fish]` | 生成 Shell 自动补全脚本 |
-| `ob version` | 显示版本信息 |
+| `ob --version` | 显示版本信息 |
 | `ob help` | 显示帮助 |
 
 ## App 命令
@@ -31,13 +31,14 @@
 使用参数控制输出格式：
 
 ```bash
-# 表格输出 (默认)
+# YAML 输出（默认）
 myapi users list
 
 # JSON 输出
 myapi users list --json
 
-# YAML 输出
+# 显式指定格式
+myapi users list --output json
 myapi users list --yaml
 ```
 

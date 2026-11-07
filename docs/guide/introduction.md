@@ -17,10 +17,10 @@ Traditional API tools often require generating code or manually crafting CLI wra
 
 ## Key Features
 
-- **Zero Code Generation**: All behavior is dynamically driven by OpenAPI specifications
+- **No SDK Code Generation**: Behavior is driven dynamically by OpenAPI specifications — no generated clients to maintain
 - **Semantic CLI**: Resource-oriented commands (`myapp user create --name "John"`)
 - **Shell Auto-Completion**: Tab completion for commands, resources, flags, and enum values
 - **MCP Server**: Native AI agent integration via Model Context Protocol
 - **Multi-Platform**: Works on Linux, macOS, and Windows
-- **Secure Credentials**: Uses system keyring (Keychain, Credential Manager, Secret Service)
-- **Fast Startup**: Cold start under 100ms
+- **Secure Credentials**: Uses system keyring (Keychain, Credential Manager, Secret Service); on headless systems, set `OPENBRIDGE_KEYRING_PASSWORD` to use an encrypted file backend
+- **Fast Startup**: CLI startup in single-digit milliseconds; app command latency depends on OpenAPI spec size

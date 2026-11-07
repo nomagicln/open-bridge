@@ -17,8 +17,8 @@ hero:
       link: https://github.com/nomagicln/open-bridge
 
 features:
-  - title: Zero Code Generation
-    details: All behavior is dynamically driven by OpenAPI specifications. No more generated clients to maintain.
+  - title: No SDK Code Generation
+    details: Behavior is driven dynamically by OpenAPI specifications. No generated clients to maintain.
   - title: Semantic CLI
     details: Resource-oriented commands (e.g., `myapp user create`) that make sense to humans.
   - title: AI Agent Native
@@ -26,7 +26,7 @@ features:
   - title: Progressive Disclosure
     details: Intelligent tool discovery strategy to handle large APIs without overwhelming AI context.
   - title: Secure & Fast
-    details: Uses system keyring for credentials and starts up in under 100ms.
+    details: Uses the system keyring for credentials, with an encrypted file-backend fallback for headless systems; CLI startup is in single-digit milliseconds.
   - title: Multi-Platform
     details: Works natively on Linux, macOS, and Windows.
 ---

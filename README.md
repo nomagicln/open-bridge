@@ -18,13 +18,13 @@
 
 ## Features
 
-- **Zero Code Generation**: All behavior is dynamically driven by OpenAPI specifications
+- **No SDK Code Generation**: CLI and MCP behavior is driven dynamically by OpenAPI specifications — no generated clients to maintain; optional client snippets are available via `--generate`
 - **Semantic CLI**: Resource-oriented commands (`myapp user create --name "John"`)
 - **Shell Auto-Completion**: Tab completion for commands, resources, flags, and enum values
 - **MCP Server**: Native AI agent integration via Model Context Protocol
 - **Multi-Platform**: Works on Linux, macOS, and Windows
-- **Secure Credentials**: Uses system keyring (Keychain, Credential Manager, Secret Service)
-- **Fast Startup**: Cold start under 100ms
+- **Secure Credentials**: Uses system keyring (Keychain, Credential Manager, Secret Service); on headless systems, set `OPENBRIDGE_KEYRING_PASSWORD` to use an encrypted file backend
+- **Fast Startup**: CLI startup (`ob --version` / `--help`) in single-digit milliseconds; app command latency depends on OpenAPI spec size
 
 ## Installation
 
@@ -148,7 +148,7 @@ myapi users list --profile prod
 | `ob list` | List all installed applications |
 | `ob run <name> [args...]` | Run commands for an installed application |
 | `ob completion [bash\|zsh\|fish]` | Generate shell completion script |
-| `ob version` | Show version information |
+| `ob --version` | Show version information |
 | `ob help` | Show help |
 
 ### App Commands
@@ -166,13 +166,14 @@ Once installed, each app provides semantic commands:
 ### Output Formats
 
 ```bash
-# Table output (default)
+# YAML output (default)
 myapi users list
 
 # JSON output
 myapi users list --json
 
-# YAML output
+# Explicit format selection
+myapi users list --output json
 myapi users list --yaml
 ```
 

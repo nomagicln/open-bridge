@@ -25,7 +25,7 @@ This will create the `ob` binary in the `bin/` directory. You can add this direc
 Verify the installation:
 
 ```bash
-./bin/ob version
+./bin/ob --version
 ```
 
 ## Step 2: Start the Example Todo Service

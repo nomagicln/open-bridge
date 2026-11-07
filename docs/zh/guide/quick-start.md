@@ -23,7 +23,7 @@ ob install myapi --spec ./openapi.yaml
     *   `Bearer`：标准 Bearer 令牌 (JWT)。
     *   `API Key`：通过 Header 或 Query 参数传递的密钥。
     *   `Basic`：用户名和密码。
-4.  **安全**：如果需要，配置 TLS 设置（如客户端证书）。
+4.  **安全**：如果需要，配置 TLS 设置（如客户端证书）。*注意：TLS 配置目前会写入应用 profile，运行时生效能力计划在后续版本提供。*
 5.  **MCP 选项**：
     *   **渐进式披露 (Progressive Disclosure)**：为大型 API 启用此功能，以帮助 AI 智能体高效发现工具。
     *   **只读模式**：限制 AI 仅执行安全的 `GET` 操作。
