@@ -818,7 +818,7 @@ func (d *Deps) parseArgValue(arg string, args []string, i int, longFlag, shortFl
 func (d *Deps) startMCPServer(appConfig *config.AppConfig, args []string) error {
 	specDoc, err := d.Parser.LoadSpec(appConfig.SpecSource)
 	if err != nil {
-		return fmt.Errorf("failed to load spec: %w", err)
+		return &cli.SpecLoadError{Source: appConfig.SpecSource, Err: err}
 	}
 
 	opts := d.parseMCPServerArgs(args, appConfig.DefaultProfile)

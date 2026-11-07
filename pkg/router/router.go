@@ -198,7 +198,7 @@ func (r *Router) startMCPServer(appConfig *config.AppConfig, args []string) erro
 	ctx := context.Background()
 	specDoc, err := r.specParser.LoadSpecWithPersistentCache(ctx, appConfig.SpecSource, appConfig.Name)
 	if err != nil {
-		return fmt.Errorf("failed to load spec: %w", err)
+		return &cli.SpecLoadError{Source: appConfig.SpecSource, Err: err}
 	}
 
 	opts := r.parseMCPOptions(args, appConfig.DefaultProfile)

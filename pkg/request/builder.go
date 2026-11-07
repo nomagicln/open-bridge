@@ -24,6 +24,37 @@ type credentialProvider interface {
 	GetCredential(appName, profileName string) (*credential.Credential, error)
 }
 
+// MissingParameterError reports a required parameter that was not supplied.
+type MissingParameterError struct {
+	Name string
+
+	// BodyField marks Name as a required request-body property rather than a
+	// query/path/header parameter. It preserves the historical wording
+	// ("required body parameter ...") and its generic error rendering.
+	BodyField bool
+}
+
+// Error implements error and keeps the historical message text.
+func (e *MissingParameterError) Error() string {
+	if e.BodyField {
+		return fmt.Sprintf("required body parameter '%s' is missing", e.Name)
+	}
+	return fmt.Sprintf("required parameter '%s' is missing", e.Name)
+}
+
+// ParameterValidationError reports a parameter value that does not satisfy its
+// schema. Reason is the detail after the parameter name, e.g.
+// "type mismatch: got string, expected one of [integer]".
+type ParameterValidationError struct {
+	Parameter string
+	Reason    string
+}
+
+// Error implements error and keeps the historical message text.
+func (e *ParameterValidationError) Error() string {
+	return fmt.Sprintf("parameter '%s' %s", e.Parameter, e.Reason)
+}
+
 // Builder constructs HTTP requests from OpenAPI operations and parameters.
 type Builder struct {
 	credMgr credentialProvider
@@ -536,7 +567,7 @@ func (b *Builder) checkRequiredParams(params map[string]any, opParams openapi3.P
 		val, exists := params[param.Name]
 		if !exists {
 			if param.Required {
-				return fmt.Errorf("required parameter '%s' is missing", param.Name)
+				return &MissingParameterError{Name: param.Name}
 			}
 			continue
 		}
@@ -591,7 +622,7 @@ func (b *Builder) checkRequiredBodyFields(params map[string]any, opParams openap
 	// Check if all required fields are present
 	for _, requiredField := range schema.Required {
 		if _, exists := bodyParams[requiredField]; !exists {
-			return fmt.Errorf("required body parameter '%s' is missing", requiredField)
+			return &MissingParameterError{Name: requiredField, BodyField: true}
 		}
 	}
 
@@ -649,7 +680,10 @@ func validateEnumValue(name string, value any, enums []any) error {
 	if slices.Contains(enums, value) {
 		return nil
 	}
-	return fmt.Errorf("parameter '%s' must be one of %v, got %v", name, enums, value)
+	return &ParameterValidationError{
+		Parameter: name,
+		Reason:    fmt.Sprintf("must be one of %v, got %v", enums, value),
+	}
 }
 
 // validateParameterType validates a parameter value against its schema type.
@@ -670,8 +704,10 @@ func (b *Builder) validateParameterType(name string, value any, schemaRef *opena
 
 	// For union types, value is valid if it matches ANY type in the array
 	if !typeMatchesAny(actualType, schemaTypes) {
-		return fmt.Errorf("parameter '%s' type mismatch: got %s, expected one of %v",
-			name, actualType, schemaTypes)
+		return &ParameterValidationError{
+			Parameter: name,
+			Reason:    fmt.Sprintf("type mismatch: got %s, expected one of %v", actualType, schemaTypes),
+		}
 	}
 
 	// Validate enum values if present

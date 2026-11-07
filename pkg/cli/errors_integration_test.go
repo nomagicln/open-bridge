@@ -4,6 +4,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/nomagicln/open-bridge/pkg/config"
+	"github.com/nomagicln/open-bridge/pkg/request"
 )
 
 // TestErrorHandling_HTTPErrors tests HTTP error formatting.
@@ -332,7 +334,7 @@ func TestErrorHandling_MissingParameters(t *testing.T) {
 	}{
 		{
 			name: "Single missing parameter",
-			err:  errors.New("required parameter 'user_id' is missing"),
+			err:  &request.MissingParameterError{Name: "user_id"},
 			expectedPhrases: []string{
 				"required parameter",
 				"user_id",
@@ -343,7 +345,7 @@ func TestErrorHandling_MissingParameters(t *testing.T) {
 		},
 		{
 			name: "Multiple missing parameters",
-			err:  errors.New("required parameter 'name' is missing, required parameter 'email' is missing"),
+			err:  fmt.Errorf("validation failed: %w", &request.MissingParameterError{Name: "name"}),
 			expectedPhrases: []string{
 				"required parameter",
 				"missing",
@@ -376,7 +378,7 @@ func TestErrorHandling_UnknownResourceAndVerb(t *testing.T) {
 	}{
 		{
 			name: "Unknown resource",
-			err:  errors.New("unknown resource: users"),
+			err:  &UnknownResourceError{Resource: "users"},
 			expectedPhrases: []string{
 				"Unknown resource",
 				"users",
@@ -385,7 +387,7 @@ func TestErrorHandling_UnknownResourceAndVerb(t *testing.T) {
 		},
 		{
 			name: "Unknown verb",
-			err:  errors.New("unknown verb 'create' for resource 'users'"),
+			err:  &UnknownVerbError{Resource: "users", Verb: "create"},
 			expectedPhrases: []string{
 				"unknown verb",
 				"create",
@@ -414,7 +416,7 @@ func TestErrorHandling_UnknownResourceAndVerb(t *testing.T) {
 func TestErrorHandling_SpecLoadErrors(t *testing.T) {
 	formatter := NewErrorFormatter()
 
-	err := errors.New("failed to load spec: file not found")
+	err := &SpecLoadError{Source: "/tmp/spec.yaml", Err: errors.New("file not found")}
 	result := formatter.FormatError(err)
 
 	expectedPhrases := []string{
