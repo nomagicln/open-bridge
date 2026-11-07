@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nomagicln/open-bridge/internal/install"
 	"github.com/nomagicln/open-bridge/pkg/cli"
 	"github.com/nomagicln/open-bridge/pkg/completion"
 	"github.com/nomagicln/open-bridge/pkg/config"
@@ -41,6 +42,7 @@ func SetBuildInfo(version, commit, date string) {
 // Deps holds the explicitly constructed CLI dependencies.
 type Deps struct {
 	Config     *config.Manager
+	Installer  *install.Installer
 	Parser     *spec.Parser
 	Credential *credential.Manager
 	Mapper     *semantic.Mapper
@@ -82,9 +84,11 @@ func New() (*Deps, error) {
 	mcpHandler := mcp.NewHandler(mapper, reqBuilder, nil)
 	appRouter := router.NewRouter(cliHandler, mcpHandler, configMgr, specParser)
 	completionProvider := completion.NewProvider(configMgr, specParser, mapper)
+	installer := install.New(configMgr)
 
 	return &Deps{
 		Config:     configMgr,
+		Installer:  installer,
 		Parser:     specParser,
 		Credential: credentialMgr,
 		Mapper:     mapper,
