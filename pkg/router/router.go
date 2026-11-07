@@ -208,6 +208,12 @@ func (r *Router) startMCPServer(appConfig *config.AppConfig, args []string) erro
 		return fmt.Errorf("profile '%s' not found", opts.profileName)
 	}
 
+	// Fail fast on invalid safety configuration (e.g. an uncompilable
+	// dangerous_operation_patterns regex) instead of failing on first tool call.
+	if err := mcp.ValidateSafetyConfig(&profile.SafetyConfig); err != nil {
+		return fmt.Errorf("invalid MCP safety configuration for profile %q: %w", opts.profileName, err)
+	}
+
 	factory := mcp.NewServerFactory(appConfig.Name, "1.0")
 	server := factory.CreateServer()
 
