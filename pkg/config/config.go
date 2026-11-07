@@ -50,6 +50,14 @@ type AppConfig struct {
 	// OperationCount is the number of operations in the spec.
 	// Used for determining progressive disclosure recommendation.
 	OperationCount int `yaml:"operation_count,omitempty"`
+
+	// SpecTitle is the API title from the OpenAPI info section, persisted at
+	// install time so that listing apps does not need to re-parse the spec.
+	SpecTitle string `yaml:"spec_title,omitempty"`
+
+	// SpecVersion is the API version from the OpenAPI info section, persisted at
+	// install time so that listing apps does not need to re-parse the spec.
+	SpecVersion string `yaml:"spec_version,omitempty"`
 }
 
 // Profile represents a configuration profile for an app.

@@ -289,10 +289,23 @@ func createAppConfig(appName, specSource string, specSources []string, opts Inst
 		},
 	}
 
-	if config.Description == "" && specInfo != nil {
-		config.Description = specInfo.Title
+	if specInfo != nil {
+		config.Description = firstNonEmpty(config.Description, specInfo.Title)
+		config.SpecTitle = specInfo.Title
+		config.SpecVersion = specInfo.Version
+		config.OperationCount = specInfo.Operations
 	}
+
 	return config
+}
+
+// firstNonEmpty returns primary when it is not empty, otherwise fallback.
+func firstNonEmpty(primary, fallback string) string {
+	if primary != "" {
+		return primary
+	}
+
+	return fallback
 }
 
 // createShimIfRequested creates a shim for the app if requested.
@@ -395,23 +408,8 @@ func (m *Manager) doInstall(appName string, opts InstallOptions) (*InstallResult
 
 	config := createAppConfig(appName, specSource, specSources, opts, baseURL, specInfo)
 
-	// Store operation count in config for future reference
-	if specInfo != nil {
-		config.OperationCount = specInfo.Operations
-	}
-
 	if err := m.SaveAppConfig(config); err != nil {
 		return nil, fmt.Errorf("failed to save config: %w", err)
-	}
-
-	// Cache the spec if it's from a remote URL
-	if isWebURL(primarySource) {
-		cacheManager := NewSpecCacheManager(m.AppsDir())
-		_, cacheErr := cacheManager.FetchWithCache(appName, primarySource)
-		if cacheErr != nil {
-			// Warning but don't fail installation
-			fmt.Fprintf(os.Stderr, "Warning: failed to cache spec: %v\n", cacheErr)
-		}
 	}
 
 	result := &InstallResult{
@@ -914,15 +912,35 @@ func (m *Manager) GetInstalledAppInfo(appName string) (*InstalledAppInfo, error)
 		ShimExists:     m.ShimExists(appName),
 	}
 
-	// Load spec info
-	if config.SpecSource != "" {
-		parser := spec.NewParser()
-		if specDoc, err := parser.LoadSpec(config.SpecSource); err == nil {
-			info.SpecInfo = spec.GetSpecInfo(specDoc, config.SpecSource)
+	info.SpecInfo = specInfoFromConfig(config)
+
+	return info, nil
+}
+
+// specInfoFromConfig returns the persisted specification metadata without
+// touching the spec source. Legacy configurations written before the metadata
+// was persisted fall back to parsing the spec once (and keep working if the
+// source is still reachable).
+func specInfoFromConfig(config *AppConfig) *spec.SpecInfo {
+	if config.SpecTitle != "" || config.SpecVersion != "" {
+		return &spec.SpecInfo{
+			Title:      config.SpecTitle,
+			Version:    config.SpecVersion,
+			Source:     config.SpecSource,
+			Operations: config.OperationCount,
 		}
 	}
 
-	return info, nil
+	if config.SpecSource == "" {
+		return nil
+	}
+
+	parser := spec.NewParser()
+	if specDoc, err := parser.LoadSpec(config.SpecSource); err == nil {
+		return spec.GetSpecInfo(specDoc, config.SpecSource)
+	}
+
+	return nil
 }
 
 // InstalledAppInfo contains detailed information about an installed app.

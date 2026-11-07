@@ -2,10 +2,13 @@ package config
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -837,5 +840,209 @@ paths: {}
 				t.Errorf("expected absolute path, got %q", source)
 			}
 		})
+	}
+}
+
+// specMetadataTestSpec is a minimal OpenAPI 3 spec with two operations, used by
+// the persisted spec-metadata tests.
+const specMetadataTestSpec = `
+openapi: "3.0.0"
+info:
+  title: Metadata Test API
+  version: "3.2.1"
+servers:
+  - url: https://api.example.com
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: createUser
+      responses:
+        "201":
+          description: Created
+`
+
+// writeMetadataTestSpec writes the shared metadata test spec and returns its path.
+func writeMetadataTestSpec(t *testing.T) string {
+	t.Helper()
+
+	specPath := filepath.Join(t.TempDir(), "spec.yaml")
+	if err := os.WriteFile(specPath, []byte(specMetadataTestSpec), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	return specPath
+}
+
+func TestInstallAppPersistsSpecMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	m, err := NewManager(WithConfigDir(tmpDir))
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+
+	specPath := writeMetadataTestSpec(t)
+	if _, err := m.InstallApp("metadataapp", InstallOptions{SpecSource: specPath}); err != nil {
+		t.Fatalf("InstallApp failed: %v", err)
+	}
+
+	cfg, err := m.GetAppConfig("metadataapp")
+	if err != nil {
+		t.Fatalf("GetAppConfig failed: %v", err)
+	}
+
+	if cfg.SpecTitle != "Metadata Test API" {
+		t.Errorf("expected spec title 'Metadata Test API', got %q", cfg.SpecTitle)
+	}
+	if cfg.SpecVersion != "3.2.1" {
+		t.Errorf("expected spec version '3.2.1', got %q", cfg.SpecVersion)
+	}
+	if cfg.OperationCount != 2 {
+		t.Errorf("expected operation count 2, got %d", cfg.OperationCount)
+	}
+}
+
+func TestGetInstalledAppInfoUsesPersistedSpecMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	m, err := NewManager(WithConfigDir(tmpDir))
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+
+	specPath := writeMetadataTestSpec(t)
+	if _, err := m.InstallApp("noresolv", InstallOptions{SpecSource: specPath}); err != nil {
+		t.Fatalf("InstallApp failed: %v", err)
+	}
+
+	// Remove the spec source: a metadata-driven implementation must still
+	// report spec info, while a parsing implementation would return nil.
+	if err := os.Remove(specPath); err != nil {
+		t.Fatalf("Remove(spec) failed: %v", err)
+	}
+
+	info, err := m.GetInstalledAppInfo("noresolv")
+	if err != nil {
+		t.Fatalf("GetInstalledAppInfo failed: %v", err)
+	}
+	if info.SpecInfo == nil {
+		t.Fatal("expected SpecInfo from persisted config metadata, got nil")
+	}
+	if info.SpecInfo.Title != "Metadata Test API" {
+		t.Errorf("expected title 'Metadata Test API', got %q", info.SpecInfo.Title)
+	}
+	if info.SpecInfo.Version != "3.2.1" {
+		t.Errorf("expected version '3.2.1', got %q", info.SpecInfo.Version)
+	}
+	if info.SpecInfo.Operations != 2 {
+		t.Errorf("expected 2 operations, got %d", info.SpecInfo.Operations)
+	}
+}
+
+func TestGetInstalledAppInfoFallsBackForLegacyConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	m, err := NewManager(WithConfigDir(tmpDir))
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+
+	specPath := writeMetadataTestSpec(t)
+
+	// Legacy config written by an older version: no spec_title/spec_version and
+	// no operation_count.
+	legacyYAML := "name: legacyapp\n" +
+		"spec_source: " + specPath + "\n" +
+		"profiles:\n" +
+		"  default:\n" +
+		"    name: default\n" +
+		"    base_url: https://api.example.com\n" +
+		"default_profile: default\n" +
+		"version: \"1.0\"\n"
+	if err := os.WriteFile(m.getAppConfigPath("legacyapp"), []byte(legacyYAML), 0o600); err != nil {
+		t.Fatalf("write legacy config failed: %v", err)
+	}
+
+	info, err := m.GetInstalledAppInfo("legacyapp")
+	if err != nil {
+		t.Fatalf("GetInstalledAppInfo(legacy) failed: %v", err)
+	}
+	if info.SpecInfo == nil {
+		t.Fatal("expected legacy config fallback to parse the spec")
+	}
+	if info.SpecInfo.Title != "Metadata Test API" {
+		t.Errorf("expected parsed title 'Metadata Test API', got %q", info.SpecInfo.Title)
+	}
+}
+
+func TestGetInstalledAppInfoLegacyConfigMissingSpec(t *testing.T) {
+	tmpDir := t.TempDir()
+	m, err := NewManager(WithConfigDir(tmpDir))
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+
+	legacyYAML := "name: legacymissing\n" +
+		"spec_source: " + filepath.Join(tmpDir, "does-not-exist.yaml") + "\n" +
+		"profiles:\n" +
+		"  default:\n" +
+		"    name: default\n" +
+		"    base_url: https://api.example.com\n" +
+		"default_profile: default\n" +
+		"version: \"1.0\"\n"
+	if err := os.WriteFile(m.getAppConfigPath("legacymissing"), []byte(legacyYAML), 0o600); err != nil {
+		t.Fatalf("write legacy config failed: %v", err)
+	}
+
+	info, err := m.GetInstalledAppInfo("legacymissing")
+	if err != nil {
+		t.Fatalf("GetInstalledAppInfo(legacy missing spec) failed: %v", err)
+	}
+	if info.SpecInfo != nil {
+		t.Errorf("expected nil SpecInfo when legacy spec cannot be parsed, got %+v", info.SpecInfo)
+	}
+}
+
+func TestInstallAppRemoteSpecDownloadsOnce(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/yaml")
+		_, _ = w.Write([]byte(specMetadataTestSpec))
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	m, err := NewManager(WithConfigDir(tmpDir))
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+
+	result, err := m.InstallApp("remoteapp", InstallOptions{
+		SpecSource: server.URL + "/spec.yaml",
+		CreateShim: false,
+	})
+	if err != nil {
+		t.Fatalf("InstallApp failed: %v", err)
+	}
+
+	if got := requests.Load(); got != 1 {
+		t.Errorf("expected install to download the remote spec exactly once, got %d requests", got)
+	}
+	if result.SpecInfo == nil || result.SpecInfo.Title != "Metadata Test API" {
+		t.Errorf("expected install result to carry spec info, got %+v", result.SpecInfo)
+	}
+
+	cfg, err := m.GetAppConfig("remoteapp")
+	if err != nil {
+		t.Fatalf("GetAppConfig failed: %v", err)
+	}
+	if cfg.SpecTitle != "Metadata Test API" {
+		t.Errorf("expected persisted spec title, got %q", cfg.SpecTitle)
+	}
+	if cfg.SpecSource != server.URL+"/spec.yaml" {
+		t.Errorf("expected remote spec source preserved, got %q", cfg.SpecSource)
 	}
 }
