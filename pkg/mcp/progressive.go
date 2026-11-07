@@ -65,6 +65,8 @@ type ProgressiveHandler struct {
 	searchEngine   ToolSearchEngine
 	requestBuilder *request.Builder
 	httpClient     *http.Client
+	clientInjected bool
+	clients        *profileClientCache
 	spec           *openapi3.T
 	appConfig      *config.AppConfig
 	profileName    string
@@ -77,21 +79,25 @@ func NewProgressiveHandler(
 	httpClient *http.Client,
 	engineType SearchEngineType,
 ) (*ProgressiveHandler, error) {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
-	}
-
 	engine, err := NewSearchEngine(engineType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create search engine: %w", err)
 	}
 
-	return &ProgressiveHandler{
+	handler := &ProgressiveHandler{
 		registry:       NewToolRegistry(),
 		searchEngine:   engine,
 		requestBuilder: requestBuilder,
-		httpClient:     httpClient,
-	}, nil
+		clients:        newProfileClientCache(),
+	}
+	if httpClient != nil {
+		handler.httpClient = httpClient
+		handler.clientInjected = true
+	} else {
+		handler.httpClient = &http.Client{Timeout: defaultHTTPTimeout}
+	}
+
+	return handler, nil
 }
 
 // SetSpec sets the OpenAPI specification and indexes tools.
@@ -475,6 +481,26 @@ func (h *ProgressiveHandler) handleInvokeTool(_ context.Context, req *mcp.CallTo
 	return h.buildAndExecuteRequest(opInfo.Operation, opInfo.Method, opInfo.Path, args.Arguments, profileName, profile)
 }
 
+// httpClientForProfile returns the client used for a profile. An explicitly
+// injected client always wins; otherwise the per-profile client is built from
+// the profile timeout/TLS settings and cached by profile name.
+func (h *ProgressiveHandler) httpClientForProfile(profileName string, profile *config.Profile) (*http.Client, error) {
+	if h.clientInjected {
+		return h.httpClient, nil
+	}
+	return h.clients.get(profileName, profile)
+}
+
+// executeRequest performs the HTTP request with the profile's retry policy.
+func (h *ProgressiveHandler) executeRequest(client *http.Client, httpReq *http.Request, profile *config.Profile) (*http.Response, error) {
+	retry := config.RetryConfig{}
+	if profile != nil {
+		retry = profile.RetryConfig
+	}
+
+	return request.DoWithRetry(client, httpReq, retry)
+}
+
 // getActiveProfile returns the active profile name and configuration.
 func (h *ProgressiveHandler) getActiveProfile() (string, *config.Profile, error) {
 	return getActiveProfile(h.appConfig, h.profileName)
@@ -506,7 +532,12 @@ func (h *ProgressiveHandler) buildAndExecuteRequest(
 		httpReq.Header.Set(key, value)
 	}
 
-	httpResp, err := h.httpClient.Do(httpReq)
+	client, err := h.httpClientForProfile(profileName, profile)
+	if err != nil {
+		return errorResultProg("Failed to create HTTP client for profile %q: %v", profileName, err), nil
+	}
+
+	httpResp, err := h.executeRequest(client, httpReq, profile)
 	if err != nil {
 		return errorResultProg("Failed to execute API call: %v", err), nil
 	}
