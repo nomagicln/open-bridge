@@ -26,7 +26,7 @@ features:
   - title: Progressive Disclosure
     details: Intelligent tool discovery strategy to handle large APIs without overwhelming AI context.
   - title: Secure & Fast
-    details: Uses the system keyring for credentials, with an encrypted file-backend fallback for headless systems; CLI startup is in single-digit milliseconds.
+    details: Uses the system keyring (with an encrypted file-backend fallback), caches remote OpenAPI specs for offline reuse, supports per-profile TLS/retry policies, and starts in single-digit milliseconds.
   - title: Multi-Platform
     details: Works natively on Linux, macOS, and Windows.
 ---

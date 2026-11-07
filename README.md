@@ -24,6 +24,8 @@
 - **MCP Server**: Native AI agent integration via Model Context Protocol
 - **Multi-Platform**: Works on Linux, macOS, and Windows
 - **Secure Credentials**: Uses system keyring (Keychain, Credential Manager, Secret Service); on headless systems, set `OPENBRIDGE_KEYRING_PASSWORD` to use an encrypted file backend
+- **Resilient Requests**: Per-profile timeout, retry policy and TLS options (custom CA, client certificates, insecure-skip-verify, minimum version)
+- **Offline-Friendly Remote Specs**: remote OpenAPI specs are cached locally and revalidated with `ETag` / `Last-Modified`
 - **Fast Startup**: CLI startup (`ob --version` / `--help`) in single-digit milliseconds; app command latency depends on OpenAPI spec size
 
 ## Installation
@@ -129,7 +131,20 @@ profiles:
       type: api_key
       location: header
       key_name: X-API-Key
+    timeout: 30s
+    tls:
+      ca_file: /etc/ssl/private-ca.pem
+      min_version: "1.2"
+    retry:
+      max_retries: 3
+      initial_delay: 200ms
+      max_delay: 2s
+      retryable_status_codes: [429, 503]
 ```
+
+Profile-level `timeout` / `tls` / `retry` settings are applied to CLI requests. MCP safety controls
+(`read_only_mode`, `require_confirm`, `max_requests_per_minute`, `dangerous_operation_patterns`, …)
+are documented in the CLI reference.
 
 Switch profiles with:
 

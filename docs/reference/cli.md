@@ -42,6 +42,55 @@ myapi users list --output json
 myapi users list --yaml
 ```
 
+## Profile Configuration
+
+Each profile in `<config-dir>/apps/<app>.yaml` can tune HTTP behavior used by the CLI:
+
+```yaml
+profiles:
+  prod:
+    base_url: https://api.example.com
+    timeout: 30s
+    tls:
+      ca_file: /etc/ssl/private-ca.pem   # custom CA bundle
+      cert_file: /etc/ssl/client.pem     # optional mTLS client certificate
+      key_file: /etc/ssl/client-key.pem
+      server_name: api.example.com       # optional SNI override
+      min_version: "1.2"                 # "1.2" or "1.3"
+      insecure_skip_verify: false
+    retry:
+      max_retries: 3
+      initial_delay: 200ms
+      max_delay: 2s
+      retryable_status_codes: [429, 503]
+```
+
+* `timeout` defaults to `30s`. `tls` and `retry` settings are applied to CLI requests.
+* Only idempotent methods (`GET`, `HEAD`, `PUT`, `DELETE`, `OPTIONS`) are retried; request bodies are replayed automatically.
+
+## MCP Safety Controls
+
+`safety` settings are enforced when MCP tools are invoked:
+
+```yaml
+profiles:
+  default:
+    safety:
+      read_only_mode: true
+      allowed_operations: [listPets]
+      denied_operations: [deletePet]
+      require_confirm: [POST, PUT, DELETE]
+      max_requests_per_minute: 30
+      dangerous_operation_patterns:
+        - "POST /admin"
+        - "DELETE /pets"
+```
+
+* `require_confirm` methods are rejected until the tool call includes `_confirm: true`; confirmation is never remembered.
+* `max_requests_per_minute` is enforced per process; over-limit calls fail with the remaining wait time.
+* `dangerous_operation_patterns` are regular expressions matched against `METHOD path` and the tool ID; matches are rejected even with confirmation.
+* `read_only_mode`, `allowed_operations` and `denied_operations` control which tools are exposed.
+
 ## OpenAPI Extensions
 
 Customize CLI behavior using `x-cli-*` extensions in your OpenAPI spec:

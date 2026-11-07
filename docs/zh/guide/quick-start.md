@@ -23,11 +23,12 @@ ob install myapi --spec ./openapi.yaml
     *   `Bearer`：标准 Bearer 令牌 (JWT)。
     *   `API Key`：通过 Header 或 Query 参数传递的密钥。
     *   `Basic`：用户名和密码。
-4.  **安全**：如果需要，配置 TLS 设置（如客户端证书）。*注意：TLS 配置目前会写入应用 profile，运行时生效能力计划在后续版本提供。*
+4.  **安全**：按需配置 TLS（自定义 CA、客户端证书、跳过校验、最低 TLS 版本）。这些设置会写入应用 profile，并应用到 CLI 请求。
 5.  **MCP 选项**：
     *   **渐进式披露 (Progressive Disclosure)**：为大型 API 启用此功能，以帮助 AI 智能体高效发现工具。
     *   **只读模式**：限制 AI 仅执行安全的 `GET` 操作。
     *   **敏感信息**：在为 AI 上下文生成的代码中隐藏 API 密钥。
+    *   **安全控制**：调用 MCP 工具时执行 `require_confirm`（需以 `_confirm=true` 重试确认）、`max_requests_per_minute` 与 `dangerous_operation_patterns`。
 
 ## 2. 运行命令
 
@@ -93,6 +94,9 @@ myapi --mcp
 - **逻辑运算**：`&&` (与), `||` (或), `!` (非)
 
 ## 配置
+
+远端 OpenAPI 规范缓存在 `<config-dir>/spec-cache`，并使用 `ETag` / `Last-Modified` 做条件重新验证；
+远端不可达时会使用缓存副本。
 
 配置文件存储在以下位置：
 

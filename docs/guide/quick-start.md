@@ -23,11 +23,12 @@ When you run the install command, `ob` will launch an interactive wizard to conf
     *   `Bearer`: Standard Bearer token (JWT).
     *   `API Key`: Key passed in Header or Query param.
     *   `Basic`: Username and Password.
-4.  **Security**: Configure TLS settings (like Client Certificates) if needed. *Note: TLS settings are persisted in the app profile today; runtime TLS wiring is planned for a follow-up release.*
+4.  **Security**: Configure TLS settings if needed (custom CA bundle, client certificates, skip-verify, minimum TLS version). These settings are stored in the app profile and applied to CLI requests.
 5.  **MCP Options**:
     *   **Progressive Disclosure**: Enable this for large APIs to help AI agents discover tools efficiently. 
     *   **Read-Only Mode**: Restrict the AI to only safe `GET` operations.
     *   **Sensitive Info**: Mask API keys in code generated for the AI context.
+    *   **Safety Controls**: `require_confirm` (retry with `_confirm=true`), `max_requests_per_minute` and `dangerous_operation_patterns` are enforced when MCP tools are invoked.
 
 ## 2. Run Commands
 
@@ -93,6 +94,9 @@ To handle large APIs efficiently, OpenBridge uses a **Progressive Disclosure** s
 - **Operations**: `&&` (AND), `||` (OR), `!` (NOT)
 
 ## Configuration
+
+Remote OpenAPI specs are cached under `<config-dir>/spec-cache` and revalidated with `ETag` /
+`Last-Modified`; if the remote source becomes unreachable, the cached copy is used.
 
 Configuration files are stored in:
 
