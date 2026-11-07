@@ -160,6 +160,13 @@ func convertOperationToMCPTool(method, path string, op *openapi3.Operation) mcp.
 	// Add request body parameters
 	required = addRequestBodyToSchema(op.RequestBody, properties, required)
 
+	// Optional confirmation flag for operations protected by
+	// SafetyConfig.RequireConfirm. It is stripped before the request is built.
+	properties[confirmArgumentName] = map[string]any{
+		"type":        "boolean",
+		"description": "Optional. Set to true to confirm this operation when the MCP safety policy requires confirmation (require_confirm). It is never forwarded to the API.",
+	}
+
 	inputSchema := map[string]any{
 		"type":       "object",
 		"properties": properties,

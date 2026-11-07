@@ -68,6 +68,7 @@ type ProgressiveHandler struct {
 	spec           *openapi3.T
 	appConfig      *config.AppConfig
 	profileName    string
+	safety         *safetyGuard
 }
 
 // NewProgressiveHandler creates a new progressive disclosure handler.
@@ -95,6 +96,11 @@ func NewProgressiveHandler(
 
 // SetSpec sets the OpenAPI specification and indexes tools.
 func (h *ProgressiveHandler) SetSpec(spec *openapi3.T, safetyConfig *config.SafetyConfig) error {
+	guard, err := newSafetyGuard(safetyConfig)
+	if err != nil {
+		return fmt.Errorf("invalid safety configuration: %w", err)
+	}
+	h.safety = guard
 	h.spec = spec
 
 	// Build registry from spec
@@ -280,6 +286,10 @@ func (h *ProgressiveHandler) buildInvokeToolDefinition() mcp.Tool {
 					"type":        "object",
 					"description": "The arguments to pass to the tool, matching its input schema.",
 				},
+				confirmArgumentName: map[string]any{
+					"type":        "boolean",
+					"description": "Optional. Set to true to confirm the invoked operation when the MCP safety policy requires confirmation (require_confirm). It is never forwarded to the API.",
+				},
 			},
 			"required": []string{"toolId"},
 		},
@@ -418,6 +428,9 @@ func (h *ProgressiveHandler) handleInvokeTool(_ context.Context, req *mcp.CallTo
 	var args struct {
 		ToolID    string         `json:"toolId"`
 		Arguments map[string]any `json:"arguments"`
+
+		// Confirm acknowledges an operation listed in SafetyConfig.RequireConfirm.
+		Confirm bool `json:"_confirm"`
 	}
 
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
@@ -428,6 +441,15 @@ func (h *ProgressiveHandler) handleInvokeTool(_ context.Context, req *mcp.CallTo
 		return errorResultProg("toolId is required"), nil
 	}
 
+	if args.Arguments == nil {
+		args.Arguments = map[string]any{}
+	}
+
+	// _confirm may be passed at the top level or inside arguments; it is
+	// invocation-only and never forwarded to the API.
+	confirmed := args.Confirm || confirmRequested(args.Arguments)
+	stripConfirmArgument(args.Arguments)
+
 	// Check if tool is loaded
 	if !h.registry.IsLoaded(args.ToolID) {
 		return errorResultProg("Tool '%s' is not loaded. Use LoadTool first.", args.ToolID), nil
@@ -437,6 +459,10 @@ func (h *ProgressiveHandler) handleInvokeTool(_ context.Context, req *mcp.CallTo
 	opInfo, ok := h.registry.GetOperationInfo(args.ToolID)
 	if !ok {
 		return errorResultProg("Operation info not found for tool: %s", args.ToolID), nil
+	}
+
+	if safetyResult := h.safety.checkInvocation(args.ToolID, opInfo.Method, opInfo.Path, confirmed); safetyResult != nil {
+		return safetyResult, nil
 	}
 
 	// Get active profile
