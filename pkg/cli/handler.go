@@ -720,13 +720,10 @@ func (h *Handler) showInvalidSyntaxError(appName string, tree *semantic.CommandT
 // showResourceOrVerbHelp handles single-argument input, determining if it's a resource or verb.
 // If it's a valid resource, shows resource help. Otherwise shows an error.
 func (h *Handler) showResourceOrVerbHelp(appName, arg string, appConfig *config.AppConfig) error {
-	// Load spec
-	specDoc, err := h.loadSpec(appName, appConfig)
+	tree, err := h.loadCommandTree(appName, appConfig)
 	if err != nil {
-		return err
+		return h.wrapSpecLoadError(err)
 	}
-
-	tree := h.mapper.BuildCommandTree(specDoc)
 
 	// Check if arg is a resource
 	res := h.findResource(tree, arg)
@@ -740,13 +737,10 @@ func (h *Handler) showResourceOrVerbHelp(appName, arg string, appConfig *config.
 
 // showResourceHelp shows help for a specific resource.
 func (h *Handler) showResourceHelp(appName, resourceName string, appConfig *config.AppConfig) error {
-	// Load spec
-	specDoc, err := h.loadSpec(appName, appConfig)
+	tree, err := h.loadCommandTree(appName, appConfig)
 	if err != nil {
-		return err
+		return h.wrapSpecLoadError(err)
 	}
-
-	tree := h.mapper.BuildCommandTree(specDoc)
 
 	// Find resource
 	res := h.findResource(tree, resourceName)
@@ -770,7 +764,8 @@ func (h *Handler) showResourceHelpFromResource(appName, resourceName string, res
 	if len(res.Operations) == 0 {
 		sb.WriteString("  (no operations available)\n")
 	} else {
-		for verbName, op := range res.Operations {
+		for _, verbName := range sortedOperationKeys(res.Operations) {
+			op := res.Operations[verbName]
 			fmt.Fprintf(&sb, "  %s %s", resourceName, verbName)
 			if op.Summary != "" {
 				fmt.Fprintf(&sb, " - %s", op.Summary)
@@ -782,7 +777,7 @@ func (h *Handler) showResourceHelpFromResource(appName, resourceName string, res
 	// Show sub-resources if any
 	if len(res.SubResources) > 0 {
 		sb.WriteString("\nSub-resources:\n")
-		for subName := range res.SubResources {
+		for _, subName := range sortedResourceKeys(res.SubResources) {
 			fmt.Fprintf(&sb, "  %s\n", subName)
 		}
 	}
@@ -790,24 +785,83 @@ func (h *Handler) showResourceHelpFromResource(appName, resourceName string, res
 	sb.WriteString("\nFor detailed command help:\n")
 	fmt.Fprintf(&sb, "  %s %s <verb> --help\n", appName, resourceName)
 
-	fmt.Print(sb.String())
+	h.writeOut(sb.String())
 	return nil
 }
 
-// loadSpec loads and caches the spec for an app.
-func (h *Handler) loadSpec(appName string, appConfig *config.AppConfig) (*openapi3.T, error) {
+// writeOut writes rendered help text to the handler's stdout.
+func (h *Handler) writeOut(text string) {
+	stdout := h.stdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+
+	_, _ = fmt.Fprint(stdout, text)
+}
+
+// loadCommandTree returns the semantic command tree for an app, preferring the
+// persisted derived index (which avoids parsing the spec) and falling back to
+// full spec parsing when the index cache is disabled, unavailable or stale.
+func (h *Handler) loadCommandTree(appName string, appConfig *config.AppConfig) (*semantic.CommandTree, error) {
+	if appConfig == nil {
+		return nil, fmt.Errorf("application configuration is missing")
+	}
+	if h.specParser == nil || h.mapper == nil {
+		return nil, fmt.Errorf("spec parser is not configured")
+	}
+
+	if appConfig.SpecSource != "" {
+		index, err := h.specParser.LoadDerivedIndex(context.Background(), appConfig.SpecSource, appName)
+		if err == nil && index != nil {
+			return index.CommandTree(), nil
+		}
+	}
+
 	specDoc, ok := h.specParser.GetCachedSpec(appName)
 	if !ok {
 		var err error
 		specDoc, err = h.specParser.LoadSpec(appConfig.SpecSource)
 		if err != nil {
-			return nil, h.printAndWrapError(h.errorFormatter.FormatError(fmt.Errorf("failed to load spec: %w", err)), err)
+			return nil, err
 		}
+
 		h.specParser.CacheSpec(appName, specDoc)
 	}
-	return specDoc, nil
+
+	return h.mapper.BuildCommandTree(specDoc), nil
 }
 
+// wrapSpecLoadError formats and prints a help-path spec load error exactly like
+// the pre-index help path did.
+func (h *Handler) wrapSpecLoadError(err error) error {
+	return h.printAndWrapError(h.errorFormatter.FormatError(fmt.Errorf("failed to load spec: %w", err)), err)
+}
+
+// sortedResourceKeys returns resource names sorted for deterministic help output.
+func sortedResourceKeys(resources map[string]*semantic.Resource) []string {
+	names := make([]string, 0, len(resources))
+	for name := range resources {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	return names
+}
+
+// sortedOperationKeys returns verb names sorted for deterministic help output.
+func sortedOperationKeys(operations map[string]*semantic.Operation) []string {
+	names := make([]string, 0, len(operations))
+	for name := range operations {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	return names
+}
+
+// showAppHelp displays help for the entire app.
 // showAppHelp displays help for the entire app.
 //
 //nolint:unparam // Returns nil for consistency with other help methods that may return errors.
@@ -819,25 +873,17 @@ func (h *Handler) showAppHelp(appName string, appConfig *config.AppConfig) error
 		fmt.Fprintf(&sb, "Description: %s\n\n", appConfig.Description)
 	}
 
-	// Load spec to show available resources
-	specDoc, ok := h.specParser.GetCachedSpec(appName)
-	if !ok {
-		var err error
-		specDoc, err = h.specParser.LoadSpec(appConfig.SpecSource)
-		if err != nil {
-			h.writeHelpWhenSpecLoadFails(&sb, appName)
-			return nil
-		}
-		h.specParser.CacheSpec(appName, specDoc)
+	tree, err := h.loadCommandTree(appName, appConfig)
+	if err != nil {
+		h.writeHelpWhenSpecLoadFails(&sb, appName)
+		return nil
 	}
-
-	tree := h.mapper.BuildCommandTree(specDoc)
 
 	h.writeResourcesSection(&sb, tree)
 	h.writeGlobalFlagsSection(&sb)
 	h.writeExamplesSection(&sb, appName, tree)
 
-	fmt.Print(sb.String())
+	h.writeOut(sb.String())
 	return nil
 }
 
@@ -845,15 +891,16 @@ func (h *Handler) writeHelpWhenSpecLoadFails(sb *strings.Builder, appName string
 	sb.WriteString("(Unable to load API specification)\n\n")
 	sb.WriteString("Examples:\n")
 	fmt.Fprintf(sb, "  %s <resource> <verb> [flags]\n", appName)
-	fmt.Print(sb.String())
+	h.writeOut(sb.String())
 }
 
 func (h *Handler) writeResourcesSection(sb *strings.Builder, tree *semantic.CommandTree) {
 	sb.WriteString("Available Resources:\n")
-	for resourceName, res := range tree.RootResources {
+	for _, resourceName := range sortedResourceKeys(tree.RootResources) {
+		res := tree.RootResources[resourceName]
 		fmt.Fprintf(sb, "  %s\n", resourceName)
 		// List sub-resources
-		for subName := range res.SubResources {
+		for _, subName := range sortedResourceKeys(res.SubResources) {
 			fmt.Fprintf(sb, "    %s\n", subName)
 		}
 	}
@@ -889,15 +936,15 @@ func (h *Handler) writeResourceExamples(sb *strings.Builder, appName string, tre
 	// Get first available resource for examples
 	var exampleResource string
 	var exampleVerbs []string
-	for resourceName, res := range tree.RootResources {
-		exampleResource = resourceName
-		for verbName := range res.Operations {
+	resourceNames := sortedResourceKeys(tree.RootResources)
+	if len(resourceNames) > 0 {
+		exampleResource = resourceNames[0]
+		for _, verbName := range sortedOperationKeys(tree.RootResources[exampleResource].Operations) {
 			exampleVerbs = append(exampleVerbs, verbName)
 			if len(exampleVerbs) >= 3 {
 				break
 			}
 		}
-		break
 	}
 
 	if exampleResource == "" {
@@ -988,10 +1035,11 @@ func (h *Handler) showUnknownResourceError(resource string, tree *semantic.Comma
 
 	// List available resources (including sub-resources)
 	sb.WriteString("Available resources:\n")
-	for resourceName, res := range tree.RootResources {
+	for _, resourceName := range sortedResourceKeys(tree.RootResources) {
+		res := tree.RootResources[resourceName]
 		fmt.Fprintf(&sb, "  %s\n", resourceName)
 		// List sub-resources
-		for subName := range res.SubResources {
+		for _, subName := range sortedResourceKeys(res.SubResources) {
 			fmt.Fprintf(&sb, "    %s\n", subName)
 		}
 	}
@@ -1009,7 +1057,7 @@ func (h *Handler) showUnknownVerbError(verb, resource string, res *semantic.Reso
 
 	// List available verbs for this resource
 	fmt.Fprintf(&sb, "Available verbs for '%s':\n", resource)
-	for verbName := range res.Operations {
+	for _, verbName := range sortedOperationKeys(res.Operations) {
 		fmt.Fprintf(&sb, "  %s\n", verbName)
 	}
 

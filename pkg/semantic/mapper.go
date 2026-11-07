@@ -7,6 +7,12 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 )
 
+// DerivedRulesVersion is bumped whenever the semantic derivation rules change
+// (resource/verb inference, action verb tables, conflict handling). Persisted
+// derived indexes embed this value in their parser fingerprint, so a bump
+// invalidates stale command trees.
+const DerivedRulesVersion = 1
+
 // Mapper handles the conversion of OpenAPI operations to semantic CLI commands.
 type Mapper struct {
 	extractor  *ResourceExtractor
@@ -48,6 +54,7 @@ type Operation struct {
 	Description string
 	Resource    string
 	Aliases     []string
+	Tags        []string
 }
 
 // getSortedPaths returns the sorted paths from the spec for deterministic behavior.
@@ -86,6 +93,7 @@ func (m *Mapper) processOperation(tree *CommandTree, allResources map[string]*Re
 		Summary:     op.Summary,
 		Description: op.Description,
 		Resource:    extractResult.Resource,
+		Tags:        append([]string(nil), op.Tags...),
 	}
 }
 

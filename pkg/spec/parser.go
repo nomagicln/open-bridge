@@ -120,6 +120,7 @@ type Parser struct {
 	loader       *openapi3.Loader
 	fetchOptions *SpecFetchOptions
 	remoteCache  *remoteCache
+	indexCache   *derivedIndexCache
 }
 
 // CachedSpec represents a cached OpenAPI specification with metadata.

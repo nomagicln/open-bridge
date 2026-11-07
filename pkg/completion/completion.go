@@ -49,18 +49,38 @@ func (p *Provider) CompleteAppNames(prefix string) []string {
 	return matches
 }
 
+// loadCommandTree returns the semantic command tree for an app, preferring the
+// persisted derived index (which avoids parsing the spec) and falling back to
+// full spec parsing when the index cache is disabled, unavailable or stale.
+func (p *Provider) loadCommandTree(appName string) (*semantic.CommandTree, error) {
+	appConfig, err := p.configMgr.GetAppConfig(appName)
+	if err != nil {
+		return nil, err
+	}
+
+	if p.specParser != nil && appConfig.SpecSource != "" {
+		index, indexErr := p.specParser.LoadDerivedIndex(context.Background(), appConfig.SpecSource, appName)
+		if indexErr == nil && index != nil {
+			return index.CommandTree(), nil
+		}
+	}
+
+	specDoc, err := p.loadSpec(appName)
+	if err != nil {
+		return nil, err
+	}
+
+	return p.mapper.BuildCommandTree(specDoc), nil
+}
+
 // CompleteVerbs returns available verbs for an app.
 func (p *Provider) CompleteVerbs(appName, prefix string) []string {
-	specDoc, err := p.loadSpec(appName)
+	tree, err := p.loadCommandTree(appName)
 	if err != nil {
 		return nil
 	}
 
-	tree := p.mapper.BuildCommandTree(specDoc)
-
-	verbs := p.collectVerbs(tree, prefix)
-
-	return verbs
+	return p.collectVerbs(tree, prefix)
 }
 
 // collectVerbs collects unique verbs from the command tree.
@@ -79,12 +99,10 @@ func (p *Provider) collectVerbs(tree *semantic.CommandTree, prefix string) []str
 
 // CompleteResources returns available resources for an app.
 func (p *Provider) CompleteResources(appName, prefix string) []string {
-	specDoc, err := p.loadSpec(appName)
+	tree, err := p.loadCommandTree(appName)
 	if err != nil {
 		return nil
 	}
-
-	tree := p.mapper.BuildCommandTree(specDoc)
 
 	return p.collectResources(tree, prefix)
 }
@@ -103,12 +121,10 @@ func (p *Provider) collectResources(tree *semantic.CommandTree, prefix string) [
 
 // CompleteResourcesForVerb returns available resources that support a given verb.
 func (p *Provider) CompleteResourcesForVerb(appName, verb, prefix string) []string {
-	specDoc, err := p.loadSpec(appName)
+	tree, err := p.loadCommandTree(appName)
 	if err != nil {
 		return nil
 	}
-
-	tree := p.mapper.BuildCommandTree(specDoc)
 
 	return p.collectResourcesWithVerb(tree, verb, prefix)
 }
@@ -133,12 +149,10 @@ func hasVerb(res *semantic.Resource, verb string) bool {
 
 // CompleteVerbsForResource returns available verbs for a given resource.
 func (p *Provider) CompleteVerbsForResource(appName, resource, prefix string) []string {
-	specDoc, err := p.loadSpec(appName)
+	tree, err := p.loadCommandTree(appName)
 	if err != nil {
 		return nil
 	}
-
-	tree := p.mapper.BuildCommandTree(specDoc)
 
 	return p.collectVerbsForResource(tree, resource, prefix)
 }

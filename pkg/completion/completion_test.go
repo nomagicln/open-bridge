@@ -264,3 +264,159 @@ func TestCompleteFlagValues(t *testing.T) {
 		assert.Nil(t, values)
 	})
 }
+
+// completionIndexSpec is a two-resource spec used by the derived-index
+// completion tests.
+const completionIndexSpec = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Completion Index API", "version": "1.0.0"},
+  "paths": {
+    "/pets": {
+      "get": {"operationId": "listPets", "summary": "List pets", "responses": {"200": {"description": "OK"}}},
+      "post": {"operationId": "createPet", "summary": "Create pet", "responses": {"201": {"description": "Created"}}}
+    },
+    "/toys": {
+      "get": {"operationId": "listToys", "summary": "List toys", "responses": {"200": {"description": "OK"}}}
+    }
+  }
+}`
+
+// writeCompletionIndexSpec writes the shared spec and returns its path.
+func writeCompletionIndexSpec(t *testing.T) string {
+	t.Helper()
+
+	specPath := filepath.Join(t.TempDir(), "completion-index.json")
+	if err := os.WriteFile(specPath, []byte(completionIndexSpec), 0o600); err != nil {
+		t.Fatalf("write completion spec: %v", err)
+	}
+
+	return specPath
+}
+
+// corruptCompletionSpec rewrites the spec with garbage of the same size and
+// restores its modification time, so the derived-index key still matches while
+// parsing the file would fail.
+func corruptCompletionSpec(t *testing.T, specPath string) {
+	t.Helper()
+
+	info, err := os.Stat(specPath)
+	if err != nil {
+		t.Fatalf("stat spec: %v", err)
+	}
+
+	garbage := make([]byte, int(info.Size()))
+	for i := range garbage {
+		garbage[i] = 'x'
+	}
+	if err := os.WriteFile(specPath, garbage, 0o600); err != nil {
+		t.Fatalf("corrupt spec: %v", err)
+	}
+	if err := os.Chtimes(specPath, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatalf("restore spec mtime: %v", err)
+	}
+}
+
+// saveCompletionIndexApp persists an app config pointing at specPath.
+func saveCompletionIndexApp(t *testing.T, configMgr *config.Manager, appName, specPath string) {
+	t.Helper()
+
+	appConfig := &config.AppConfig{
+		Name:           appName,
+		SpecSource:     specPath,
+		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{
+			"default": {Name: "default", BaseURL: "https://api.example.com"},
+		},
+	}
+	require.NoError(t, configMgr.SaveAppConfig(appConfig))
+}
+
+// newIndexedProvider builds a completion provider whose parser uses a persistent
+// derived index cache.
+func newIndexedProvider(configMgr *config.Manager, indexDir string) *Provider {
+	return NewProvider(configMgr, spec.NewParser(spec.WithIndexCache(indexDir)), semantic.NewMapper())
+}
+
+func TestCompleteResourcesUsesDerivedIndexWithoutParsing(t *testing.T) {
+	configMgr, _, mapper := setupTestEnv(t)
+	specPath := writeCompletionIndexSpec(t)
+	saveCompletionIndexApp(t, configMgr, "idxcomplete", specPath)
+	indexDir := t.TempDir()
+
+	cold := NewProvider(configMgr, spec.NewParser(spec.WithIndexCache(indexDir)), mapper)
+	coldResources := cold.CompleteResources("idxcomplete", "")
+	require.NotEmpty(t, coldResources)
+	assert.Contains(t, coldResources, "pets")
+	assert.Contains(t, coldResources, "toys")
+
+	corruptCompletionSpec(t, specPath)
+
+	warm := newIndexedProvider(configMgr, indexDir)
+	warmResources := warm.CompleteResources("idxcomplete", "")
+	assert.Equal(t, coldResources, warmResources,
+		"completion should be served from the derived index after the spec becomes unparseable")
+}
+
+func TestCompleteVerbsForResourceUsesDerivedIndexWithoutParsing(t *testing.T) {
+	configMgr, _, mapper := setupTestEnv(t)
+	specPath := writeCompletionIndexSpec(t)
+	saveCompletionIndexApp(t, configMgr, "idxverbs", specPath)
+	indexDir := t.TempDir()
+
+	cold := NewProvider(configMgr, spec.NewParser(spec.WithIndexCache(indexDir)), mapper)
+	coldResources := cold.CompleteResources("idxverbs", "")
+	require.NotEmpty(t, coldResources)
+	coldVerbs := cold.CompleteVerbsForResource("idxverbs", "pets", "")
+	require.NotEmpty(t, coldVerbs)
+	assert.Contains(t, coldVerbs, "list")
+	assert.Contains(t, coldVerbs, "create")
+
+	corruptCompletionSpec(t, specPath)
+
+	warm := newIndexedProvider(configMgr, indexDir)
+	warmVerbs := warm.CompleteVerbsForResource("idxverbs", "pets", "")
+	assert.Equal(t, coldVerbs, warmVerbs,
+		"verb completion should be served from the derived index after the spec becomes unparseable")
+}
+
+func TestCompleteVerbsUsesDerivedIndexWithoutParsing(t *testing.T) {
+	configMgr, _, mapper := setupTestEnv(t)
+	specPath := writeCompletionIndexSpec(t)
+	saveCompletionIndexApp(t, configMgr, "idxallverbs", specPath)
+	indexDir := t.TempDir()
+
+	cold := NewProvider(configMgr, spec.NewParser(spec.WithIndexCache(indexDir)), mapper)
+	coldVerbs := cold.CompleteVerbs("idxallverbs", "")
+	require.NotEmpty(t, coldVerbs)
+
+	corruptCompletionSpec(t, specPath)
+
+	warm := newIndexedProvider(configMgr, indexDir)
+	assert.Equal(t, coldVerbs, warm.CompleteVerbs("idxallverbs", ""))
+}
+
+func TestCompleteResourcesWithFilterUsesDerivedIndex(t *testing.T) {
+	configMgr, _, mapper := setupTestEnv(t)
+	indexDir := t.TempDir()
+	specPath := writeCompletionIndexSpec(t)
+	saveCompletionIndexApp(t, configMgr, "idxfilter", specPath)
+
+	cold := NewProvider(configMgr, spec.NewParser(spec.WithIndexCache(indexDir)), mapper)
+	filtered := cold.CompleteResources("idxfilter", "pe")
+	assert.Equal(t, []string{"pets"}, filtered)
+
+	corruptCompletionSpec(t, specPath)
+
+	warm := newIndexedProvider(configMgr, indexDir)
+	assert.Equal(t, []string{"pets"}, warm.CompleteResources("idxfilter", "pe"))
+}
+
+func TestCompletionFallsBackWhenIndexDisabled(t *testing.T) {
+	configMgr, specParser, mapper := setupTestEnv(t)
+	specPath := writeCompletionIndexSpec(t)
+	saveCompletionIndexApp(t, configMgr, "noindex", specPath)
+
+	provider := NewProvider(configMgr, specParser, mapper)
+	assert.Contains(t, provider.CompleteResources("noindex", ""), "pets")
+	assert.Contains(t, provider.CompleteVerbsForResource("noindex", "pets", ""), "list")
+}
