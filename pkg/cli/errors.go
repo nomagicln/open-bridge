@@ -112,6 +112,46 @@ func (f *ErrorFormatter) formatAppNotFoundError(err *config.AppNotFoundError, in
 	return sb.String()
 }
 
+// redactedQueryValue is the placeholder shown instead of sensitive query values.
+const redactedQueryValue = "REDACTED"
+
+// redactURL returns a URL that is safe to print: query parameter values are
+// replaced with a placeholder (parameter names are preserved) and userinfo
+// credentials are removed.
+func redactURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		// Fail closed: never echo a query string we could not parse safely.
+		withoutQuery, _, _ := strings.Cut(rawURL, "?")
+		return withoutQuery
+	}
+
+	parsed.User = nil
+	if parsed.RawQuery == "" {
+		return parsed.String()
+	}
+
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		// Fail closed on malformed query strings.
+		parsed.RawQuery = ""
+		return parsed.String()
+	}
+
+	for key := range query {
+		for i := range query[key] {
+			query[key][i] = redactedQueryValue
+		}
+	}
+	parsed.RawQuery = query.Encode()
+
+	return parsed.String()
+}
+
 // formatNetworkError formats network connectivity errors.
 func (f *ErrorFormatter) formatNetworkError(err error) string {
 	var sb strings.Builder
@@ -124,7 +164,7 @@ func (f *ErrorFormatter) formatNetworkError(err error) string {
 		var e1 *net.OpError
 		switch {
 		case errors.As(err, &e):
-			targetURL = e.URL
+			targetURL = redactURL(e.URL)
 			fmt.Fprintf(&sb, "Failed to connect to: %s\n", targetURL)
 			if e.Timeout() {
 				sb.WriteString("Reason: Connection timeout\n\n")
@@ -135,7 +175,7 @@ func (f *ErrorFormatter) formatNetworkError(err error) string {
 			}
 		case errors.As(err, &e1):
 			if e1.Addr != nil {
-				targetURL = e1.Addr.String()
+				targetURL = redactURL(e1.Addr.String())
 				fmt.Fprintf(&sb, "Failed to connect to: %s\n", targetURL)
 			}
 			fmt.Fprintf(&sb, "Reason: %v\n\n", e1.Err)

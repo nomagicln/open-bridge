@@ -246,6 +246,111 @@ func TestGeneratePython(t *testing.T) { //nolint:dupl // Python-specific test se
 	verifyGeneratorOutput(t, code, []string{"import requests", "requests."})
 }
 
+func TestMaskURL(t *testing.T) {
+	tests := []struct {
+		name        string
+		raw         string
+		maskSecrets bool
+		expected    string
+	}{
+		{
+			name:        "masks api key query value and keeps other parameters",
+			raw:         "https://api.example.com/v1/pets?api_key=SECRET&limit=10",
+			maskSecrets: true,
+			expected:    "https://api.example.com/v1/pets?api_key=<YOUR_API_KEY>&limit=10",
+		},
+		{
+			name:        "masks token-like parameter names case-insensitively",
+			raw:         "https://api.example.com/items?X-Api-Key=SECRET&access_token=abc123&offset=5",
+			maskSecrets: true,
+			expected:    "https://api.example.com/items?X-Api-Key=<YOUR_API_KEY>&access_token=<YOUR_API_KEY>&offset=5",
+		},
+		{
+			name:        "does not mask unrelated parameters",
+			raw:         "https://api.example.com/items?monkey=friendly&limit=10",
+			maskSecrets: true,
+			expected:    "https://api.example.com/items?monkey=friendly&limit=10",
+		},
+		{
+			name:        "no query string is unchanged",
+			raw:         "https://api.example.com/v1/pets",
+			maskSecrets: true,
+			expected:    "https://api.example.com/v1/pets",
+		},
+		{
+			name:        "masking disabled leaves url untouched",
+			raw:         "https://api.example.com/v1/pets?api_key=SECRET",
+			maskSecrets: false,
+			expected:    "https://api.example.com/v1/pets?api_key=SECRET",
+		},
+		{
+			name:        "empty url",
+			raw:         "",
+			maskSecrets: true,
+			expected:    "",
+		},
+		{
+			name:        "malformed url does not leak query values",
+			raw:         "http://[::1?api_key=SECRET",
+			maskSecrets: true,
+			expected:    "http://[::1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := maskURL(tt.raw, tt.maskSecrets)
+			if result != tt.expected {
+				t.Errorf("maskURL(%q, %v) = %q, want %q", tt.raw, tt.maskSecrets, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGeneratorsMaskURLSecrets(t *testing.T) {
+	formats := []OutputFormat{FormatCurl, FormatGo, FormatNodeJS, FormatPython}
+	const sensitiveURL = "https://api.example.com/v1/pets?api_key=SECRET&limit=10"
+
+	for _, format := range formats {
+		t.Run(string(format), func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, sensitiveURL, nil)
+			if err != nil {
+				t.Fatalf("failed to create request: %v", err)
+			}
+
+			maskedGen, err := NewGenerator(format, Options{MaskSecrets: true})
+			if err != nil {
+				t.Fatalf("NewGenerator(%s) failed: %v", format, err)
+			}
+			maskedCode, err := maskedGen.Generate(req)
+			if err != nil {
+				t.Fatalf("Generate(%s) failed: %v", format, err)
+			}
+			if bytes.Contains([]byte(maskedCode), []byte("SECRET")) {
+				t.Errorf("%s generator leaked a sensitive query value:\n%s", format, maskedCode)
+			}
+			if !bytes.Contains([]byte(maskedCode), []byte("<YOUR_API_KEY>")) {
+				t.Errorf("%s generator did not mask the token query value:\n%s", format, maskedCode)
+			}
+			if !bytes.Contains([]byte(maskedCode), []byte("limit=10")) {
+				t.Errorf("%s generator dropped non-sensitive query parameters:\n%s", format, maskedCode)
+			}
+
+			rawGen, err := NewGenerator(format, Options{MaskSecrets: false})
+			if err != nil {
+				t.Fatalf("NewGenerator(%s) failed: %v", format, err)
+			}
+			rawCode, err := rawGen.Generate(req)
+			if err != nil {
+				t.Fatalf("Generate(%s) failed: %v", format, err)
+			}
+			if !bytes.Contains([]byte(rawCode), []byte("api_key=SECRET")) {
+				t.Errorf("%s generator must keep the URL untouched when masking is disabled:\n%s", format, rawCode)
+			}
+		})
+	}
+}
+
 func verifyGeneratorOutput(t *testing.T, code string, requiredStrings []string) {
 	if len(code) == 0 {
 		t.Fatal("Generated code is empty")

@@ -102,7 +102,7 @@ func (g *PythonGenerator) writeResponseAssignment(buf *bytes.Buffer, req *http.R
 	buf.WriteString(strings.ToLower(req.Method))
 	buf.WriteString("(\n")
 	buf.WriteString("    '")
-	buf.WriteString(req.URL.String())
+	buf.WriteString(maskURL(req.URL.String(), g.opts.MaskSecrets))
 	buf.WriteString("',\n")
 }
 

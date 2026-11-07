@@ -39,7 +39,7 @@ func (g *NodeJSGenerator) Generate(req *http.Request) (string, error) {
 	var buf bytes.Buffer
 
 	buf.WriteString("const response = await fetch('")
-	buf.WriteString(req.URL.String())
+	buf.WriteString(maskURL(req.URL.String(), g.opts.MaskSecrets))
 	buf.WriteString("', {\n")
 
 	// Method

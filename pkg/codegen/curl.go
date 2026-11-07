@@ -38,7 +38,7 @@ func (g *CurlGenerator) writeCurlCommand(buf *bytes.Buffer, req *http.Request) {
 // writeURL writes the URL to the buffer.
 func (g *CurlGenerator) writeURL(buf *bytes.Buffer, req *http.Request) {
 	buf.WriteString(" '")
-	buf.WriteString(req.URL.String())
+	buf.WriteString(maskURL(req.URL.String(), g.opts.MaskSecrets))
 	buf.WriteString("'")
 }
 
