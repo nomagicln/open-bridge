@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -35,7 +36,7 @@ import (
 const (
 	// DerivedIndexSchemaVersion is bumped whenever the DerivedIndex DTO fields or
 	// their semantics change in a way that invalidates persisted indexes.
-	DerivedIndexSchemaVersion = 3
+	DerivedIndexSchemaVersion = 4
 	// derivedIndexFormatVersion is the on-disk container format version.
 	derivedIndexFormatVersion = 1
 	// derivedIndexMagicSize is the length of the file magic.
@@ -116,7 +117,7 @@ type DerivedOperation struct {
 	Aliases              []string
 	Tags                 []string
 	Parameters           []DerivedParameter
-	BodyFields           []DerivedField
+	BodySchema           *DerivedSchema
 	BodyRequired         bool
 	BodyMediaType        string
 	HasBody              bool
@@ -128,38 +129,46 @@ type DerivedOperation struct {
 	ExecutionBlockReason string
 }
 
-// DerivedParameter is the parameter subset needed by command help and flag
-// completion. Enum values are stored pre-formatted with %v so help output is
-// byte-identical to the parsing path.
+// DerivedParameter is the parameter subset needed by command help, flag
+// completion and the execution fast path.
 type DerivedParameter struct {
 	Name                 string
 	In                   string
 	Required             bool
-	Type                 string
-	Types                []string
-	Enum                 []string
-	EnumAreStrings       bool
 	Description          string
 	DescriptionTruncated bool
 	HasExample           bool
 	Example              string
-	HasSchemaExample     bool
-	SchemaExample        string
+	Schema               *DerivedSchema
 }
 
-// DerivedField is a request-body property subset needed by command help.
-type DerivedField struct {
-	Name                 string
-	Required             bool
-	Type                 string
-	Types                []string
-	Enum                 []string
-	EnumAreStrings       bool
-	Description          string
-	DescriptionTruncated bool
-	HasExample           bool
-	Example              string
+// DerivedSchema is a recursive, gob-encodable OpenAPI schema subset. It is
+// explicit (never a gob-encoded openapi3.Schema) and is rebuilt recursively for
+// both command help and the execution fast path.
+type DerivedSchema struct {
+	Type                        string
+	Types                       []string
+	Format                      string
+	Enum                        []string
+	EnumAreStrings              bool
+	Description                 string
+	DescriptionTruncated        bool
+	HasExample                  bool
+	Example                     string
+	Required                    []string
+	Properties                  map[string]*DerivedSchema
+	Items                       *DerivedSchema
+	AdditionalProperties        *DerivedSchema
+	AdditionalPropertiesSet     bool
+	AdditionalPropertiesAllowed bool
+	OneOf                       []*DerivedSchema
+	AnyOf                       []*DerivedSchema
+	AllOf                       []*DerivedSchema
+	Ref                         string
 }
+
+// derivedSchemaMaxDepth bounds recursive schema reconstruction.
+const derivedSchemaMaxDepth = 16
 
 // derivedIndexKey identifies one persisted index entry and is embedded in the
 // file header (and hashed into the file name).
@@ -819,164 +828,296 @@ func populateDerivedResourceDetails(resource *DerivedResource, doc *openapi3.T) 
 	}
 }
 
-// applySpecDetails copies the help-relevant operation details into the DTO.
+// applySpecDetails copies the help/execution-relevant operation details into the DTO.
 func (op *DerivedOperation) applySpecDetails(opSpec *openapi3.Operation) {
 	if op.Description != "" {
 		op.Description, op.DescriptionTruncated = trimIndexText(op.Description)
 	}
 
-	op.Parameters = extractDerivedParameters(opSpec)
-	op.BodyFields, op.BodyRequired, op.BodyMediaType, op.HasBody = extractDerivedBody(opSpec)
-	op.ExecutionIndexable, op.ExecutionBlockReason = executionIndexability(opSpec)
-}
+	params, paramReason := extractDerivedParameters(opSpec)
+	op.Parameters = params
 
-// executionIndexability reports whether the CLI execution path can be driven
-// from the persisted index alone for this operation, together with the reason
-// when it cannot. Only simple scalar parameters and scalar/string-array body
-// fields are supported; anything requiring the full schema (nested objects,
-// arrays of objects, composed or untyped schemas, non-JSON bodies) safely falls
-// back to parsing the spec.
-func executionIndexability(opSpec *openapi3.Operation) (bool, string) {
-	if opSpec == nil {
-		return false, "operation spec unavailable"
+	bodySchema, bodyRequired, bodyMedia, hasBody, bodyReason := extractDerivedBody(opSpec)
+	op.BodySchema = bodySchema
+	op.BodyRequired = bodyRequired
+	op.BodyMediaType = bodyMedia
+	op.HasBody = hasBody
+
+	reason := paramReason
+	if reason == "" {
+		reason = bodyReason
 	}
 
-	if reason := executionParametersBlockReason(opSpec.Parameters); reason != "" {
-		return false, reason
-	}
-
-	return executionBodyBlockReason(opSpec.RequestBody)
+	op.ExecutionIndexable = reason == ""
+	op.ExecutionBlockReason = reason
 }
 
-// executionParametersBlockReason checks the operation parameters for schemas
-// that the index cannot reconstruct faithfully.
-func executionParametersBlockReason(parameters openapi3.Parameters) string {
-	for _, ref := range parameters {
+// extractDerivedParameters converts OpenAPI parameters into the persisted form.
+// It always builds the best-effort DTO (so help can still render) and returns
+// the first reason why execution from the index would not be equivalent.
+func extractDerivedParameters(opSpec *openapi3.Operation) ([]DerivedParameter, string) {
+	if opSpec == nil || len(opSpec.Parameters) == 0 {
+		return nil, ""
+	}
+
+	params := make([]DerivedParameter, 0, len(opSpec.Parameters))
+	visited := make(map[*openapi3.Schema]bool)
+	reason := ""
+
+	for _, ref := range opSpec.Parameters {
 		if ref == nil || ref.Value == nil {
-			return "parameter reference is not resolved"
+			reason = firstNonEmptyReason(reason, "parameter reference is not resolved")
+			continue
 		}
 
 		param := ref.Value
+		derived := DerivedParameter{
+			Name:     param.Name,
+			In:       param.In,
+			Required: param.Required,
+		}
+
+		if param.Description != "" {
+			derived.Description, derived.DescriptionTruncated = trimIndexText(param.Description)
+		}
+
+		if param.Example != nil {
+			derived.HasExample = true
+			derived.Example = fmt.Sprintf("%v", param.Example)
+		}
+
 		if len(param.Content) > 0 {
-			return "parameter uses a content schema"
+			reason = firstNonEmptyReason(reason, "parameter uses a content schema")
+		} else if param.Schema == nil || param.Schema.Value == nil {
+			reason = firstNonEmptyReason(reason, "parameter has no schema")
+		} else {
+			schema, schemaReason := derivedSchemaFromRef(param.Schema, visited, 0)
+			derived.Schema = schema
+			reason = firstNonEmptyReason(reason, schemaReason)
 		}
 
-		if param.Schema == nil || param.Schema.Value == nil {
-			return "parameter has no schema"
-		}
-
-		if reason := executionSchemaBlockReason(param.Schema.Value, "parameter "+param.Name); reason != "" {
-			return reason
-		}
+		params = append(params, derived)
 	}
 
-	return ""
+	return params, reason
 }
 
-// executionBodyBlockReason checks the request body for schemas that the index
-// cannot reconstruct faithfully.
-func executionBodyBlockReason(bodyRef *openapi3.RequestBodyRef) (bool, string) {
-	if bodyRef == nil || bodyRef.Value == nil {
-		return true, ""
+// extractDerivedBody converts a request body schema into the persisted form.
+func extractDerivedBody(opSpec *openapi3.Operation) (*DerivedSchema, bool, string, bool, string) {
+	if opSpec == nil || opSpec.RequestBody == nil || opSpec.RequestBody.Value == nil {
+		return nil, false, "", false, ""
 	}
 
-	body := bodyRef.Value
+	body := opSpec.RequestBody.Value
+	reason := ""
+
 	if len(body.Content) != 1 {
-		return false, "request body has multiple media types"
+		reason = "request body has multiple media types"
 	}
+
+	visited := make(map[*openapi3.Schema]bool)
 
 	for media, content := range body.Content {
-		if media != "application/json" {
-			return false, "request body media type is not application/json"
-		}
-
 		if content == nil || content.Schema == nil || content.Schema.Value == nil {
-			return false, "request body has no schema"
+			reason = firstNonEmptyReason(reason, "request body has no schema")
+
+			return nil, body.Required, media, false, reason
 		}
 
-		if reason := executionBodySchemaBlockReason(content.Schema.Value); reason != "" {
-			return false, reason
+		schema, schemaReason := derivedSchemaFromRef(content.Schema, visited, 0)
+		reason = firstNonEmptyReason(reason, schemaReason)
+
+		if media != "application/json" {
+			reason = firstNonEmptyReason(reason, "request body media type is not application/json")
 		}
+
+		return schema, body.Required, media, schema != nil, reason
 	}
 
-	return true, ""
+	return nil, body.Required, "", false, reason
 }
 
-// executionBodySchemaBlockReason validates the request body object schema.
-func executionBodySchemaBlockReason(schema *openapi3.Schema) string {
-	if schema.Type == nil || !schema.Type.Is("object") {
-		return "request body schema is not an object"
+// derivedSchemaFromRef converts a schema reference recursively. A non-empty
+// reason means the schema cannot be used by the execution fast path.
+func derivedSchemaFromRef(ref *openapi3.SchemaRef, visited map[*openapi3.Schema]bool, depth int) (*DerivedSchema, string) {
+	if ref == nil || ref.Value == nil {
+		return nil, "schema reference is not resolved"
 	}
 
-	if len(schema.AllOf) > 0 || len(schema.OneOf) > 0 || len(schema.AnyOf) > 0 {
-		return "request body uses a composed schema"
+	return derivedSchemaFromSchema(ref.Value, ref.Ref, visited, depth)
+}
+
+// derivedSchemaFromSchema converts one resolved OpenAPI schema recursively.
+func derivedSchemaFromSchema(schema *openapi3.Schema, refName string, visited map[*openapi3.Schema]bool, depth int) (*DerivedSchema, string) {
+	if schema == nil {
+		return nil, "schema is missing"
 	}
 
-	if schema.AdditionalProperties.Schema != nil || schema.AdditionalProperties.Has != nil {
-		return "request body has additional properties"
+	if depth > derivedSchemaMaxDepth {
+		return nil, "schema nesting is too deep"
 	}
 
-	for _, name := range schema.Required {
-		if _, ok := schema.Properties[name]; !ok {
-			return "request body required field is missing from properties"
-		}
+	if visited[schema] {
+		return nil, "recursive schema"
 	}
+
+	visited[schema] = true
+	defer delete(visited, schema)
+
+	derived := &DerivedSchema{Format: schema.Format, Ref: refName}
+	applyDerivedSchemaBasics(derived, schema)
+
+	reason := applyDerivedSchemaChildren(derived, schema, visited, depth)
+
+	return derived, firstNonEmptyReason(reason, schemaExecutionReason(derived))
+}
+
+// applyDerivedSchemaBasics copies the scalar schema keywords.
+func applyDerivedSchemaBasics(derived *DerivedSchema, schema *openapi3.Schema) {
+	if schema.Type != nil {
+		derived.Types = append([]string(nil), schema.Type.Slice()...)
+		derived.Type = primarySchemaType(derived.Types)
+	}
+
+	derived.Enum, derived.EnumAreStrings = formatEnumValues(schema.Enum)
+
+	if schema.Description != "" {
+		derived.Description, derived.DescriptionTruncated = trimIndexText(schema.Description)
+	}
+
+	if schema.Example != nil {
+		derived.HasExample = true
+		derived.Example = fmt.Sprintf("%v", schema.Example)
+	}
+
+	derived.Required = append([]string(nil), schema.Required...)
+}
+
+// applyDerivedSchemaChildren converts the nested schema keywords.
+func applyDerivedSchemaChildren(derived *DerivedSchema, schema *openapi3.Schema, visited map[*openapi3.Schema]bool, depth int) string {
+	reason := ""
+
+	derived.OneOf, reason = derivedSchemaList(schema.OneOf, visited, depth, reason)
+	derived.AnyOf, reason = derivedSchemaList(schema.AnyOf, visited, depth, reason)
+	derived.AllOf, reason = derivedSchemaList(schema.AllOf, visited, depth, reason)
+
+	derived.AdditionalPropertiesSet, derived.AdditionalPropertiesAllowed, derived.AdditionalProperties, reason = derivedAdditionalProperties(schema, visited, depth, reason)
+
+	derived.Properties = make(map[string]*DerivedSchema, len(schema.Properties))
 
 	for name, propRef := range schema.Properties {
-		if propRef == nil || propRef.Value == nil {
-			return "request body property reference is not resolved"
-		}
-
-		if reason := executionSchemaBlockReason(propRef.Value, "request body field "+name); reason != "" {
-			return reason
-		}
+		child, childReason := derivedSchemaFromRef(propRef, visited, depth+1)
+		derived.Properties[name] = child
+		reason = firstNonEmptyReason(reason, childReason)
 	}
 
-	return ""
+	if len(derived.Properties) == 0 {
+		derived.Properties = nil
+	}
+
+	if schema.Items != nil {
+		items, itemsReason := derivedSchemaFromRef(schema.Items, visited, depth+1)
+		derived.Items = items
+		reason = firstNonEmptyReason(reason, itemsReason)
+	}
+
+	return reason
 }
 
-// executionSchemaBlockReason returns a non-empty reason when the schema needs
-// the full parser, or an empty string when it is a simple scalar or a string
-// array that the index can reconstruct faithfully.
-func executionSchemaBlockReason(schema *openapi3.Schema, what string) string {
-	if schema == nil || schema.Type == nil {
-		return what + " has no type"
+// derivedSchemaList converts a list of schemas (oneOf/anyOf/allOf).
+func derivedSchemaList(refs []*openapi3.SchemaRef, visited map[*openapi3.Schema]bool, depth int, reason string) ([]*DerivedSchema, string) {
+	if len(refs) == 0 {
+		return nil, reason
 	}
 
-	if len(schema.AllOf) > 0 || len(schema.OneOf) > 0 || len(schema.AnyOf) > 0 {
-		return what + " uses a composed schema"
+	derived := make([]*DerivedSchema, 0, len(refs))
+
+	for _, ref := range refs {
+		child, childReason := derivedSchemaFromRef(ref, visited, depth+1)
+		derived = append(derived, child)
+		reason = firstNonEmptyReason(reason, childReason)
 	}
 
-	types := schema.Type.Slice()
-	if len(types) != 1 {
-		return what + " uses a union type"
+	return derived, reason
+}
+
+// derivedAdditionalProperties converts the additionalProperties keyword.
+func derivedAdditionalProperties(schema *openapi3.Schema, visited map[*openapi3.Schema]bool, depth int, reason string) (set, allowed bool, derived *DerivedSchema, outReason string) {
+	outReason = reason
+
+	if schema.AdditionalProperties.Schema != nil {
+		child, childReason := derivedSchemaFromRef(schema.AdditionalProperties.Schema, visited, depth+1)
+
+		return true, true, child, firstNonEmptyReason(outReason, childReason)
 	}
 
-	switch types[0] {
+	if schema.AdditionalProperties.Has != nil {
+		return true, *schema.AdditionalProperties.Has, nil, outReason
+	}
+
+	return false, false, nil, outReason
+}
+
+// schemaExecutionReason reports why a converted schema cannot drive the
+// execution fast path (empty when it can).
+func schemaExecutionReason(schema *DerivedSchema) string {
+	if schema == nil {
+		return "schema is missing"
+	}
+
+	if len(schema.AllOf) > 0 {
+		return "schema uses allOf"
+	}
+
+	if schema.AdditionalPropertiesSet {
+		return "schema has additionalProperties"
+	}
+
+	if len(schema.Types) == 0 {
+		if len(schema.OneOf) > 0 || len(schema.AnyOf) > 0 {
+			return ""
+		}
+
+		return "schema has no type"
+	}
+
+	if len(schema.Types) != 1 {
+		return "schema uses a union type"
+	}
+
+	switch schema.Types[0] {
 	case "string", "integer", "number", "boolean":
-		if len(schema.Properties) > 0 {
-			return what + " is an object"
+		if len(schema.Enum) > 0 && !schema.EnumAreStrings {
+			return "schema has a non-string enum"
+		}
+
+		return ""
+	case "object":
+		for _, required := range schema.Required {
+			if _, ok := schema.Properties[required]; !ok {
+				return "required property is missing from properties"
+			}
 		}
 
 		return ""
 	case "array":
-		if schema.Items == nil || schema.Items.Value == nil || schema.Items.Value.Type == nil {
-			return what + " array has no item schema"
-		}
-
-		itemTypes := schema.Items.Value.Type.Slice()
-		if len(itemTypes) != 1 || itemTypes[0] != "string" {
-			return what + " is not an array of strings"
+		if schema.Items == nil {
+			return "array has no item schema"
 		}
 
 		return ""
 	default:
-		if types[0] == "object" {
-			return what + " is a nested object"
-		}
-
-		return what + " has unsupported type " + types[0]
+		return "unsupported schema type " + schema.Types[0]
 	}
+}
+
+// firstNonEmptyReason returns primary when it is non-empty, else fallback.
+func firstNonEmptyReason(primary, fallback string) string {
+	if primary != "" {
+		return primary
+	}
+
+	return fallback
 }
 
 // SemanticOperation reconstructs the semantic operation metadata used by the
@@ -997,121 +1138,6 @@ func (op *DerivedOperation) SemanticOperation() *semantic.Operation {
 		Aliases:     append([]string(nil), op.Aliases...),
 		Tags:        append([]string(nil), op.Tags...),
 	}
-}
-
-// extractDerivedParameters converts OpenAPI parameters into the persisted form.
-func extractDerivedParameters(opSpec *openapi3.Operation) []DerivedParameter {
-	if opSpec == nil || len(opSpec.Parameters) == 0 {
-		return nil
-	}
-
-	params := make([]DerivedParameter, 0, len(opSpec.Parameters))
-
-	for _, ref := range opSpec.Parameters {
-		if ref == nil || ref.Value == nil {
-			continue
-		}
-
-		param := ref.Value
-		derived := DerivedParameter{
-			Name:     param.Name,
-			In:       param.In,
-			Required: param.Required,
-		}
-
-		if param.Description != "" {
-			derived.Description, derived.DescriptionTruncated = trimIndexText(param.Description)
-		}
-
-		if param.Example != nil {
-			derived.HasExample = true
-			derived.Example = fmt.Sprintf("%v", param.Example)
-		}
-
-		if param.Schema != nil && param.Schema.Value != nil {
-			schema := param.Schema.Value
-			derived.Types = append([]string(nil), schema.Type.Slice()...)
-			derived.Type = primarySchemaType(derived.Types)
-			derived.Enum, derived.EnumAreStrings = formatEnumValues(schema.Enum)
-
-			if schema.Example != nil {
-				derived.HasSchemaExample = true
-				derived.SchemaExample = fmt.Sprintf("%v", schema.Example)
-			}
-		}
-
-		params = append(params, derived)
-	}
-
-	return params
-}
-
-// extractDerivedBody converts a request body into the persisted field details.
-// Required fields keep their declared order; optional fields are sorted by name.
-func extractDerivedBody(opSpec *openapi3.Operation) (fields []DerivedField, required bool, mediaType string, hasBody bool) {
-	if opSpec == nil || opSpec.RequestBody == nil || opSpec.RequestBody.Value == nil {
-		return nil, false, "", false
-	}
-
-	requestBody := opSpec.RequestBody.Value
-
-	for media, content := range requestBody.Content {
-		if content == nil || content.Schema == nil || content.Schema.Value == nil {
-			continue
-		}
-
-		schema := content.Schema.Value
-		requiredSet := make(map[string]bool, len(schema.Required))
-		for _, name := range schema.Required {
-			requiredSet[name] = true
-		}
-
-		for _, name := range schema.Required {
-			if prop, ok := schema.Properties[name]; ok {
-				fields = append(fields, newDerivedField(name, prop, true))
-			}
-		}
-
-		remaining := make([]string, 0, len(schema.Properties))
-		for name := range schema.Properties {
-			if !requiredSet[name] {
-				remaining = append(remaining, name)
-			}
-		}
-		sort.Strings(remaining)
-
-		for _, name := range remaining {
-			fields = append(fields, newDerivedField(name, schema.Properties[name], false))
-		}
-
-		return fields, requestBody.Required, media, true
-	}
-
-	return nil, false, "", false
-}
-
-// newDerivedField converts one body property schema into the persisted form.
-func newDerivedField(name string, ref *openapi3.SchemaRef, required bool) DerivedField {
-	field := DerivedField{Name: name, Required: required}
-	if ref == nil || ref.Value == nil {
-		return field
-	}
-
-	schema := ref.Value
-	field.Types = append([]string(nil), schema.Type.Slice()...)
-	field.Type = primarySchemaType(field.Types)
-	field.Enum, field.EnumAreStrings = formatEnumValues(schema.Enum)
-
-	if schema.Description != "" {
-		field.Description, field.DescriptionTruncated = trimIndexText(schema.Description)
-	}
-
-	if schema.Example != nil {
-		field.HasExample = true
-		field.Example = fmt.Sprintf("%v", schema.Example)
-	}
-
-	return field
 }
 
 // formatEnumValues renders enum values with %v (matching command help output)
@@ -1227,26 +1253,48 @@ func (op *DerivedOperation) CommandHelpIndexable() bool {
 		}
 	}
 
-	for i := range op.BodyFields {
-		if op.BodyFields[i].DescriptionTruncated {
-			return false
+	return !schemaHasTruncatedDescription(op.BodySchema)
+}
+
+// schemaHasTruncatedDescription reports whether any schema node was trimmed.
+func schemaHasTruncatedDescription(schema *DerivedSchema) bool {
+	if schema == nil {
+		return false
+	}
+
+	if schema.DescriptionTruncated {
+		return true
+	}
+
+	for _, prop := range schema.Properties {
+		if schemaHasTruncatedDescription(prop) {
+			return true
 		}
 	}
 
-	return true
+	if schemaHasTruncatedDescription(schema.Items) {
+		return true
+	}
+
+	for _, list := range [][]*DerivedSchema{schema.OneOf, schema.AnyOf, schema.AllOf} {
+		if slices.ContainsFunc(list, schemaHasTruncatedDescription) {
+			return true
+		}
+	}
+
+	return schemaHasTruncatedDescription(schema.AdditionalProperties)
 }
 
 // CommandSpec reconstructs a minimal *openapi3.Operation that renders command
-// help byte-identically to the parsing path.
+// help byte-identically to the parsing path and carries the schema information
+// needed by the execution fast path.
 func (op *DerivedOperation) CommandSpec() *openapi3.Operation {
-	specOp := &openapi3.Operation{
+	return &openapi3.Operation{
 		Summary:     op.Summary,
 		Description: op.Description,
 		Parameters:  op.commandParameters(),
 		RequestBody: op.commandRequestBody(),
 	}
-
-	return specOp
 }
 
 // commandParameters reconstructs the OpenAPI parameter list.
@@ -1263,21 +1311,11 @@ func (op *DerivedOperation) commandParameters() openapi3.Parameters {
 			In:          param.In,
 			Required:    param.Required,
 			Description: param.Description,
+			Schema:      openAPISchemaRef(param.Schema),
 		}
 
 		if param.HasExample {
 			reconstructed.Example = param.Example
-		}
-
-		if len(param.Types) > 0 || len(param.Enum) > 0 || param.HasSchemaExample {
-			schema := &openapi3.Schema{}
-			schema.Type = schemaTypes(param.Types)
-			schema.Enum = enumValuesAsAny(param.Enum)
-			if param.HasSchemaExample {
-				schema.Example = param.SchemaExample
-			}
-
-			reconstructed.Schema = &openapi3.SchemaRef{Value: schema}
 		}
 
 		params = append(params, &openapi3.ParameterRef{Value: reconstructed})
@@ -1288,27 +1326,8 @@ func (op *DerivedOperation) commandParameters() openapi3.Parameters {
 
 // commandRequestBody reconstructs the OpenAPI request body, if any.
 func (op *DerivedOperation) commandRequestBody() *openapi3.RequestBodyRef {
-	if !op.HasBody {
+	if !op.HasBody || op.BodySchema == nil {
 		return nil
-	}
-
-	properties := make(map[string]*openapi3.SchemaRef, len(op.BodyFields))
-	required := make([]string, 0, len(op.BodyFields))
-
-	for _, field := range op.BodyFields {
-		if field.Required {
-			required = append(required, field.Name)
-		}
-
-		schema := &openapi3.Schema{}
-		schema.Type = schemaTypes(field.Types)
-		schema.Enum = enumValuesAsAny(field.Enum)
-		schema.Description = field.Description
-		if field.HasExample {
-			schema.Example = field.Example
-		}
-
-		properties[field.Name] = &openapi3.SchemaRef{Value: schema}
 	}
 
 	mediaType := op.BodyMediaType
@@ -1319,13 +1338,81 @@ func (op *DerivedOperation) commandRequestBody() *openapi3.RequestBodyRef {
 	body := &openapi3.RequestBody{
 		Required: op.BodyRequired,
 		Content: openapi3.Content{
-			mediaType: &openapi3.MediaType{
-				Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: schemaTypes([]string{"object"}), Properties: properties, Required: required}},
-			},
+			mediaType: &openapi3.MediaType{Schema: openAPISchemaRef(op.BodySchema)},
 		},
 	}
 
 	return &openapi3.RequestBodyRef{Value: body}
+}
+
+// openAPISchemaRef rebuilds a schema reference from the persisted DTO.
+func openAPISchemaRef(schema *DerivedSchema) *openapi3.SchemaRef {
+	if schema == nil {
+		return nil
+	}
+
+	return &openapi3.SchemaRef{Value: schema.openAPISchema()}
+}
+
+// openAPISchema recursively rebuilds an *openapi3.Schema from the DTO.
+func (ds *DerivedSchema) openAPISchema() *openapi3.Schema {
+	if ds == nil {
+		return nil
+	}
+
+	schema := &openapi3.Schema{
+		Format:      ds.Format,
+		Description: ds.Description,
+	}
+
+	if len(ds.Types) > 0 {
+		schema.Type = schemaTypes(ds.Types)
+	}
+
+	schema.Enum = enumValuesAsAny(ds.Enum)
+	if ds.HasExample {
+		schema.Example = ds.Example
+	}
+
+	schema.Required = append([]string(nil), ds.Required...)
+
+	if len(ds.Properties) > 0 {
+		schema.Properties = make(map[string]*openapi3.SchemaRef, len(ds.Properties))
+		for name, prop := range ds.Properties {
+			schema.Properties[name] = openAPISchemaRef(prop)
+		}
+	}
+
+	schema.Items = openAPISchemaRef(ds.Items)
+
+	if ds.AdditionalPropertiesSet {
+		has := ds.AdditionalPropertiesAllowed
+		schema.AdditionalProperties.Has = &has
+
+		if ds.AdditionalProperties != nil {
+			schema.AdditionalProperties.Schema = openAPISchemaRef(ds.AdditionalProperties)
+		}
+	}
+
+	schema.OneOf = openAPISchemaList(ds.OneOf)
+	schema.AnyOf = openAPISchemaList(ds.AnyOf)
+	schema.AllOf = openAPISchemaList(ds.AllOf)
+
+	return schema
+}
+
+// openAPISchemaList rebuilds a list of schema references.
+func openAPISchemaList(schemas []*DerivedSchema) []*openapi3.SchemaRef {
+	if len(schemas) == 0 {
+		return nil
+	}
+
+	refs := make([]*openapi3.SchemaRef, 0, len(schemas))
+	for _, schema := range schemas {
+		refs = append(refs, openAPISchemaRef(schema))
+	}
+
+	return refs
 }
 
 // schemaTypes returns a pointer to a copy of types, or nil when empty.
@@ -1354,14 +1441,14 @@ func enumValuesAsAny(values []string) []any {
 	return anyValues
 }
 
-// FlagNames returns the --flag names derived from parameters and body fields,
-// restricted to prefix, sorted for deterministic completion output.
+// FlagNames returns the --flag names derived from parameters and request body
+// properties, restricted to prefix, sorted for deterministic completion output.
 func (op *DerivedOperation) FlagNames(prefix string) []string {
 	if op == nil {
 		return nil
 	}
 
-	flags := make([]string, 0, len(op.Parameters)+len(op.BodyFields))
+	flags := make([]string, 0, len(op.Parameters)+len(op.bodyPropertyNames()))
 
 	for _, param := range op.Parameters {
 		flag := "--" + param.Name
@@ -1370,8 +1457,8 @@ func (op *DerivedOperation) FlagNames(prefix string) []string {
 		}
 	}
 
-	for _, field := range op.BodyFields {
-		flag := "--" + field.Name
+	for _, name := range op.bodyPropertyNames() {
+		flag := "--" + name
 		if strings.HasPrefix(flag, prefix) {
 			flags = append(flags, flag)
 		}
@@ -1380,6 +1467,22 @@ func (op *DerivedOperation) FlagNames(prefix string) []string {
 	sort.Strings(flags)
 
 	return flags
+}
+
+// bodyPropertyNames returns the sorted request body property names.
+func (op *DerivedOperation) bodyPropertyNames() []string {
+	if op.BodySchema == nil || len(op.BodySchema.Properties) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(op.BodySchema.Properties))
+	for name := range op.BodySchema.Properties {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	return names
 }
 
 // EnumValues returns the string enum values for a flag, mirroring
@@ -1391,22 +1494,28 @@ func (op *DerivedOperation) EnumValues(flagName string) (values []string, handle
 	}
 
 	for _, param := range op.Parameters {
-		if param.Name != flagName {
-			continue
+		if param.Name == flagName {
+			return enumValuesFromSchema(param.Schema), true
 		}
-
-		return sortedStringEnums(param.Enum, param.EnumAreStrings), true
 	}
 
-	for _, field := range op.BodyFields {
-		if field.Name != flagName {
-			continue
+	if op.BodySchema != nil {
+		if prop, ok := op.BodySchema.Properties[flagName]; ok {
+			return enumValuesFromSchema(prop), true
 		}
-
-		return sortedStringEnums(field.Enum, field.EnumAreStrings), true
 	}
 
 	return nil, true
+}
+
+// enumValuesFromSchema returns sorted string enum values when the schema enum
+// was declared as strings (matching the parsing path's enum completion).
+func enumValuesFromSchema(schema *DerivedSchema) []string {
+	if schema == nil {
+		return nil
+	}
+
+	return sortedStringEnums(schema.Enum, schema.EnumAreStrings)
 }
 
 // sortedStringEnums returns a sorted copy of the enum values when they were

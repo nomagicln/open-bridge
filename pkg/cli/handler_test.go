@@ -1067,6 +1067,56 @@ const fastPathSpecJSON = `{
         },
         "responses": {"201": {"description": "Created"}}
       }
+    },
+    "/packages": {
+      "post": {
+        "operationId": "createPackage",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}}}}}
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    },
+    "/matrix": {
+      "post": {
+        "operationId": "createMatrix",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "properties": {"grid": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}}}
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    },
+    "/choice": {
+      "post": {
+        "operationId": "createChoice",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "oneOf": [
+              {"type": "object", "properties": {"name": {"type": "string"}}},
+              {"type": "object", "properties": {"code": {"type": "integer"}}}
+            ]
+          }}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
+    },
+    "/variants": {
+      "post": {
+        "operationId": "createVariants",
+        "requestBody": {
+          "content": {"application/json": {"schema": {"type": "object", "additionalProperties": true}}}
+        },
+        "responses": {"201": {"description": "Created"}}
+      }
     }
   }
 }`
@@ -1168,6 +1218,11 @@ func TestExecuteCommandFastPathMatchesParsePath(t *testing.T) {
 		{"path parameter", []string{"items", "get", "--id", "42"}},
 		{"body scalar and string array", []string{"pets", "create", "--name", "rex", "--tags", "a,b"}},
 		{"patch body", []string{"pets", "update", "--id", "1", "--name", "milo"}},
+		{"nested object schema conversion", []string{"orders", "create", "--meta", `{"x":"1"}`}},
+		{"nested object raw body", []string{"orders", "create", "--body", `{"meta":{"x":"1"}}`}},
+		{"array of object body", []string{"packages", "create", "--body", `{"items":[{"name":"a"},{"name":"b"}]}`}},
+		{"array of array body", []string{"matrix", "create", "--body", `{"grid":[[1,2],[3]]}`}},
+		{"oneOf body", []string{"choice", "create", "--body", `{"name":"x"}`}},
 	}
 
 	for _, tt := range tests {
@@ -1261,7 +1316,7 @@ func TestExecuteCommandFastPathSkipsParsingWhenSpecDeleted(t *testing.T) {
 
 func TestExecuteCommandNonIndexableOperationFallsBack(t *testing.T) {
 	env := newFastPathEnv(t)
-	args := []string{"orders", "create", "--body", `{"x":"1"}`}
+	args := []string{"variants", "create", "--body", `{"x":"1"}`}
 
 	coldHandler, coldOut := env.newHandler(spec.NewParser())
 	coldRequest, coldErr := env.run(t, coldHandler, coldOut, args)
@@ -1273,8 +1328,8 @@ func TestExecuteCommandNonIndexableOperationFallsBack(t *testing.T) {
 		t.Fatalf("prime derived index: %v", err)
 	}
 
-	// The nested-object body operation is not indexable, so the handler must
-	// fall back to parsing the (still valid) spec.
+	// The additionalProperties body operation is not indexable, so the handler
+	// must fall back to parsing the (still valid) spec.
 	warmHandler, warmOut := env.newHandler(warmParser)
 	warmRequest, warmErr := env.run(t, warmHandler, warmOut, args)
 	require.NoError(t, warmErr)
