@@ -106,10 +106,6 @@ linters:
         linters:
           - gocyclo
         text: "CompleteFlagValues"
-      - path: pkg/config/install\.go
-        linters:
-          - gocyclo
-        text: "InstallApp"
 
 formatters:
   enable:
