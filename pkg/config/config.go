@@ -3,7 +3,6 @@ package config
 
 import (
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nomagicln/open-bridge/pkg/spec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -126,29 +124,6 @@ type SpecFetchAuthConfig struct {
 
 	// Note: Actual credentials (tokens) should be stored in the system keyring
 	// and retrieved at runtime, similar to API authentication.
-}
-
-// BuildSpecFetchOptions constructs spec.SpecFetchOptions from profile settings
-// and a credential token. The token should be retrieved from the system keyring
-// at runtime.
-func (p *Profile) BuildSpecFetchOptions(authToken string) *spec.SpecFetchOptions {
-	opts := &spec.SpecFetchOptions{}
-
-	// Copy headers
-	if len(p.SpecFetchHeaders) > 0 {
-		opts.Headers = make(map[string]string, len(p.SpecFetchHeaders))
-		maps.Copy(opts.Headers, p.SpecFetchHeaders)
-	}
-
-	// Apply auth configuration
-	if p.SpecFetchAuth != nil && p.SpecFetchAuth.Type != "" {
-		opts.AuthType = p.SpecFetchAuth.Type
-		opts.AuthToken = authToken
-		opts.AuthKeyName = p.SpecFetchAuth.KeyName
-		opts.AuthLocation = p.SpecFetchAuth.Location
-	}
-
-	return opts
 }
 
 // Duration is a wrapper around time.Duration for YAML serialization.
@@ -598,137 +573,6 @@ type AppInfo struct {
 // getAppConfigPath returns the path to an app's config file.
 func (m *Manager) getAppConfigPath(appName string) string {
 	return filepath.Join(m.configDir, "apps", appName+".yaml")
-}
-
-// ExportProfile exports a profile configuration without credentials.
-func (m *Manager) ExportProfile(appName, profileName string) ([]byte, error) {
-	config, err := m.GetAppConfig(appName)
-	if err != nil {
-		return nil, err
-	}
-
-	profile, ok := config.Profiles[profileName]
-	if !ok {
-		return nil, &ProfileNotFoundError{AppName: appName, ProfileName: profileName}
-	}
-
-	// Create export format (without any credential references)
-	exportData := ProfileExport{
-		Version:     "1.0",
-		AppName:     appName,
-		ProfileName: profileName,
-		Profile:     profile,
-		ExportedAt:  time.Now(),
-	}
-
-	// Clear any sensitive data that might have leaked
-	exportData.Profile.Auth.OAuth2Config = nil
-
-	return yaml.Marshal(exportData)
-}
-
-// ProfileExport represents an exported profile.
-type ProfileExport struct {
-	Version     string    `yaml:"version"`
-	AppName     string    `yaml:"app_name"`
-	ProfileName string    `yaml:"profile_name"`
-	Profile     Profile   `yaml:"profile"`
-	ExportedAt  time.Time `yaml:"exported_at"`
-}
-
-// extractProfileName extracts the profile name from import data.
-func extractProfileName(importData *ProfileExport) (string, error) {
-	if importData.ProfileName != "" {
-		return importData.ProfileName, nil
-	}
-	if importData.Profile.Name != "" {
-		return importData.Profile.Name, nil
-	}
-	return "", fmt.Errorf("profile_name is required in import data")
-}
-
-// ImportProfile imports a profile from exported data.
-func (m *Manager) ImportProfile(appName string, data []byte) error {
-	var importData ProfileExport
-	if err := yaml.Unmarshal(data, &importData); err != nil {
-		// Try legacy format
-		return m.importProfileLegacy(appName, data)
-	}
-
-	config, err := m.GetAppConfig(appName)
-	if err != nil {
-		return err
-	}
-
-	profileName, err := extractProfileName(&importData)
-	if err != nil {
-		return err
-	}
-
-	profile := importData.Profile
-	profile.Name = profileName
-
-	if config.Profiles == nil {
-		config.Profiles = make(map[string]Profile)
-	}
-	config.Profiles[profileName] = profile
-
-	return m.SaveAppConfig(config)
-}
-
-// getStringFromMap extracts a string value from a map with type assertion.
-func getStringFromMap(data map[string]any, key string) (string, bool) {
-	if val, ok := data[key]; ok {
-		if str, ok := val.(string); ok {
-			return str, true
-		}
-	}
-	return "", false
-}
-
-// importProfileLegacy handles legacy import format.
-func (m *Manager) importProfileLegacy(appName string, data []byte) error {
-	var importData map[string]any
-	if err := yaml.Unmarshal(data, &importData); err != nil {
-		return fmt.Errorf("failed to parse import data: %w", err)
-	}
-
-	config, err := m.GetAppConfig(appName)
-	if err != nil {
-		return err
-	}
-
-	profileName, ok := getStringFromMap(importData, "profile_name")
-	if !ok || profileName == "" {
-		return fmt.Errorf("profile_name is required in import data")
-	}
-
-	profile := Profile{Name: profileName}
-
-	// Extract optional fields
-	if baseURL, _ := getStringFromMap(importData, "base_url"); baseURL != "" {
-		profile.BaseURL = baseURL
-	}
-	if authType, _ := getStringFromMap(importData, "auth_type"); authType != "" {
-		profile.Auth.Type = authType
-	}
-
-	// Extract headers map
-	if headers, ok := importData["headers"].(map[string]any); ok {
-		profile.Headers = make(map[string]string)
-		for k, v := range headers {
-			if s, ok := v.(string); ok {
-				profile.Headers[k] = s
-			}
-		}
-	}
-
-	if config.Profiles == nil {
-		config.Profiles = make(map[string]Profile)
-	}
-	config.Profiles[profileName] = profile
-
-	return m.SaveAppConfig(config)
 }
 
 // validateProfiles validates all profiles in the configuration.
