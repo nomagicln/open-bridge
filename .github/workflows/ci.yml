@@ -145,6 +145,60 @@ jobs:
       - name: Run govulncheck
         run: $(go env GOPATH)/bin/govulncheck ./...
 
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Run actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+  docs:
+    name: Docs Build
+    runs-on: ubuntu-latest
+    # Pre-flight the VitePress build only on pull requests that touch the docs
+    # site or its dependency manifests.
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect docs-related changes
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          if git diff --quiet "$base" HEAD -- docs package.json package-lock.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        if: steps.filter.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.filter.outputs.changed == 'true'
+        run: npm ci
+
+      - name: Build documentation
+        if: steps.filter.outputs.changed == 'true'
+        run: npm run docs:build
+
   build:
     name: Build
     runs-on: ubuntu-latest
