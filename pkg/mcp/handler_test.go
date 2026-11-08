@@ -3,8 +3,11 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -220,6 +223,95 @@ func TestHandleCallTool_MissingToolName(t *testing.T) {
 	}
 }
 
+type toolTestTransport func(*http.Request) (*http.Response, error)
+
+func (f toolTestTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func connectToolTestClient(t *testing.T, server *mcp.Server) *mcp.ClientSession {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = serverSession.Close() })
+	client := mcp.NewClient(&mcp.Implementation{Name: "binding-test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	return session
+}
+
+func TestRegisterCheckedBindsOnlyPublishedOperation(t *testing.T) {
+	methods := make(chan string, 1)
+	client := &http.Client{Transport: toolTestTransport(func(req *http.Request) (*http.Response, error) {
+		methods <- req.Method
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header)}, nil
+	})}
+	handler := NewHandler(semantic.NewMapper(), request.NewBuilder(nil), client)
+	handler.SetSpec(collidingToolSpec())
+	handler.SetAppConfig(safetyTestAppConfig("https://api.example.test"), "default")
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	if err := handler.RegisterChecked(server, &config.SafetyConfig{ReadOnlyMode: true}); err != nil {
+		t.Fatal(err)
+	}
+	session := connectToolTestClient(t, server)
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "users_posts", Arguments: map[string]any{"userId": "7"},
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("published GET failed: %v, %v", result, err)
+	}
+	if method := <-methods; method != http.MethodGet {
+		t.Fatalf("published read-only tool executed %s", method)
+	}
+	result, err = session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "delete_posts_users__userid__posts_delete", Arguments: map[string]any{"userId": "7"},
+	})
+	if err == nil && !result.IsError {
+		t.Fatal("unpublished alias must not be callable through the protocol")
+	}
+	if err := handler.RegisterChecked(server, nil); err == nil {
+		t.Fatal("ambiguous replacement must fail before publishing")
+	}
+	result, err = session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "users_posts", Arguments: map[string]any{"userId": "7"},
+	})
+	if err != nil || !result.IsError {
+		t.Fatalf("old registration must fail closed after replacement: %v, %v", result, err)
+	}
+	select {
+	case method := <-methods:
+		t.Fatalf("blocked call reached transport: %s", method)
+	default:
+	}
+}
+
+func TestMapToolToOperationUsesAuthorizedBindings(t *testing.T) {
+	handler := NewHandler(semantic.NewMapper(), request.NewBuilder(nil), nil)
+	handler.SetSpec(collidingToolSpec())
+	if err := handler.SetSafetyConfig(&config.SafetyConfig{ReadOnlyMode: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := handler.MapToolToOperation("delete_posts_users__userid__posts_delete"); err == nil {
+		t.Fatal("hidden DELETE operation must not resolve through an operationId alias")
+	}
+	_, method, _, err := handler.MapToolToOperation("users_posts")
+	if err != nil || method != http.MethodGet {
+		t.Fatalf("read-only binding = %s, %v; want GET", method, err)
+	}
+	if err := handler.SetSafetyConfig(nil); err == nil {
+		t.Fatal("removing the filter must report the now-ambiguous catalog")
+	}
+	if _, _, _, err := handler.MapToolToOperation("users_posts"); err == nil {
+		t.Fatal("failed catalog must not retain a previous binding")
+	}
+}
+
 func TestMapToolToOperation(t *testing.T) {
 	// Create OpenAPI spec
 	spec := &openapi3.T{
@@ -420,5 +512,96 @@ func TestNewProgressiveHandlerDefaultClientTimeout(t *testing.T) {
 	}
 	if handler.httpClient.Timeout != defaultHTTPTimeout {
 		t.Errorf("expected default http client timeout %v, got %v", defaultHTTPTimeout, handler.httpClient.Timeout)
+	}
+}
+
+// newPolicyTestHandler builds a Handler whose profile declares one header and
+// one query parameter, so the recorded API call shows whether the MCP surface
+// applies the same profile overrides as the CLI.
+func newPolicyTestHandler(t *testing.T, server *httptest.Server) *Handler {
+	t.Helper()
+
+	handler := NewHandler(semantic.NewMapper(), request.NewBuilder(nil), server.Client())
+	handler.SetSpec(createTestOpenAPISpec())
+	handler.SetAppConfig(&config.AppConfig{
+		Name:           "testapp",
+		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{
+			"default": {
+				Name:        "default",
+				BaseURL:     server.URL,
+				Headers:     map[string]string{"X-Profile": "staging"},
+				QueryParams: map[string]string{"api-version": "v2"},
+			},
+		},
+	}, "default")
+
+	return handler
+}
+
+// TestHandleCallTool_AppliesProfilePolicy proves the MCP surface applies the
+// same profile overrides as the CLI: profile headers and query parameters
+// reach the API call, and the operation's own query parameter survives.
+func TestHandleCallTool_AppliesProfilePolicy(t *testing.T) {
+	server, recorder := newSafetyMockServer(t)
+	handler := newPolicyTestHandler(t, server)
+
+	result := callTool(t, handler, "listPets", `{"limit": 5}`)
+	if result.IsError {
+		t.Fatalf("tool call failed: %s", getTextContent(result))
+	}
+
+	query, err := url.ParseQuery(recorder.LastQuery())
+	if err != nil {
+		t.Fatalf("recorded query %q is not parsable: %v", recorder.LastQuery(), err)
+	}
+	if got := query.Get("api-version"); got != "v2" {
+		t.Errorf("profile query parameter api-version = %q, want v2", got)
+	}
+	if got := query.Get("limit"); got != "5" {
+		t.Errorf("operation query parameter limit = %q, want 5", got)
+	}
+	if got := recorder.LastHeader("X-Profile"); got != "staging" {
+		t.Errorf("profile header X-Profile = %q, want staging", got)
+	}
+}
+
+// TestHandleCallTool_RejectsMissingRequiredParameter proves the MCP surface
+// validates arguments against the operation schema before sending a request.
+func TestHandleCallTool_RejectsMissingRequiredParameter(t *testing.T) {
+	server, recorder := newSafetyMockServer(t)
+	handler := newPolicyTestHandler(t, server)
+
+	result := callTool(t, handler, "getPetById", `{}`)
+	if !result.IsError {
+		t.Fatal("expected a missing required parameter to be rejected")
+	}
+	if !strings.Contains(getTextContent(result), "petId") {
+		t.Errorf("error message = %q, want it to mention petId", getTextContent(result))
+	}
+	if recorder.Count() != 0 {
+		t.Errorf("expected no API call for invalid arguments, got %d", recorder.Count())
+	}
+}
+
+// TestHandleCallTool_CancelledContextSkipsRequest proves the MCP call context
+// is bound to the outgoing HTTP request: a cancelled context stops the call
+// before it reaches the API.
+func TestHandleCallTool_CancelledContextSkipsRequest(t *testing.T) {
+	server, recorder := newSafetyMockServer(t)
+	handler := newPolicyTestHandler(t, server)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := handler.HandleCallTool(ctx, createCallToolRequest("listPets", `{}`))
+	if err != nil {
+		t.Fatalf("HandleCallTool() error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected a cancelled context to fail the tool call")
+	}
+	if recorder.Count() != 0 {
+		t.Errorf("expected no API call for a cancelled context, got %d", recorder.Count())
 	}
 }

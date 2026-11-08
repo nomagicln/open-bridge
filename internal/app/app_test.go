@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -229,186 +230,6 @@ func TestMergeExistingConfig(t *testing.T) {
 			assert.Equal(t, tt.expected.Description, result.Description)
 			assert.Equal(t, tt.expected.BaseURL, result.BaseURL)
 			assert.Equal(t, tt.expected.AuthType, result.AuthType)
-		})
-	}
-}
-
-func TestParseMCPServerArgs(t *testing.T) {
-	deps := newTestDeps(t)
-	tests := []struct {
-		name           string
-		args           []string
-		defaultProfile string
-		expected       mcpServerOptions
-	}{
-		{
-			name:           "default values",
-			args:           []string{},
-			defaultProfile: "default",
-			expected: mcpServerOptions{
-				profileName: "default",
-				transport:   "stdio",
-				port:        "8080",
-			},
-		},
-		{
-			name:           "with profile flag",
-			args:           []string{"--profile", "prod"},
-			defaultProfile: "default",
-			expected: mcpServerOptions{
-				profileName: "prod",
-				transport:   "stdio",
-				port:        "8080",
-			},
-		},
-		{
-			name:           "with profile short flag",
-			args:           []string{"-p", "staging"},
-			defaultProfile: "default",
-			expected: mcpServerOptions{
-				profileName: "staging",
-				transport:   "stdio",
-				port:        "8080",
-			},
-		},
-		{
-			name:           "with transport flag",
-			args:           []string{"--transport", "tcp"},
-			defaultProfile: "default",
-			expected: mcpServerOptions{
-				profileName: "default",
-				transport:   "tcp",
-				port:        "8080",
-			},
-		},
-		{
-			name:           "with port flag",
-			args:           []string{"--port", "9090"},
-			defaultProfile: "default",
-			expected: mcpServerOptions{
-				profileName: "default",
-				transport:   "stdio",
-				port:        "9090",
-			},
-		},
-		{
-			name:           "with all flags",
-			args:           []string{"--profile", "prod", "--transport", "tcp", "--port", "9090"},
-			defaultProfile: "default",
-			expected: mcpServerOptions{
-				profileName: "prod",
-				transport:   "tcp",
-				port:        "9090",
-			},
-		},
-		{
-			name:           "with equals syntax",
-			args:           []string{"--profile=prod", "--transport=tcp", "--port=9090"},
-			defaultProfile: "default",
-			expected: mcpServerOptions{
-				profileName: "prod",
-				transport:   "tcp",
-				port:        "9090",
-			},
-		},
-		{
-			name:           "mixed syntax",
-			args:           []string{"--profile", "prod", "--transport=tcp", "-p", "staging"},
-			defaultProfile: "default",
-			expected: mcpServerOptions{
-				profileName: "staging", // Last one wins
-				transport:   "tcp",
-				port:        "8080",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := deps.parseMCPServerArgs(tt.args, tt.defaultProfile)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-func TestParseArgValue(t *testing.T) {
-	deps := newTestDeps(t)
-	tests := []struct {
-		name      string
-		arg       string
-		args      []string
-		i         int
-		longFlag  string
-		shortFlag string
-		current   string
-		expected  string
-	}{
-		{
-			name:      "match long flag with next arg",
-			arg:       "--profile",
-			args:      []string{"--profile", "prod", "other"},
-			i:         0,
-			longFlag:  "--profile",
-			shortFlag: "",
-			current:   "default",
-			expected:  "prod",
-		},
-		{
-			name:      "match short flag with next arg",
-			arg:       "-p",
-			args:      []string{"-p", "prod", "other"},
-			i:         0,
-			longFlag:  "--profile",
-			shortFlag: "-p",
-			current:   "default",
-			expected:  "prod",
-		},
-		{
-			name:      "match long flag with equals",
-			arg:       "--profile=prod",
-			args:      []string{"--profile=prod"},
-			i:         0,
-			longFlag:  "--profile",
-			shortFlag: "",
-			current:   "default",
-			expected:  "prod",
-		},
-		{
-			name:      "no match returns current",
-			arg:       "--other",
-			args:      []string{"--other", "value"},
-			i:         0,
-			longFlag:  "--profile",
-			shortFlag: "",
-			current:   "default",
-			expected:  "default",
-		},
-		{
-			name:      "flag at end of args returns current",
-			arg:       "--profile",
-			args:      []string{"--profile"},
-			i:         0,
-			longFlag:  "--profile",
-			shortFlag: "",
-			current:   "default",
-			expected:  "default",
-		},
-		{
-			name:      "flag with equals but no value",
-			arg:       "--profile=",
-			args:      []string{"--profile="},
-			i:         0,
-			longFlag:  "--profile",
-			shortFlag: "",
-			current:   "default",
-			expected:  "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := deps.parseArgValue(tt.arg, tt.args, tt.i, tt.longFlag, tt.shortFlag, tt.current)
-			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
@@ -683,4 +504,140 @@ func TestPrintAppConfigTextShowsSpecMetadata(t *testing.T) {
 	out := string(data)
 	assert.Contains(t, out, "Pet API")
 	assert.Contains(t, out, "7.8.9")
+}
+
+// TestRootOptionsForwardsOnlyExplicitFlags proves the root-level options are
+// forwarded to the app handler only when they were set explicitly.
+func TestRootOptionsForwardsOnlyExplicitFlags(t *testing.T) {
+	deps := newTestDeps(t)
+	rootCmd := deps.newRootCmd()
+
+	options := rootOptions(rootCmd)
+	assert.Empty(t, options.ProfileName)
+	assert.Empty(t, options.OutputFormat)
+	assert.False(t, options.MCPMode)
+
+	require.NoError(t, rootCmd.PersistentFlags().Set("profile", "staging"))
+	require.NoError(t, rootCmd.PersistentFlags().Set("output", "json"))
+	require.NoError(t, rootCmd.PersistentFlags().Set("mcp", "true"))
+
+	options = rootOptions(rootCmd)
+	assert.Equal(t, "staging", options.ProfileName)
+	assert.Equal(t, "json", options.OutputFormat)
+	assert.True(t, options.MCPMode)
+}
+
+// TestRunContextUsesProvidedArgv proves the executed command comes from the
+// given argv instead of the process arguments of the caller.
+func TestRunContextUsesProvidedArgv(t *testing.T) {
+	deps := newTestDeps(t)
+
+	err := deps.RunContext(context.Background(), []string{"ob", "definitely-not-an-app"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown command or app")
+	assert.Contains(t, err.Error(), "definitely-not-an-app")
+}
+
+// TestRunContextRejectsEmptyArgv proves an empty argv is reported instead of
+// panicking.
+func TestRunContextRejectsEmptyArgv(t *testing.T) {
+	deps := newTestDeps(t)
+
+	err := deps.RunContext(context.Background(), nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no command")
+}
+
+// TestNewInjectsBuildVersionIntoRouter proves the composition root reports the
+// build version through the MCP server.
+func TestNewInjectsBuildVersionIntoRouter(t *testing.T) {
+	t.Setenv("OPENBRIDGE_CONFIG_DIR", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	SetBuildInfo("9.9.9", "abcdef", "2026-01-01")
+	t.Cleanup(func() {
+		SetBuildInfo("dev", "unknown", "unknown")
+	})
+
+	deps, err := New()
+	require.NoError(t, err)
+
+	assert.Equal(t, "9.9.9", deps.Router.ServerVersion())
+}
+
+// TestSplitRootOptions proves the leading runtime options are separated from
+// the application arguments, and that application options are left untouched.
+func TestSplitRootOptions(t *testing.T) {
+	tests := []struct {
+		name            string
+		args            []string
+		expectedOptions router.AppOptions
+		expectedArgs    []string
+	}{
+		{
+			name:            "no options",
+			args:            []string{"myapi", "users", "list"},
+			expectedOptions: router.AppOptions{},
+			expectedArgs:    []string{"myapi", "users", "list"},
+		},
+		{
+			name:            "profile with value",
+			args:            []string{"--profile", "staging", "myapi", "users"},
+			expectedOptions: router.AppOptions{ProfileName: "staging"},
+			expectedArgs:    []string{"myapi", "users"},
+		},
+		{
+			name:            "profile with equals",
+			args:            []string{"--profile=staging", "myapi"},
+			expectedOptions: router.AppOptions{ProfileName: "staging"},
+			expectedArgs:    []string{"myapi"},
+		},
+		{
+			name:            "profile short form",
+			args:            []string{"-p", "staging", "myapi"},
+			expectedOptions: router.AppOptions{ProfileName: "staging"},
+			expectedArgs:    []string{"myapi"},
+		},
+		{
+			name:            "output format",
+			args:            []string{"--output", "json", "myapi"},
+			expectedOptions: router.AppOptions{OutputFormat: "json"},
+			expectedArgs:    []string{"myapi"},
+		},
+		{
+			name:            "mcp mode",
+			args:            []string{"--mcp", "myapi"},
+			expectedOptions: router.AppOptions{MCPMode: true},
+			expectedArgs:    []string{"myapi"},
+		},
+		{
+			name:            "all options",
+			args:            []string{"--profile", "staging", "--output", "json", "--mcp", "myapi", "users"},
+			expectedOptions: router.AppOptions{ProfileName: "staging", OutputFormat: "json", MCPMode: true},
+			expectedArgs:    []string{"myapi", "users"},
+		},
+		{
+			name:            "application options are preserved",
+			args:            []string{"myapi", "users", "list", "--profile", "prod"},
+			expectedOptions: router.AppOptions{},
+			expectedArgs:    []string{"myapi", "users", "list", "--profile", "prod"},
+		},
+		{
+			name:            "unknown option stops the scan",
+			args:            []string{"--limit", "5", "myapi"},
+			expectedOptions: router.AppOptions{},
+			expectedArgs:    []string{"--limit", "5", "myapi"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			options, args := splitRootOptions(tt.args)
+
+			assert.Equal(t, tt.expectedOptions, options)
+			assert.Equal(t, tt.expectedArgs, args)
+		})
+	}
 }

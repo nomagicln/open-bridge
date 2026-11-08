@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/99designs/keyring"
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/nomagicln/open-bridge/internal/testutil"
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/credential"
 	"github.com/nomagicln/open-bridge/pkg/request"
@@ -28,6 +30,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOperationSpecInheritsPathParameters(t *testing.T) {
+	item := testutil.InheritedParameterSpec().Paths.Find("/users/{id}")
+	op := getOperationSpec(item, "GET")
+	require.Len(t, op.Parameters, 2)
+	builder := request.NewBuilder(nil)
+	require.Error(t, builder.ValidateParams(map[string]any{"view": "full"}, op.Parameters, nil))
+	params := map[string]any{"id": "7", "view": "full"}
+	require.NoError(t, builder.ValidateParams(params, op.Parameters, nil))
+	req, err := builder.BuildRequest("GET", "/users/{id}", "https://api.example.test", params, op.Parameters, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.example.test/users/7?view=full", req.URL.String())
+	assert.Len(t, item.Get.Parameters, 1, "source operation remains unchanged")
+}
 
 const cliTestAppName = "testapp"
 
@@ -1348,4 +1364,217 @@ func TestExecuteCommandNonIndexableOperationFallsBack(t *testing.T) {
 	assert.Contains(t, failingErr.Error(), "failed to load spec")
 
 	corruptCLIHelpSpec(t, env.specPath)
+}
+
+// TestParseCLIOptions covers the CLI-only option parser: long/short forms,
+// = and space separated values, output format priority and `--` delimiter
+// compatibility with request-parameter parsing.
+func TestParseCLIOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want cliOptions
+	}{
+		{
+			name: "no args",
+			args: nil,
+			want: cliOptions{},
+		},
+		{
+			name: "output long space separated",
+			args: []string{"--output", "json"},
+			want: cliOptions{outputFormat: "json"},
+		},
+		{
+			name: "output long equals separated",
+			args: []string{"--output=yaml"},
+			want: cliOptions{outputFormat: "yaml"},
+		},
+		{
+			name: "output short space separated",
+			args: []string{"-o", "json"},
+			want: cliOptions{outputFormat: "json"},
+		},
+		{
+			name: "output short equals separated",
+			args: []string{"-o=json"},
+			want: cliOptions{outputFormat: "json"},
+		},
+		{
+			name: "json shorthand",
+			args: []string{"--json"},
+			want: cliOptions{outputFormat: "json"},
+		},
+		{
+			name: "yaml shorthand",
+			args: []string{"--yaml"},
+			want: cliOptions{outputFormat: "yaml"},
+		},
+		{
+			name: "profile long",
+			args: []string{"--profile", "staging"},
+			want: cliOptions{profileName: "staging"},
+		},
+		{
+			name: "profile long equals",
+			args: []string{"--profile=staging"},
+			want: cliOptions{profileName: "staging"},
+		},
+		{
+			name: "profile short",
+			args: []string{"-p", "staging"},
+			want: cliOptions{profileName: "staging"},
+		},
+		{
+			name: "generate long",
+			args: []string{"--generate", "curl"},
+			want: cliOptions{generateFormat: "curl"},
+		},
+		{
+			name: "generate short",
+			args: []string{"-g", "go"},
+			want: cliOptions{generateFormat: "go"},
+		},
+		{
+			name: "generate output long",
+			args: []string{"--generate-output", "out.go"},
+			want: cliOptions{generateOutput: "out.go"},
+		},
+		{
+			name: "generate output short",
+			args: []string{"-O", "out.go"},
+			want: cliOptions{generateOutput: "out.go"},
+		},
+		{
+			name: "all options together",
+			args: []string{"--limit", "5", "--output", "json", "--profile", "staging", "--generate", "curl", "--generate-output", "out.sh"},
+			want: cliOptions{outputFormat: "json", profileName: "staging", generateFormat: "curl", generateOutput: "out.sh"},
+		},
+		{
+			name: "--output wins over --json regardless of order",
+			args: []string{"--json", "--output", "yaml"},
+			want: cliOptions{outputFormat: "yaml"},
+		},
+		{
+			name: "--output wins even when --yaml comes later",
+			args: []string{"--output", "json", "--yaml"},
+			want: cliOptions{outputFormat: "json"},
+		},
+		{
+			name: "last format shorthand wins",
+			args: []string{"--json", "--yaml"},
+			want: cliOptions{outputFormat: "yaml"},
+		},
+		{
+			name: "delimiter stops CLI option parsing",
+			args: []string{"--output", "json", "--", "--profile", "evil", "--json"},
+			want: cliOptions{outputFormat: "json"},
+		},
+		{
+			name: "unknown request flags are ignored",
+			args: []string{"--limit", "5", "--json"},
+			want: cliOptions{outputFormat: "json"},
+		},
+		{
+			name: "output without value falls through to shorthand",
+			args: []string{"--output", "--json"},
+			want: cliOptions{outputFormat: "json"},
+		},
+		{
+			name: "short request flags are not mistaken for CLI options",
+			args: []string{"-n", "5", "-o", "yaml"},
+			want: cliOptions{outputFormat: "yaml"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseCLIOptions(tt.args)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("parseCLIOptions(%v) = %+v, want %+v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGetProfileSelection covers profile resolution, the --profile override and
+// the "profile not found" error which must list the available profiles.
+func TestGetProfileSelection(t *testing.T) {
+	h := &Handler{}
+	appConfig := &config.AppConfig{
+		Name:           "testapp",
+		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{
+			"default": {Name: "default", BaseURL: "http://default.example"},
+			"staging": {Name: "staging", BaseURL: "http://staging.example"},
+		},
+	}
+
+	t.Run("default profile when name is empty", func(t *testing.T) {
+		profile, err := h.getProfile(appConfig, "")
+		if err != nil {
+			t.Fatalf("getProfile() unexpected error: %v", err)
+		}
+		if profile.Name != "default" {
+			t.Errorf("getProfile() = %q, want default", profile.Name)
+		}
+	})
+
+	t.Run("explicit profile", func(t *testing.T) {
+		profile, err := h.getProfile(appConfig, "staging")
+		if err != nil {
+			t.Fatalf("getProfile() unexpected error: %v", err)
+		}
+		if profile.Name != "staging" || profile.BaseURL != "http://staging.example" {
+			t.Errorf("getProfile() = %+v, want staging profile", profile)
+		}
+	})
+
+	t.Run("unknown profile lists available profiles", func(t *testing.T) {
+		_, err := h.getProfile(appConfig, "missing")
+		if err == nil {
+			t.Fatal("getProfile() expected error, got nil")
+		}
+		for _, want := range []string{`profile "missing"`, "available profiles", "default", "staging"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("getProfile() error = %q, want it to contain %q", err.Error(), want)
+			}
+		}
+	})
+
+	t.Run("missing configured default profile is an error", func(t *testing.T) {
+		broken := &config.AppConfig{
+			Name:           "broken",
+			DefaultProfile: "prod",
+			Profiles: map[string]config.Profile{
+				"default": {Name: "default"},
+			},
+		}
+		_, err := h.getProfile(broken, "")
+		if err == nil {
+			t.Fatal("getProfile() expected error for missing default profile, got nil")
+		}
+		if !strings.Contains(err.Error(), `profile "prod"`) {
+			t.Errorf("getProfile() error = %q, want it to name the missing profile", err.Error())
+		}
+	})
+
+	t.Run("empty config does not panic", func(t *testing.T) {
+		_, err := h.getProfile(&config.AppConfig{Name: "empty"}, "")
+		if err == nil {
+			t.Fatal("getProfile() expected error for empty config, got nil")
+		}
+	})
+}
+
+// TestParseCLIOptionsDelimitedRequestParameters ensures `--` protected request
+// parameters are never interpreted as CLI options.
+func TestParseCLIOptionsDelimitedRequestParameters(t *testing.T) {
+	parsed := parseCLIOptions([]string{"--profile", "staging", "--", "--output", "json", "--json"})
+	if parsed.profileName != "staging" {
+		t.Errorf("profileName = %q, want staging", parsed.profileName)
+	}
+	if parsed.outputFormat != "" {
+		t.Errorf("outputFormat = %q, want empty (flags after -- are request parameters)", parsed.outputFormat)
+	}
 }

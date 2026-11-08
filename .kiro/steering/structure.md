@@ -1,97 +1,39 @@
 # Project Structure
 
-## Directory Layout
+## Directory layout
 
-```
-.
-├── cmd/ob/              # Main entry point and CLI commands
-├── pkg/                 # Public packages (importable)
-│   ├── spec/           # OpenAPI spec parsing and validation
-│   ├── config/         # Configuration management
-│   ├── credential/     # Keyring integration for secure storage
-│   ├── semantic/       # Verb-resource mapping from OpenAPI
-│   ├── request/        # HTTP request building
-│   ├── cli/            # CLI command handling and execution
-│   ├── mcp/            # MCP protocol implementation
-│   └── router/         # Command routing
-├── internal/           # Private packages (not importable)
-│   └── testutil/       # Testing utilities
-└── .github/workflows/  # CI/CD configuration
-```
-
-## Package Organization
-
-### cmd/ob
-Entry point for the OpenBridge CLI. Contains the root command and subcommands (install, uninstall, list).
-
-### pkg/spec
-Handles OpenAPI specification loading, parsing, and validation. Supports OpenAPI 2.0 (Swagger), 3.0, and 3.1. Includes caching and version detection.
-
-### pkg/config
-Configuration management for installed apps and profiles. Handles YAML serialization, platform-specific config directories, and profile management.
-
-### pkg/credential
-Secure credential storage using system keyring (Keychain on macOS, Credential Manager on Windows, Secret Service on Linux).
-
-### pkg/semantic
-Core semantic mapping logic. Converts OpenAPI operations to CLI commands using verb-resource patterns (e.g., GET /users → list users).
-
-### pkg/request
-HTTP request building from CLI parameters. Handles parameter validation, path substitution, query strings, and request bodies.
-
-### pkg/cli
-CLI command execution and output formatting. Includes error formatting, help generation, and response formatting (table, JSON, YAML).
-
-### pkg/mcp
-Model Context Protocol server implementation for AI agent integration.
-
-### pkg/router
-Command routing and dispatch logic.
-
-### internal/testutil
-Shared testing utilities and helpers. Not exposed as public API.
-
-## Code Conventions
-
-### Package Documentation
-Every package has a package-level comment describing its purpose:
-```go
-// Package semantic provides semantic mapping from OpenAPI operations to CLI commands.
-package semantic
+```text
+cmd/ob/                 Process entry point and build metadata
+internal/app/           Composition root and management command wiring
+internal/install/       Installation, shims, and TLS asset validation
+internal/integration/   Cross-package integration tests
+internal/proptest/      Property-test support
+pkg/config/             Public config models, validation, YAML persistence
+pkg/spec/               OpenAPI parsing, remote content cache, derived indexes
+pkg/semantic/           Resource/verb inference and mapping
+pkg/request/            HTTP construction, validation, auth, client policies
+pkg/credential/         Credential backends
+pkg/cli/                App execution, help, YAML/JSON response formatting
+pkg/mcp/                Tool registry, standard/progressive exposure, safety
+pkg/router/             App mode/profile dispatch
+pkg/completion/         Shell completion
+pkg/codegen/            Optional request snippets
+pkg/tui/                Interactive installation UI
+docs/                   English/Chinese VitePress documentation
 ```
 
-### Error Handling
-- Custom error types for domain-specific errors (e.g., `AppNotFoundError`, `ProfileNotFoundError`)
-- Wrapped errors with context using `fmt.Errorf("context: %w", err)`
-- User-friendly error formatting in CLI layer
+## Dependency boundaries
 
-### Testing
-- Test files co-located with source: `file.go` → `file_test.go`
-- Integration tests in dedicated files: `integration_test.go`
-- Property-based tests for core logic validation
-- Test utilities in `internal/testutil/`
+`cmd/ob` delegates to `internal/app.New` and `Deps.Run`. The composition root explicitly constructs config, parser/cache options, credentials, semantic mapper, request builder, CLI/MCP handlers, router, installer, and completion provider.
 
-### Configuration
-- Functional options pattern for constructors (e.g., `WithCacheTTL`, `WithHTTPClient`)
-- YAML for configuration files
-- Platform-specific paths handled in `config` package
+`pkg/config` owns models and persistence, not spec parsing or installation. `pkg/spec` receives cache paths through options rather than importing config to discover them. CLI/MCP reuse request construction and credentials. Keep transport logic outside the request/spec models.
 
-### Naming Conventions
-- Exported types and functions use PascalCase
-- Unexported types and functions use camelCase
-- Interfaces named with -er suffix when appropriate (e.g., `Formatter`)
-- Test functions: `TestFunctionName`, `TestType_Method`
+`pkg` paths are importable Go packages, but compare selected refs for source compatibility. `internal` packages are private repository implementation and cannot be used as replacement APIs by downstream modules. `pkg/tui` remains in its current location; its installation DTO coupling does not make `internal/install` public.
 
-## Architecture Patterns
+The Unreleased runtime contract routes direct, `run`, and shim entrypoints through the same runtime path and binds MCP calls to the authorized tool registry. The derived index accelerates supported interpretation paths and falls back to full parsing; it is not another HTTP executor.
 
-### Dependency Injection
-Components accept dependencies via constructor parameters rather than creating them internally.
+## Working conventions
 
-### Caching
-Spec parser includes built-in caching with TTL to avoid repeated parsing.
+Use [AGENTS.md](../../AGENTS.md) and [CONTRIBUTING.md](../../CONTRIBUTING.md) for current testing, naming, and gate rules. Production dependencies must exclude testing/assertion/property-test code. Shared test-only support and integration cases must follow those instructions rather than introducing fictitious production files.
 
-### Validation
-Multi-layer validation: config validation, spec validation, parameter validation.
-
-### Extensibility
-OpenAPI extensions supported (e.g., `x-cli-verb`, `x-cli-resource`) for customizing CLI behavior.
+See the [architecture reference](../../docs/reference/architecture.md) for flows/cache versions and the [upgrade guide](../../docs/guide/upgrading.md) for the public API removals since v0.1.3. Historical `.kiro/specs`, proposals, and diagnosis reports describe their own baselines; the [current audit](../../docs/maintenance/architecture-audit.md) owns this iteration's validation status.

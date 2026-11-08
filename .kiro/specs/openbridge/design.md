@@ -1,5 +1,7 @@
 # Design Document: OpenBridge
 
+> Historical design intent. Preserve this document as context; current boundaries and behavior are in the [architecture reference](../../../docs/reference/architecture.md), with migration details in [upgrading](../../../docs/guide/upgrading.md). Items described here are not all implemented features.
+
 ## Overview
 
 OpenBridge is a universal API runtime engine that bridges the gap between OpenAPI specifications and two distinct interfaces: a semantic CLI for human users and an MCP server for AI agents. The system is built around a zero-code-generation philosophy where all behavior is dynamically driven by parsing OpenAPI specifications at runtime.

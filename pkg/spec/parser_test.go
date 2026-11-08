@@ -8,8 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/getkin/kin-openapi/openapi3"
 )
 
 func TestNewParser(t *testing.T) {
@@ -1865,4 +1868,28 @@ func TestGetFetchOptions(t *testing.T) {
 	if p.GetFetchOptions() != opts {
 		t.Error("GetFetchOptions should return the configured options")
 	}
+}
+
+// TestGetCachedSpecConcurrentAccess proves the spec cache can be read from
+// several goroutines at once without racing on the cached entry.
+func TestGetCachedSpecConcurrentAccess(t *testing.T) {
+	parser := NewParser()
+	parser.CacheSpec("concurrent", &openapi3.T{
+		OpenAPI: "3.0.0",
+		Info:    &openapi3.Info{Title: "Concurrent", Version: "1.0.0"},
+		Paths:   openapi3.NewPaths(),
+	})
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 50 {
+				if _, ok := parser.GetCachedSpec("concurrent"); !ok {
+					t.Error("expected the cached spec to be available")
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
 }

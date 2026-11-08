@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -58,6 +59,30 @@ func TestNewProgressiveHandler(t *testing.T) {
 				assert.NoError(t, handler.Close())
 			}
 		})
+	}
+}
+
+func TestProgressiveFailedRebuildBlocksCachedTools(t *testing.T) {
+	handler, err := NewProgressiveHandler(request.NewBuilder(nil), nil, SearchEnginePredicate)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = handler.Close() })
+	require.NoError(t, handler.SetSpec(createTestSpec(), nil))
+	_, _, err = handler.registry.Load("listPets")
+	require.NoError(t, err)
+
+	require.Error(t, handler.SetSpec(collidingToolSpec(), nil))
+	assert.Zero(t, handler.registry.LoadedCount())
+	for _, call := range []struct {
+		handler func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error)
+		args    string
+	}{
+		{handler.handleSearchTools, `{"query":""}`},
+		{handler.handleLoadTool, `{"toolId":"listPets"}`},
+		{handler.handleInvokeTool, `{"toolId":"listPets","arguments":{}}`},
+	} {
+		result, callErr := call.handler(context.Background(), createCallToolRequest("", call.args))
+		require.NoError(t, callErr)
+		assert.True(t, result.IsError, "failed rebuild must block all old catalog access")
 	}
 }
 
@@ -210,6 +235,8 @@ func TestProgressiveHandler_HandleInvokeTool_NotLoaded(t *testing.T) {
 
 	text := getTextContent(result)
 	assert.Contains(t, text, "not loaded")
+	// The hint must name the registered meta-tool, not the unscoped legacy alias.
+	assert.Contains(t, text, "LoadTestTool")
 }
 
 func TestProgressiveHandler_HandleInvokeTool_Success(t *testing.T) {
@@ -383,6 +410,73 @@ func TestProgressiveHandler_Register(t *testing.T) {
 	handler.Register(server)
 }
 
+// TestProgressiveHandler_RegistersAppScopedMetaToolNames locks the tool names a
+// client observes in progressive mode. The registered names are scoped by the
+// PascalCase app name, so two apps served by different processes cannot collide,
+// and the exported MetaTool* constants are legacy aliases that do not match the
+// registered names.
+func TestProgressiveHandler_RegistersAppScopedMetaToolNames(t *testing.T) {
+	tests := []struct {
+		appName string
+		search  string
+		load    string
+		invoke  string
+	}{
+		{
+			appName: "petstore",
+			search:  "SearchPetstoreTools",
+			load:    "LoadPetstoreTool",
+			invoke:  "InvokePetstoreTool",
+		},
+		{
+			appName: "my-api-v2",
+			search:  "SearchMyApiV2Tools",
+			load:    "LoadMyApiV2Tool",
+			invoke:  "InvokeMyApiV2Tool",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.appName, func(t *testing.T) {
+			handler, err := NewProgressiveHandler(
+				request.NewBuilder(nil),
+				nil,
+				SearchEnginePredicate,
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = handler.Close() })
+			require.NoError(t, handler.SetSpec(createTestOpenAPISpec(), nil))
+
+			handler.SetAppConfig(&config.AppConfig{
+				Name:           tt.appName,
+				DefaultProfile: "default",
+				Profiles: map[string]config.Profile{
+					"default": {Name: "default"},
+				},
+			}, "")
+
+			server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+			handler.Register(server)
+			session := connectToolTestClient(t, server)
+
+			toolList, err := session.ListTools(t.Context(), nil)
+			require.NoError(t, err)
+
+			registered := make(map[string]bool, len(toolList.Tools))
+			for _, tool := range toolList.Tools {
+				registered[tool.Name] = true
+			}
+
+			for _, name := range []string{tt.search, tt.load, tt.invoke} {
+				assert.True(t, registered[name], "meta-tool %q is not registered", name)
+			}
+			for _, legacy := range []string{MetaToolSearchTools, MetaToolLoad, MetaToolInvoke} {
+				assert.False(t, registered[legacy], "legacy alias %q must not be a registered tool", legacy)
+			}
+		})
+	}
+}
+
 func setupTestHandler(t *testing.T) *ProgressiveHandler {
 	t.Helper()
 
@@ -419,4 +513,83 @@ func getTextContent(result *mcp.CallToolResult) string {
 		}
 	}
 	return ""
+}
+
+// newProgressivePolicyTestHandler builds a ProgressiveHandler whose profile
+// declares one header and one query parameter, so the recorded API call shows
+// whether progressive mode applies the same profile overrides as the CLI.
+func newProgressivePolicyTestHandler(t *testing.T, server *httptest.Server) *ProgressiveHandler {
+	t.Helper()
+
+	handler, err := NewProgressiveHandler(request.NewBuilder(nil), server.Client(), SearchEnginePredicate)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = handler.Close()
+	})
+
+	require.NoError(t, handler.SetSpec(createTestOpenAPISpec(), nil))
+	handler.SetAppConfig(&config.AppConfig{
+		Name:           "testapp",
+		DefaultProfile: "default",
+		Profiles: map[string]config.Profile{
+			"default": {
+				Name:        "default",
+				BaseURL:     server.URL,
+				Headers:     map[string]string{"X-Profile": "staging"},
+				QueryParams: map[string]string{"api-version": "v2"},
+			},
+		},
+	}, "default")
+
+	return handler
+}
+
+// TestProgressiveHandler_InvokeTool_AppliesProfilePolicy proves progressive
+// mode applies the same profile overrides as the CLI.
+func TestProgressiveHandler_InvokeTool_AppliesProfilePolicy(t *testing.T) {
+	server, recorder := newSafetyMockServer(t)
+	handler := newProgressivePolicyTestHandler(t, server)
+
+	loadProgressiveTool(t, handler, "listPets")
+	result := invokeProgressiveTool(t, handler, `{"toolId": "listPets", "arguments": {"limit": 5}}`)
+	if result.IsError {
+		t.Fatalf("tool invocation failed: %s", getTextContent(result))
+	}
+
+	query, err := url.ParseQuery(recorder.LastQuery())
+	require.NoError(t, err)
+	assert.Equal(t, "v2", query.Get("api-version"))
+	assert.Equal(t, "5", query.Get("limit"))
+	assert.Equal(t, "staging", recorder.LastHeader("X-Profile"))
+}
+
+// TestProgressiveHandler_InvokeTool_RejectsMissingRequiredParameter proves
+// progressive mode validates arguments against the operation schema before
+// sending a request.
+func TestProgressiveHandler_InvokeTool_RejectsMissingRequiredParameter(t *testing.T) {
+	server, recorder := newSafetyMockServer(t)
+	handler := newProgressivePolicyTestHandler(t, server)
+
+	loadProgressiveTool(t, handler, "getPetById")
+	result := invokeProgressiveTool(t, handler, `{"toolId": "getPetById", "arguments": {}}`)
+	assert.True(t, result.IsError)
+	assert.Contains(t, getTextContent(result), "petId")
+	assert.Equal(t, 0, recorder.Count())
+}
+
+// TestProgressiveHandler_InvokeTool_CancelledContextSkipsRequest proves
+// progressive mode binds the call context to the outgoing HTTP request.
+func TestProgressiveHandler_InvokeTool_CancelledContextSkipsRequest(t *testing.T) {
+	server, recorder := newSafetyMockServer(t)
+	handler := newProgressivePolicyTestHandler(t, server)
+
+	loadProgressiveTool(t, handler, "listPets")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := handler.handleInvokeTool(ctx, createCallToolRequest(MetaToolInvoke, `{"toolId": "listPets", "arguments": {}}`))
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Equal(t, 0, recorder.Count())
 }

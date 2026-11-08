@@ -233,7 +233,7 @@ type SafetyConfig struct {
 	DangerousOperationPatterns []string `yaml:"dangerous_operation_patterns,omitempty"`
 
 	// ProgressiveDisclosure enables progressive tool disclosure mode.
-	// When enabled, only meta-tools (SearchTools, LoadTool, InvokeTool) are exposed
+	// When enabled, only the meta-tools (Search<App>Tools, Load<App>Tool and Invoke<App>Tool, where <App> is the PascalCase app name) are exposed
 	// instead of all API operations, reducing context usage for large APIs.
 	ProgressiveDisclosure bool `yaml:"progressive_disclosure,omitempty"`
 

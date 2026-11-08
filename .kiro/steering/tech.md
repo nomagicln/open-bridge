@@ -1,85 +1,38 @@
 # Technology Stack
 
-## Language & Runtime
+## Runtime and dependencies
 
-- **Go 1.25.5**: Primary language
-- __CGO_ENABLED=0__: Static binaries with no C dependencies
+- Go 1.26 or later for the current checkout; `go.mod` is the authority for the minimum version.
+- `kin-openapi` for OpenAPI loading/normalization and validation.
+- Cobra for management commands; semantic app commands are derived at runtime.
+- The official MCP Go SDK for transports and protocol integration.
+- `99designs/keyring` for credential backends and `yaml.v3` for configuration.
+- Bubble Tea/Bubbles for the installation UI.
+- Gopter and Testify are test dependencies, not production runtime dependencies.
 
-## Core Dependencies
+Use the versions in `go.mod`/`go.sum`. Prefer the standard library for new dependencies. `.golangci.yml` is the lint authority; do not edit it to silence findings. Release target/build details belong to `.goreleaser.yml` and CI rather than historical platform lists.
 
-- `github.com/getkin/kin-openapi`: OpenAPI 2.0/3.x parsing and validation
-- `github.com/spf13/cobra`: CLI framework for command structure
-- `github.com/99designs/keyring`: Cross-platform secure credential storage
-- `gopkg.in/yaml.v3`: YAML configuration parsing
-
-## Build System
-
-### Makefile Targets
+## Build and verification
 
 ```bash
-# Development
-make build          # Build binary to bin/ob
-make test           # Run tests with race detector
-make test-coverage  # Generate coverage report
-make run            # Build and run development binary
-
-# Code Quality
-make lint-fix           # Run golangci-lint-v2 and auto-fix issues
-make fmt-fix            # Format code with go fmt and goimports
-
-# Property-Based Testing
-make test-property  # Run property tests with 1000 iterations
-
-# Distribution
-make build-all      # Cross-compile for all platforms
-make install        # Install to $GOPATH/bin
-
-# Maintenance
-make clean          # Remove build artifacts
-make deps           # Download dependencies
-make update-deps    # Update all dependencies
-```
-
-### Common Commands
-
-```bash
-# Build
 go build -o bin/ob ./cmd/ob
-
-# Test
-go test -v -race ./...
-
-# Run specific tests
-go test -v ./pkg/semantic -run TestMapper
-
-# Run with coverage
-go test -v -race -coverprofile=coverage.out ./...
-go tool cover -html=coverage.out
-
-# Install locally
-go install ./cmd/ob
+go test -v -short ./...
+go test -race -short ./...
+go test -v -tags=integration ./...
 ```
 
-## Build Configuration
+Before a commit, follow the current [AGENTS.md](../../AGENTS.md) and [CONTRIBUTING.md](../../CONTRIBUTING.md), including `make fmt-fix && make lint-fix`. Other gates include build/vet, production dependency isolation, minimum-Go validation, `go mod tidy -diff`, and the docs build. Read the current Makefile for target names and lint-tool configuration; engineering changes may update them. Property tests cover parser/formatter/serialization invariants; filesystem/HTTP/process checks use the integration build tag.
 
-- **LDFLAGS**: Version, commit, and build date injected at build time
-- **Static linking**: All binaries are statically linked for portability
-- **Cross-compilation**: Supports linux/darwin/windows on amd64/arm64
+Docs are built with `npm run docs:build` using the repository's existing dependencies. No historical diagnosis result implies that the current working tree passes. Record actual commands, failures, environment limits, and representative CLI/MCP checks in the [architecture audit](../../docs/maintenance/architecture-audit.md).
 
-## Testing Strategy
+## Configuration and cache lifecycle
 
-- Unit tests co-located with source files (`*_test.go`)
-- Integration tests in dedicated files (`integration_test.go`)
-- Property-based tests for core logic validation
-- Race detector enabled by default in test runs
-- Test utilities in `internal/testutil/`
+`OPENBRIDGE_CONFIG_DIR` overrides the complete config directory. Defaults:
 
-## Configuration Storage
+- macOS: `~/Library/Application Support/openbridge/`
+- Linux/Unix: `$XDG_CONFIG_HOME/openbridge/`, or `~/.config/openbridge/` when unset
+- Windows: `%APPDATA%\openbridge\`
 
-Platform-specific configuration directories:
+App YAML lives in `apps/<app>.yaml`; secrets belong in the credential backend. `spec-cache` stores remote source content/revalidation metadata, and `index-cache` stores versioned derived projections. Unreleased effective-parameter semantics bump index schema 4 to 5 and trigger automatic rebuild. Do not delete app configuration or credentials to migrate caches, and retain remote cached content if needed for offline use.
 
-- **macOS**: `~/Library/Application Support/openbridge/`
-- **Linux**: `~/.config/openbridge/`
-- **Windows**: `%APPDATA%\openbridge\`
-
-Override with `OPENBRIDGE_CONFIG_DIR` environment variable.
+The latest published tag is v0.1.3; `main` is Unreleased. Read [architecture](../../docs/reference/architecture.md) and [upgrading](../../docs/guide/upgrading.md) before changing a consumer's Go imports, command flags, tool names, profile editing, or cache assumptions.

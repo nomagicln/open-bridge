@@ -14,6 +14,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCompletionIncludesInheritedParameters(t *testing.T) {
+	provider := &Provider{mapper: semantic.NewMapper()}
+	op := provider.getOperationSpecForCommand(testutil.InheritedParameterSpec(), "users", "get")
+	require.NotNil(t, op)
+	assert.ElementsMatch(t, []string{"--id", "--view"}, collectParameterFlags(op, ""))
+	assert.Equal(t, []string{"compact", "full"}, findParameterEnumValues(op, "view"))
+}
+
 // setupTestEnv creates a test environment with config manager, spec parser, and mapper
 func setupTestEnv(t *testing.T) (*config.Manager, *spec.Parser, *semantic.Mapper) {
 	t.Helper()

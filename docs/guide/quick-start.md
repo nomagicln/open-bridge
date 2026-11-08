@@ -1,115 +1,96 @@
 # Quick Start
 
-Get up and running with OpenBridge in minutes.
-
-> **Note**: For a detailed walkthrough, see our [QUICKSTART.md](https://github.com/nomagicln/open-bridge/blob/main/QUICKSTART.md) in the repository.
+This guide follows `main` (**Unreleased**). The latest published tag is **v0.1.3**, currently selected by `@latest`. For an existing installation, start with [upgrading](/guide/upgrading). A local Todo walkthrough is available in [QUICKSTART.md](https://github.com/nomagicln/open-bridge/blob/main/QUICKSTART.md).
 
 ## 1. Install an API
 
-Install an API by providing its name and the path or URL to its OpenAPI specification:
+Provide the app name and a local path or remote URL:
 
 ```bash
 ob install myapi --spec ./openapi.yaml
+# Override the server URL when needed:
+ob install myapi --spec ./openapi.yaml --base-url http://localhost:8080
 ```
 
-### Interactive Installation Wizard
+These are alternative installation commands. To replace existing configuration, `--force` is required; use it only when the overwrite is intended.
 
-When you run the install command, `ob` will launch an interactive wizard to configure your application:
-
-1.  **OpenAPI Specification Source**: If not provided via flag, you'll be asked to enter the URL or local path to your OpenAPI spec.
-2.  **Base URL**: The wizard will try to auto-detect this from the spec. You can override it to point to different environments (e.g., `http://localhost:8080` vs `https://api.example.com`).
-3.  **Authentication**: Select your auth strategy:
-    *   `None`: Public APIs.
-    *   `Bearer`: Standard Bearer token (JWT).
-    *   `API Key`: Key passed in Header or Query param.
-    *   `Basic`: Username and Password.
-4.  **Security**: Configure TLS settings if needed (custom CA bundle, client certificates, skip-verify, minimum TLS version). These settings are stored in the app profile and applied to CLI requests.
-5.  **MCP Options**:
-    *   **Progressive Disclosure**: Enable this for large APIs to help AI agents discover tools efficiently. 
-    *   **Read-Only Mode**: Restrict the AI to only safe `GET` operations.
-    *   **Sensitive Info**: Mask API keys in code generated for the AI context.
-    *   **Safety Controls**: `require_confirm` (retry with `_confirm=true`), `max_requests_per_minute` and `dangerous_operation_patterns` are enforced when MCP tools are invoked.
-
-## 2. Run Commands
-
-Once installed, use the CLI to interact with the API resources:
+Interactive installation is **off by default**. Without `-i`, `--spec` is required. To use the wizard instead:
 
 ```bash
-# List resources
-myapi users list
-
-# Create a resource
-myapi user create --name "John"
+ob install myapi -i
 ```
 
-## 3. Use with AI (MCP Mode)
+The wizard configures the specification source, base URL, authentication, TLS, MCP safety/progressive disclosure, and sensitive-information protection for generated snippets. Keep credentials in the credential backend and preserve TLS/safety controls when adapting an existing profile. See all [installation flags](/reference/cli#installation-options), including `--auth`, `--description`, and `--shim`.
 
-OpenBridge implements the Model Context Protocol (MCP) to serve as a bridge between your API and AI agents (like Claude).
+## 2. Explore and run commands
 
-### Configuration Example (Claude Desktop)
+Use app help to discover resources, verbs, and parameter names from the installed spec:
 
-To use your installed API with Claude Desktop, add the following to your configuration file:
+```bash
+ob run myapi --help
+ob myapi --help
+```
 
-*   **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-*   **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+For a spec exposing user operations, commands might be:
+
+```bash
+ob myapi users list
+ob run myapi users create --name "John"
+```
+
+If installation created a shim, add its reported directory to `PATH`, then use `myapi users list`. Nested URL paths become flattened resources; for the repository Todo service, `/todos/batch` maps to `todos-batch` and `/todos/stats` to `todos-stats`.
+
+Select a profile or output format, or generate a snippet without sending the API request:
+
+```bash
+ob myapi users list --profile prod --output json
+ob myapi users list --generate curl
+ob myapi users list --generate python -O request.py
+```
+
+Runtime options must appear before the first `--`. After it, request arguments use explicit prefixes such as `--path:user_id=123` or `--query:page=1`. See the [CLI reference](/reference/cli#runtime-options) for precedence and the supported generation formats.
+
+## 3. Connect an MCP client
+
+Start the selected app/profile over stdio:
+
+```bash
+ob run myapi --mcp --transport stdio --profile prod
+```
+
+For an MCP client that accepts `mcpServers` configuration, use an absolute binary path:
 
 ```json
 {
   "mcpServers": {
     "myapi": {
-      "command": "/path/to/ob",
-      "args": ["run", "myapi", "--mcp"]
-      // Or if you created a shim:
-      // "command": "myapi",
-      // "args": ["--mcp"]
+      "command": "/absolute/path/to/ob",
+      "args": ["run", "myapi", "--mcp", "--transport", "stdio", "--profile", "prod"]
     }
   }
 }
 ```
 
-> **Note**: Replace `/path/to/ob` with the absolute path to your `ob` binary (e.g., `/usr/local/bin/ob` or `/${HOME}/go/bin/ob`).
+The profile must already exist. A shim can also start MCP with `myapi --mcp`. SSE is supported with `ob myapi --mcp --transport sse --port 8080`; stdio is the default transport.
 
-### Starting the Server Manually
+Standard mode exposes API tools directly. To enable progressive disclosure, set the selected profile's configuration:
 
-You can also test the server manually in your terminal:
-
-```bash
-# Start MCP server
-myapi --mcp
+```yaml
+safety:
+  progressive_disclosure: true
+  search_engine: predicate
 ```
 
-### Progressive Disclosure
+Progressive mode exposes three meta-tools named `Search<App>Tools`, `Load<App>Tool`, and `Invoke<App>Tool`, where `<App>` is the PascalCase app name — for example `SearchPetstoreTools` for the app `petstore`. Read the exact names from the MCP `tools/list` response. The predicate engine supports expressions such as `MethodIs("GET") && PathContains("/users")`, `HasTag("admin")`, and logical `&&`, `||`, `!`. Read-only, allow/deny lists, confirmations, rate limits, and dangerous-operation patterns apply independently; see [MCP safety](/reference/cli#mcp-transports-and-safety).
 
-To handle large APIs efficiently, OpenBridge uses a **Progressive Disclosure** strategy. It exposes three meta-tools instead of dumping all endpoints at once:
+## Configuration and next steps
 
-1. **`SearchTools`**: Find relevant tools using a powerful query language.
-2. **`LoadTool`**: Load the full schema for a specific tool.
-3. **`InvokeTool`**: Execute the tool.
+`OPENBRIDGE_CONFIG_DIR` overrides the full configuration directory. Defaults are:
 
-#### Search Syntax
+- macOS: `~/Library/Application Support/openbridge/`
+- Linux/Unix: `$XDG_CONFIG_HOME/openbridge/`, or `~/.config/openbridge/` when unset
+- Windows: `%APPDATA%\openbridge\`
 
-- **Methods**: `MethodIs("GET")`
-- **Paths**: `PathContains("/users")`
-- **Tags**: `HasTag("admin")`
-- **Operations**: `&&` (AND), `||` (OR), `!` (NOT)
+Inspect installed apps with `ob list --details` and `ob info myapi -o yaml`. App files live in `apps/<app>.yaml`; credentials use their configured backend. Remote `spec-cache` provides revalidation/offline fallback, and versioned `index-cache` data rebuilds automatically. Preserve app configuration and credentials during upgrades.
 
-## Configuration
-
-Remote OpenAPI specs are cached under `<config-dir>/spec-cache` and revalidated with `ETag` /
-`Last-Modified`; if the remote source becomes unreachable, the cached copy is used. App help and
-shell completion read a derived index from `<config-dir>/index-cache` (invalidated by source size/
-mtime or remote content hash), so multi-MB specs do not slow down `--help` or Tab completion.
-
-Configuration files are stored in:
-
-- **macOS**: `~/Library/Application Support/openbridge/`
-- **Linux**: `~/.config/openbridge/`
-- **Windows**: `%APPDATA%\openbridge\`
-
-### Profiles
-
-Manage different environments (dev, prod) using profiles:
-
-```bash
-myapi users list --profile prod
-```
+Continue with the [CLI reference](/reference/cli), [architecture reference](/reference/architecture), and [upgrade guide](/guide/upgrading). Unreleased implementation and verification status is recorded in the [architecture audit](/maintenance/architecture-audit).

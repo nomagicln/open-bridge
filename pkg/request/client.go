@@ -176,6 +176,9 @@ func loadClientCertificate(cfg config.TLSConfig) (*tls.Certificate, error) {
 // retryable status codes for idempotent methods. RetryConfig.MaxRetries is the
 // number of retries after the initial attempt; MaxRetries <= 0 disables
 // retrying entirely. The request body is buffered so it can be replayed.
+//
+// A cancelled request context aborts the retry: no further request is sent and
+// the context error is returned.
 func DoWithRetry(client *http.Client, req *http.Request, retry config.RetryConfig) (*http.Response, error) {
 	if client == nil {
 		client = http.DefaultClient
@@ -192,35 +195,109 @@ func DoWithRetry(client *http.Client, req *http.Request, retry config.RetryConfi
 		return nil, err
 	}
 
-	retryableStatuses := make(map[int]bool, len(retry.RetryableStatusCodes))
+	policy := newRetryPolicy(retry)
+	for attempt := 0; ; attempt++ {
+		resp, final, err := policy.attempt(client, req, rewindBody, attempt)
+		if err != nil {
+			return nil, err
+		}
+		if final {
+			return resp, nil
+		}
+	}
+}
+
+// retryPolicy holds the resolved retry settings of a request.
+type retryPolicy struct {
+	maxRetries      int
+	retryableStatus map[int]bool
+	initialDelay    time.Duration
+	maxDelay        time.Duration
+}
+
+// newRetryPolicy resolves the retry settings of a configuration.
+func newRetryPolicy(retry config.RetryConfig) retryPolicy {
+	statuses := make(map[int]bool, len(retry.RetryableStatusCodes))
 	for _, statusCode := range retry.RetryableStatusCodes {
-		retryableStatuses[statusCode] = true
+		statuses[statusCode] = true
 	}
 
 	initialDelay, maxDelay := retryDelays(retry)
 
-	for attempt := 0; ; attempt++ {
-		if attempt > 0 {
-			if err := rewindBody(); err != nil {
-				return nil, err
-			}
-		}
+	return retryPolicy{
+		maxRetries:      retry.MaxRetries,
+		retryableStatus: statuses,
+		initialDelay:    initialDelay,
+		maxDelay:        maxDelay,
+	}
+}
 
-		resp, err := client.Do(req)
-		if err != nil {
-			if attempt >= retry.MaxRetries || !isRetryableNetworkError(req, err) {
-				return nil, err
-			}
-			time.Sleep(retryBackoff(attempt, initialDelay, maxDelay))
-			continue
+// attempt performs a single request attempt.
+//
+// It returns the response when the attempt is final. When another attempt is
+// needed, it waits for the backoff first and reports the attempt as not final.
+func (p *retryPolicy) attempt(
+	client *http.Client,
+	req *http.Request,
+	rewindBody func() error,
+	attempt int,
+) (*http.Response, bool, error) {
+	if attempt > 0 {
+		if err := rewindBody(); err != nil {
+			return nil, false, err
 		}
+	}
 
-		if attempt >= retry.MaxRetries || !retryableStatuses[resp.StatusCode] {
-			return resp, nil
+	resp, err := client.Do(req)
+	if err != nil {
+		if attempt >= p.maxRetries || !isRetryableNetworkError(req, err) {
+			return nil, false, err
 		}
+		if err := p.waitBeforeRetry(req, attempt); err != nil {
+			return nil, false, err
+		}
+		return nil, false, nil
+	}
 
-		drainAndCloseBody(resp.Body)
-		time.Sleep(retryBackoff(attempt, initialDelay, maxDelay))
+	if attempt >= p.maxRetries || !p.retryableStatus[resp.StatusCode] {
+		return resp, true, nil
+	}
+
+	drainAndCloseBody(resp.Body)
+	if err := p.waitBeforeRetry(req, attempt); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
+// waitBeforeRetry waits for the backoff before the next attempt. It returns the
+// context error when the request context is cancelled while waiting.
+func (p *retryPolicy) waitBeforeRetry(req *http.Request, attempt int) error {
+	return waitForRetry(req.Context(), retryBackoff(attempt, p.initialDelay, p.maxDelay))
+}
+
+// waitForRetry waits for the given delay before the next attempt. It returns
+// the context error when the request context is cancelled while waiting, so a
+// cancelled request never sleeps through the whole backoff.
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if delay <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

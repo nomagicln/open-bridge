@@ -8,6 +8,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nomagicln/open-bridge/internal/openapi"
 	"github.com/nomagicln/open-bridge/pkg/config"
 )
 
@@ -52,12 +53,18 @@ func (r *ToolRegistry) BuildFromSpec(spec *openapi3.T, safetyConfig *config.Safe
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.clearRegistry()
-	if spec == nil || spec.Paths == nil {
-		return nil
+	next := NewToolRegistry()
+	if spec != nil && spec.Paths != nil {
+		if err := next.processSpecPaths(spec.Paths.Map(), safetyConfig); err != nil {
+			r.clearRegistry()
+			return fmt.Errorf("build tool catalog: %w", err)
+		}
 	}
 
-	r.processSpecPaths(spec.Paths.Map(), safetyConfig)
+	r.allTools = next.allTools
+	r.metadata = next.metadata
+	r.operationMap = next.operationMap
+	r.loadedTools = next.loadedTools
 	return nil
 }
 
@@ -66,47 +73,49 @@ func (r *ToolRegistry) clearRegistry() {
 	r.allTools = make(map[string]mcp.Tool)
 	r.metadata = make([]ToolMetadata, 0)
 	r.operationMap = make(map[string]OperationInfo)
+	r.loadedTools = make(map[string]mcp.Tool)
 }
 
-// processSpecPaths processes all paths in the OpenAPI spec.
-func (r *ToolRegistry) processSpecPaths(paths map[string]*openapi3.PathItem, safetyConfig *config.SafetyConfig) {
-	for path, pathItem := range paths {
-		r.processPathItem(path, pathItem, safetyConfig)
+// processSpecPaths uses a stable order so collisions have reproducible diagnostics.
+func (r *ToolRegistry) processSpecPaths(paths map[string]*openapi3.PathItem, safetyConfig *config.SafetyConfig) error {
+	for _, path := range slices.Sorted(maps.Keys(paths)) {
+		if err := r.processPathItem(path, paths[path], safetyConfig); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // processPathItem processes a single path item and its operations.
-func (r *ToolRegistry) processPathItem(path string, pathItem *openapi3.PathItem, safetyConfig *config.SafetyConfig) {
-	operations := map[string]*openapi3.Operation{
-		"GET":    pathItem.Get,
-		"POST":   pathItem.Post,
-		"PUT":    pathItem.Put,
-		"PATCH":  pathItem.Patch,
-		"DELETE": pathItem.Delete,
+func (r *ToolRegistry) processPathItem(path string, pathItem *openapi3.PathItem, safetyConfig *config.SafetyConfig) error {
+	if pathItem == nil {
+		return nil
 	}
-
-	for method, op := range operations {
-		r.processOperation(path, method, op, safetyConfig)
+	operations := pathItem.Operations()
+	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE"} {
+		if err := r.processOperation(path, method, openapi.EffectiveOperation(pathItem, operations[method]), safetyConfig); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-// processOperation processes a single operation.
-func (r *ToolRegistry) processOperation(path, method string, op *openapi3.Operation, safetyConfig *config.SafetyConfig) {
-	if op == nil {
-		return
+// processOperation filters before checking identity, so hidden operations cannot
+// invalidate a unique authorized tool or become a dispatch target.
+func (r *ToolRegistry) processOperation(path, method string, op *openapi3.Operation, safetyConfig *config.SafetyConfig) error {
+	if op == nil || !r.isOperationAllowed(method, safetyConfig) {
+		return nil
 	}
-
-	if !r.isOperationAllowed(method, safetyConfig) {
-		return
-	}
-
 	toolID := GenerateToolName(method, path, op)
-
 	if !isToolAllowedByConfig(toolID, safetyConfig) {
-		return
+		return nil
 	}
-
+	if previous, exists := r.operationMap[toolID]; exists {
+		return fmt.Errorf("ambiguous tool %q: %s %s (operationId %q) conflicts with %s %s (operationId %q); use unique operationIds",
+			toolID, previous.Method, previous.Path, previous.Operation.OperationID, method, path, op.OperationID)
+	}
 	r.registerTool(path, method, op, toolID)
+	return nil
 }
 
 // isOperationAllowed checks if an operation is allowed by safety config.

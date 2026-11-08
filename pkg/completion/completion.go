@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/nomagicln/open-bridge/internal/openapi"
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/semantic"
 	"github.com/nomagicln/open-bridge/pkg/spec"
@@ -218,17 +219,12 @@ func (p *Provider) getOperationSpecForCommand(specDoc *openapi3.T, resource, ver
 
 // getOperationByMethod returns the operation for the given HTTP method.
 func getOperationByMethod(pathItem *openapi3.PathItem, method string) *openapi3.Operation {
+	if pathItem == nil {
+		return nil
+	}
 	switch method {
-	case "GET":
-		return pathItem.Get
-	case "POST":
-		return pathItem.Post
-	case "PUT":
-		return pathItem.Put
-	case "PATCH":
-		return pathItem.Patch
-	case "DELETE":
-		return pathItem.Delete
+	case "GET", "POST", "PUT", "PATCH", "DELETE":
+		return openapi.EffectiveOperation(pathItem, pathItem.Operations()[method])
 	default:
 		return nil
 	}

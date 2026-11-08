@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -17,13 +16,19 @@ import (
 )
 
 // MetaToolName constants for the three meta-tools.
+//
+// These are legacy aliases. The names registered with the MCP server are scoped
+// by the PascalCase app name — Search<App>Tools, Load<App>Tool and
+// Invoke<App>Tool — so none of the constants below matches a registered tool.
+// They are kept so existing Go callers keep compiling; agents must read the
+// names from the MCP tools/list response.
 const (
 	MetaToolSearchTools = "SearchTools"
 	MetaToolLoad        = "LoadTool"
 	MetaToolInvoke      = "InvokeTool"
 )
 
-// searchToolDescTemplate is the template for building the SearchTools description.
+// searchToolDescTemplate is the template for building the search meta-tool description.
 const searchToolDescTemplate = `Search for available API tools in {{.AppName}} using intelligent tool discovery.
 
 ⚠️ IMPORTANT: Always use specific search queries to filter results efficiently. Avoid listing all tools - use the search strategy below to find exactly what you need.{{if .AppDescription}}
@@ -44,33 +49,31 @@ Examples:
 Returns a list of matching tools with their ID, name, and description.
 Use Load{{.AppName}}Tool to get the full definition of a specific {{.AppName}} tool before invoking it with Invoke{{.AppName}}Tool.`
 
-// loadToolDescTemplate is the template for building the LoadTool description.
+// loadToolDescTemplate is the template for building the load meta-tool description.
 const loadToolDescTemplate = `Load the full definition of a {{.AppName}} API tool by its ID from Search{{.AppName}}Tools results.
 This retrieves the complete tool schema including all parameters and their types.
 Loaded tools are cached for faster subsequent access.
 You must load a {{.AppName}} tool before invoking it with Invoke{{.AppName}}Tool.`
 
-// invokeToolDescTemplate is the template for building the InvokeTool description.
+// invokeToolDescTemplate is the template for building the invoke meta-tool description.
 const invokeToolDescTemplate = `Invoke a {{.AppName}} API tool with the specified arguments.
 The tool must be loaded first using Load{{.AppName}}Tool.
 Arguments should match the tool's input schema as returned by Load{{.AppName}}Tool.`
 
 // ProgressiveHandler implements the progressive disclosure mechanism.
-// Instead of exposing all tools at once, it provides three meta-tools:
-// - SearchTools: Find tools by query
-// - LoadTool: Load full tool definition (cached)
-// - InvokeTool: Execute a tool by ID
+// Instead of exposing all tools at once, it provides three meta-tools, whose
+// names are scoped by the PascalCase app name:
+// - Search<App>Tools: Find tools by query
+// - Load<App>Tool: Load full tool definition (cached)
+// - Invoke<App>Tool: Execute a tool by ID
 type ProgressiveHandler struct {
-	registry       *ToolRegistry
-	searchEngine   ToolSearchEngine
-	requestBuilder *request.Builder
-	httpClient     *http.Client
-	clientInjected bool
-	clients        *profileClientCache
-	spec           *openapi3.T
-	appConfig      *config.AppConfig
-	profileName    string
-	safety         *safetyGuard
+	apiExecutor
+
+	registry     *ToolRegistry
+	searchEngine ToolSearchEngine
+	spec         *openapi3.T
+	safety       *safetyGuard
+	catalogErr   error
 }
 
 // NewProgressiveHandler creates a new progressive disclosure handler.
@@ -85,23 +88,23 @@ func NewProgressiveHandler(
 	}
 
 	handler := &ProgressiveHandler{
-		registry:       NewToolRegistry(),
-		searchEngine:   engine,
-		requestBuilder: requestBuilder,
-		clients:        newProfileClientCache(),
-	}
-	if httpClient != nil {
-		handler.httpClient = httpClient
-		handler.clientInjected = true
-	} else {
-		handler.httpClient = &http.Client{Timeout: defaultHTTPTimeout}
+		apiExecutor:  newAPIExecutor(requestBuilder, httpClient),
+		registry:     NewToolRegistry(),
+		searchEngine: engine,
 	}
 
 	return handler, nil
 }
 
 // SetSpec sets the OpenAPI specification and indexes tools.
-func (h *ProgressiveHandler) SetSpec(spec *openapi3.T, safetyConfig *config.SafetyConfig) error {
+func (h *ProgressiveHandler) SetSpec(spec *openapi3.T, safetyConfig *config.SafetyConfig) (err error) {
+	defer func() {
+		h.catalogErr = err
+		if err != nil {
+			_ = h.registry.BuildFromSpec(nil, nil)
+			_ = h.searchEngine.Index(nil)
+		}
+	}()
 	guard, err := newSafetyGuard(safetyConfig)
 	if err != nil {
 		return fmt.Errorf("invalid safety configuration: %w", err)
@@ -138,20 +141,20 @@ func (h *ProgressiveHandler) SetAppConfig(appCfg *config.AppConfig, profileName 
 
 // Register registers the three meta-tools with the MCP server.
 func (h *ProgressiveHandler) Register(s *mcp.Server) {
-	// Register SearchTools
+	// Register the search meta-tool.
 	searchTool := h.buildSearchToolDefinition()
 	s.AddTool(&searchTool, h.handleSearchTools)
 
-	// Register LoadTool
+	// Register the load meta-tool.
 	loadTool := h.buildLoadToolDefinition()
 	s.AddTool(&loadTool, h.handleLoadTool)
 
-	// Register InvokeTool
+	// Register the invoke meta-tool.
 	invokeTool := h.buildInvokeToolDefinition()
 	s.AddTool(&invokeTool, h.handleInvokeTool)
 }
 
-// buildSearchToolDefinition creates the SearchTools tool definition.
+// buildSearchToolDefinition creates the search meta-tool definition.
 func (h *ProgressiveHandler) buildSearchToolDefinition() mcp.Tool {
 	appName := h.formatAppName()
 
@@ -208,7 +211,7 @@ func (h *ProgressiveHandler) buildSearchToolDefinition() mcp.Tool {
 	}
 }
 
-// buildLoadToolDefinition creates the LoadTool tool definition.
+// buildLoadToolDefinition creates the load meta-tool definition.
 func (h *ProgressiveHandler) buildLoadToolDefinition() mcp.Tool {
 	appName := h.formatAppName()
 
@@ -251,7 +254,7 @@ func (h *ProgressiveHandler) buildLoadToolDefinition() mcp.Tool {
 	}
 }
 
-// buildInvokeToolDefinition creates the InvokeTool tool definition.
+// buildInvokeToolDefinition creates the invoke meta-tool definition.
 func (h *ProgressiveHandler) buildInvokeToolDefinition() mcp.Tool {
 	appName := h.formatAppName()
 
@@ -302,7 +305,7 @@ func (h *ProgressiveHandler) buildInvokeToolDefinition() mcp.Tool {
 	}
 }
 
-// handleSearchTools handles SearchTools requests.
+// handleSearchTools handles search meta-tool requests.
 // formatSearchResults formats search results into a string.
 func formatSearchResults(results []ToolMetadata) string {
 	var sb strings.Builder
@@ -324,19 +327,22 @@ func formatSearchResults(results []ToolMetadata) string {
 }
 
 func (h *ProgressiveHandler) handleSearchTools(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if h.catalogErr != nil {
+		return errorResult("MCP tool catalog unavailable: %v", h.catalogErr), nil
+	}
 	var args struct {
 		Query string `json:"query"`
 	}
 
 	if len(req.Params.Arguments) > 0 {
 		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
-			return errorResultProg("Invalid arguments: %v", err), nil
+			return errorResult("Invalid arguments: %v", err), nil
 		}
 	}
 
 	results, err := h.searchEngine.Search(args.Query)
 	if err != nil {
-		return errorResultProg("Search failed: %v", err), nil
+		return errorResult("Search failed: %v", err), nil
 	}
 
 	return &mcp.CallToolResult{
@@ -403,23 +409,26 @@ func formatToolDefinition(tool mcp.Tool, fromCache bool) string {
 	return sb.String()
 }
 
-// handleLoadTool handles LoadTool requests.
+// handleLoadTool handles load meta-tool requests.
 func (h *ProgressiveHandler) handleLoadTool(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if h.catalogErr != nil {
+		return errorResult("MCP tool catalog unavailable: %v", h.catalogErr), nil
+	}
 	var args struct {
 		ToolID string `json:"toolId"`
 	}
 
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
-		return errorResultProg("Invalid arguments: %v", err), nil
+		return errorResult("Invalid arguments: %v", err), nil
 	}
 
 	if args.ToolID == "" {
-		return errorResultProg("toolId is required"), nil
+		return errorResult("toolId is required"), nil
 	}
 
 	tool, fromCache, err := h.registry.Load(args.ToolID)
 	if err != nil {
-		return errorResultProg("Failed to load tool: %v", err), nil
+		return errorResult("Failed to load tool: %v", err), nil
 	}
 
 	return &mcp.CallToolResult{
@@ -429,8 +438,11 @@ func (h *ProgressiveHandler) handleLoadTool(_ context.Context, req *mcp.CallTool
 	}, nil
 }
 
-// handleInvokeTool handles InvokeTool requests.
-func (h *ProgressiveHandler) handleInvokeTool(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+// handleInvokeTool handles invoke meta-tool requests.
+func (h *ProgressiveHandler) handleInvokeTool(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if h.catalogErr != nil {
+		return errorResult("MCP tool catalog unavailable: %v", h.catalogErr), nil
+	}
 	var args struct {
 		ToolID    string         `json:"toolId"`
 		Arguments map[string]any `json:"arguments"`
@@ -440,11 +452,11 @@ func (h *ProgressiveHandler) handleInvokeTool(_ context.Context, req *mcp.CallTo
 	}
 
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
-		return errorResultProg("Invalid arguments: %v", err), nil
+		return errorResult("Invalid arguments: %v", err), nil
 	}
 
 	if args.ToolID == "" {
-		return errorResultProg("toolId is required"), nil
+		return errorResult("toolId is required"), nil
 	}
 
 	if args.Arguments == nil {
@@ -458,13 +470,13 @@ func (h *ProgressiveHandler) handleInvokeTool(_ context.Context, req *mcp.CallTo
 
 	// Check if tool is loaded
 	if !h.registry.IsLoaded(args.ToolID) {
-		return errorResultProg("Tool '%s' is not loaded. Use LoadTool first.", args.ToolID), nil
+		return errorResult("Tool '%s' is not loaded. Use Load%sTool first.", args.ToolID, h.formatAppName()), nil
 	}
 
 	// Get operation info
 	opInfo, ok := h.registry.GetOperationInfo(args.ToolID)
 	if !ok {
-		return errorResultProg("Operation info not found for tool: %s", args.ToolID), nil
+		return errorResult("Operation info not found for tool: %s", args.ToolID), nil
 	}
 
 	if safetyResult := h.safety.checkInvocation(args.ToolID, opInfo.Method, opInfo.Path, confirmed); safetyResult != nil {
@@ -478,87 +490,7 @@ func (h *ProgressiveHandler) handleInvokeTool(_ context.Context, req *mcp.CallTo
 	}
 
 	// Build and execute request
-	return h.buildAndExecuteRequest(opInfo.Operation, opInfo.Method, opInfo.Path, args.Arguments, profileName, profile)
-}
-
-// httpClientForProfile returns the client used for a profile. An explicitly
-// injected client always wins; otherwise the per-profile client is built from
-// the profile timeout/TLS settings and cached by profile name.
-func (h *ProgressiveHandler) httpClientForProfile(profileName string, profile *config.Profile) (*http.Client, error) {
-	if h.clientInjected {
-		return h.httpClient, nil
-	}
-	return h.clients.get(profileName, profile)
-}
-
-// executeRequest performs the HTTP request with the profile's retry policy.
-func (h *ProgressiveHandler) executeRequest(client *http.Client, httpReq *http.Request, profile *config.Profile) (*http.Response, error) {
-	retry := config.RetryConfig{}
-	if profile != nil {
-		retry = profile.RetryConfig
-	}
-
-	return request.DoWithRetry(client, httpReq, retry)
-}
-
-// getActiveProfile returns the active profile name and configuration.
-func (h *ProgressiveHandler) getActiveProfile() (string, *config.Profile, error) {
-	return getActiveProfile(h.appConfig, h.profileName)
-}
-
-// buildAndExecuteRequest builds and executes the HTTP request.
-func (h *ProgressiveHandler) buildAndExecuteRequest(
-	operation *openapi3.Operation,
-	method, path string,
-	arguments map[string]any,
-	profileName string,
-	profile *config.Profile,
-) (*mcp.CallToolResult, error) {
-	var requestBody *openapi3.RequestBody
-	if operation.RequestBody != nil {
-		requestBody = operation.RequestBody.Value
-	}
-
-	httpReq, err := h.requestBuilder.BuildRequest(method, path, profile.BaseURL, arguments, operation.Parameters, requestBody)
-	if err != nil {
-		return errorResultProg("Failed to build request: %v", err), nil
-	}
-
-	if err := h.requestBuilder.InjectAuth(httpReq, h.appConfig.Name, profileName, &profile.Auth); err != nil {
-		return nil, fmt.Errorf("failed to inject authentication: %w", err)
-	}
-
-	for key, value := range profile.Headers {
-		httpReq.Header.Set(key, value)
-	}
-
-	client, err := h.httpClientForProfile(profileName, profile)
-	if err != nil {
-		return errorResultProg("Failed to create HTTP client for profile %q: %v", profileName, err), nil
-	}
-
-	httpResp, err := h.executeRequest(client, httpReq, profile)
-	if err != nil {
-		return errorResultProg("Failed to execute API call: %v", err), nil
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	bodyBytes, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return errorResultProg("Failed to read response body: %v", err), nil
-	}
-
-	return formatMCPResult(httpResp.StatusCode, bodyBytes), nil
-}
-
-// errorResultProg creates an MCP error result.
-func errorResultProg(format string, args ...any) *mcp.CallToolResult {
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf(format, args...)},
-		},
-		IsError: true,
-	}
+	return h.buildAndExecuteRequest(ctx, opInfo.Operation, opInfo.Method, opInfo.Path, args.Arguments, profileName, profile)
 }
 
 // Close releases resources held by the handler.

@@ -1338,6 +1338,35 @@ func TestValidateParams_EnumValidation(t *testing.T) {
 	}
 }
 
+func TestValidateParamsChecksEffectiveRawBody(t *testing.T) {
+	builder := NewBuilder(nil)
+	body := &openapi3.RequestBody{Required: true, Content: openapi3.Content{
+		"application/json": &openapi3.MediaType{Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+			Type: &openapi3.Types{"object"}, Required: []string{"name"},
+			Properties: openapi3.Schemas{"name": {Value: openapi3.NewStringSchema()}},
+		}}},
+	}}
+	for _, test := range []struct {
+		name      string
+		params    map[string]any
+		wantError bool
+	}{
+		{"raw JSON", map[string]any{"body": `{"name":"actual"}`}, false},
+		{"raw object", map[string]any{"body": map[string]any{"name": "actual"}}, false},
+		{"missing raw field", map[string]any{"body": `{}`}, true},
+		{"raw overrides flags", map[string]any{"body": `{}`, "name": "shadow"}, true},
+		{"invalid JSON", map[string]any{"body": `not-json`}, true},
+		{"wrong JSON shape", map[string]any{"body": `[]`}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := builder.ValidateParams(test.params, nil, body)
+			if (err != nil) != test.wantError {
+				t.Fatalf("effective body validation error = %v; want error %t", err, test.wantError)
+			}
+		})
+	}
+}
+
 func TestValidateParams_RequestBodyRequired(t *testing.T) {
 	b := NewBuilder(nil)
 

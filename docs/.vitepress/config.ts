@@ -90,6 +90,7 @@ export default defineConfig({
         nav: [
           { text: 'Home', link: '/' },
           { text: 'Guide', link: '/guide/introduction' },
+          { text: 'Upgrading', link: '/guide/upgrading' },
           { text: 'Reference', link: '/reference/cli' }
         ],
         sidebar: {
@@ -99,7 +100,8 @@ export default defineConfig({
               items: [
                 { text: 'Introduction', link: '/guide/introduction' },
                 { text: 'Installation', link: '/guide/installation' },
-                { text: 'Quick Start', link: '/guide/quick-start' }
+                { text: 'Quick Start', link: '/guide/quick-start' },
+                { text: 'Upgrading', link: '/guide/upgrading' }
               ]
             }
           ],
@@ -107,7 +109,8 @@ export default defineConfig({
             {
               text: 'Reference',
               items: [
-                { text: 'CLI Commands', link: '/reference/cli' }
+                { text: 'CLI Commands', link: '/reference/cli' },
+                { text: 'Architecture', link: '/reference/architecture' }
               ]
             }
           ]
@@ -124,6 +127,7 @@ export default defineConfig({
         nav: [
           { text: '首页', link: '/zh/' },
           { text: '指南', link: '/zh/guide/introduction' },
+          { text: '升级', link: '/zh/guide/upgrading' },
           { text: '参考', link: '/zh/reference/cli' }
         ],
         sidebar: {
@@ -133,7 +137,8 @@ export default defineConfig({
               items: [
                 { text: '介绍', link: '/zh/guide/introduction' },
                 { text: '安装', link: '/zh/guide/installation' },
-                { text: '快速开始', link: '/zh/guide/quick-start' }
+                { text: '快速开始', link: '/zh/guide/quick-start' },
+                { text: '升级', link: '/zh/guide/upgrading' }
               ]
             }
           ],
@@ -141,7 +146,8 @@ export default defineConfig({
             {
               text: '参考',
               items: [
-                { text: 'CLI 命令', link: '/zh/reference/cli' }
+                { text: 'CLI 命令', link: '/zh/reference/cli' },
+                { text: '架构', link: '/zh/reference/architecture' }
               ]
             }
           ]

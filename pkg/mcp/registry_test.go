@@ -5,10 +5,24 @@ import (
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/nomagicln/open-bridge/internal/testutil"
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestToolRegistryIncludesInheritedParameters(t *testing.T) {
+	registry := NewToolRegistry()
+	require.NoError(t, registry.BuildFromSpec(testutil.InheritedParameterSpec(), nil))
+	info, ok := registry.GetOperationInfo("getUser")
+	require.True(t, ok)
+	assert.Len(t, info.Operation.Parameters, 2)
+	tool, ok := registry.GetTool("getUser")
+	require.True(t, ok)
+	schema := tool.InputSchema.(map[string]any)
+	assert.Contains(t, schema["required"].([]string), "id")
+	assert.Len(t, schema["properties"].(map[string]any), 3, "id, view and confirmation")
+}
 
 func TestNewToolRegistry(t *testing.T) {
 	registry := NewToolRegistry()
@@ -236,7 +250,7 @@ func TestToolRegistry_BuildFromSpec_NilSpec(t *testing.T) {
 	assert.Equal(t, 0, registry.ToolCount())
 }
 
-func TestToolRegistry_BuildFromSpec_PreservesCache(t *testing.T) {
+func TestToolRegistry_BuildFromSpec_ClearsCache(t *testing.T) {
 	registry := NewToolRegistry()
 
 	spec := createTestSpec()
@@ -251,8 +265,50 @@ func TestToolRegistry_BuildFromSpec_PreservesCache(t *testing.T) {
 	err = registry.BuildFromSpec(spec, nil)
 	require.NoError(t, err)
 
-	// Cache should be preserved
-	assert.Equal(t, 1, registry.LoadedCount())
+	// A loaded schema must not survive replacement of its source catalog.
+	assert.Zero(t, registry.LoadedCount())
+	assert.False(t, registry.IsLoaded("listPets"))
+}
+
+func TestToolRegistryRejectsAmbiguousNames(t *testing.T) {
+	registry := NewToolRegistry()
+	require.NoError(t, registry.BuildFromSpec(createTestSpec(), nil))
+	_, _, err := registry.Load("listPets")
+	require.NoError(t, err)
+
+	err = registry.BuildFromSpec(collidingToolSpec(), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "users_posts")
+	assert.Contains(t, err.Error(), "GET /users/{userId}/posts")
+	assert.Contains(t, err.Error(), "DELETE /users/{userId}/posts")
+	assert.Zero(t, registry.ToolCount())
+	assert.Zero(t, registry.LoadedCount())
+	assert.Empty(t, registry.GetMetadata())
+	_, _, err = registry.Load("listPets")
+	assert.Error(t, err)
+}
+
+func TestToolRegistryFiltersBeforeDetectingCollisions(t *testing.T) {
+	registry := NewToolRegistry()
+	require.NoError(t, registry.BuildFromSpec(collidingToolSpec(), &config.SafetyConfig{ReadOnlyMode: true}))
+	assert.Equal(t, 1, registry.ToolCount())
+	info, ok := registry.GetOperationInfo("users_posts")
+	require.True(t, ok)
+	assert.Equal(t, "GET", info.Method)
+}
+
+// collidingToolSpec contains two valid operations whose generated names collide.
+func collidingToolSpec() *openapi3.T {
+	spec := &openapi3.T{Paths: openapi3.NewPaths()}
+	params := openapi3.Parameters{{Value: &openapi3.Parameter{
+		Name: "userId", In: "path", Required: true,
+		Schema: &openapi3.SchemaRef{Value: openapi3.NewStringSchema()},
+	}}}
+	spec.Paths.Set("/users/{userId}/posts", &openapi3.PathItem{
+		Get:    &openapi3.Operation{OperationID: "list_posts_users__userid__posts_get", Parameters: params},
+		Delete: &openapi3.Operation{OperationID: "delete_posts_users__userid__posts_delete", Parameters: params},
+	})
+	return spec
 }
 
 func createTestSpec() *openapi3.T {

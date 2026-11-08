@@ -4,8 +4,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/nomagicln/open-bridge/internal/app"
 	"github.com/nomagicln/open-bridge/pkg/cli"
@@ -27,7 +30,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := deps.Run(os.Args); err != nil {
+	// A terminating signal cancels the context, which stops the running
+	// request or MCP server instead of leaving it behind.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := deps.RunContext(ctx, os.Args); err != nil {
 		// Don't print errors that have already been printed (e.g., formatted CLI errors)
 		if !cli.IsPrintedError(err) && err.Error() != "" {
 			fmt.Fprintln(os.Stderr, err)
