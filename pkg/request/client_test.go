@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -681,4 +682,84 @@ type errorTransport struct {
 func (e *errorTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	e.attempts++
 	return nil, e.err
+}
+
+// blockingBody blocks reads until it is released.
+type blockingBody struct {
+	release chan struct{}
+}
+
+func (b *blockingBody) Read([]byte) (int, error) {
+	<-b.release
+	return 0, io.EOF
+}
+
+func (b *blockingBody) Close() error { return nil }
+
+// statusTransport returns a fixed response once and reports the call.
+type statusTransport struct {
+	status int
+	body   io.ReadCloser
+	called chan struct{}
+	once   sync.Once
+}
+
+func (t *statusTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.once.Do(func() { close(t.called) })
+	return &http.Response{
+		StatusCode: t.status,
+		Body:       t.body,
+		Header:     make(http.Header),
+		Request:    req,
+	}, nil
+}
+
+// TestDoWithRetryStopsWhenContextCancelledDuringBackoff proves the retry
+// backoff is cancellable: a cancelled context aborts the wait instead of
+// sleeping through it and issuing another request.
+func TestDoWithRetryStopsWhenContextCancelledDuringBackoff(t *testing.T) {
+	release := make(chan struct{})
+	transport := &statusTransport{
+		status: http.StatusServiceUnavailable,
+		body:   &blockingBody{release: release},
+		called: make(chan struct{}),
+	}
+	client := &http.Client{Transport: transport}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.invalid/pets", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequestWithContext() error: %v", err)
+	}
+
+	retry := config.RetryConfig{
+		MaxRetries:           3,
+		InitialDelay:         config.Duration{Duration: 30 * time.Second},
+		MaxDelay:             config.Duration{Duration: 30 * time.Second},
+		RetryableStatusCodes: []int{http.StatusServiceUnavailable},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := DoWithRetry(client, req, retry)
+		done <- err
+	}()
+
+	<-transport.called
+
+	// Cancel while the response body is still being drained, then let the
+	// drain finish so the retry backoff is reached with a cancelled context.
+	cancel()
+	close(release)
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("DoWithRetry() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DoWithRetry() did not return after the context was cancelled")
+	}
 }

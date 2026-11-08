@@ -1,10 +1,10 @@
 # OpenBridge Quick Start Guide
 
-This guide will walk you through setting up OpenBridge (`ob`) and using it to manage a local Todo service. You will learn how to verify your installation, install an API service, and interact with it using semantic CLI commands.
+This guide walks through building the current source checkout and managing a local Todo service. `main` is Unreleased; `go install ...@latest` currently installs v0.1.3. For an existing integration, read the [upgrade guide](docs/guide/upgrading.md) first.
 
 ## Prerequisites
 
-- **Go** (1.25 or later): To build OpenBridge.
+- **Go** (1.26 or later, as declared in `go.mod`): To build the current source checkout.
 - **Python** & **[uv](https://github.com/astral-sh/uv)**: To run the example Todo service.
 
 ## Step 1: Build OpenBridge
@@ -60,7 +60,7 @@ Now, switch back to your `open-bridge` root terminal. We will use `ob` to "insta
 ./bin/ob install todo --spec http://localhost:8000/openapi.json
 ```
 
-If successful, you should see a message confirming the installation.
+If successful, you should see a message confirming the installation and the shim path. Interactive mode is opt-in (`./bin/ob install todo -i`); without `-i`, `--spec` is required. For the `todo` shortcut below, add the reported shim directory to `PATH`. You can always use `./bin/ob run todo ...` or `./bin/ob todo ...` instead.
 
 ## Step 4: Explore the CLI
 
@@ -69,11 +69,11 @@ OpenBridge dynamically generates commands based on the API's resources. Let's se
 ```bash
 # Show help for the todo app
 ./bin/ob run todo --help
-# OR (if you added bin/ to PATH)
+# OR (if the reported shim directory is on PATH)
 todo --help
 ```
 
-You should see `todos` listed under **Available Resources**.
+You should see flattened resources including `todos`, `todos-batch`, and `todos-stats` under **Available Resources**. Use the installed spec's help to confirm command names; nested URL segments do not become extra CLI argument levels.
 
 Let's see what we can do with the `todos` resource:
 
@@ -81,7 +81,7 @@ Let's see what we can do with the `todos` resource:
 todo todos --help
 ```
 
-You will see operations like `list`, `create`, `get`, `update`, `delete`, and batch operations.
+The `todos` resource provides `list`, `create`, `get`, `update`, and `delete`. Batch operations and statistics belong to the separate resources shown above.
 
 ## Step 5: Manage Todos
 
@@ -149,14 +149,16 @@ todo todos delete --todo_id 1
 
 ## Step 6: Batch Operations (Advanced)
 
-The Todo service supports batch operations for efficiency.
+The Todo service supports batch operations for efficiency. `/todos/batch` maps to `todos-batch`; the POST path rule maps to `batch`, and DELETE maps to `delete`.
+
+The batch and statistics examples here are derived from `examples/todo-service/main.py` and `pkg/semantic/{resource,verb,mapper}.go`. Runtime smoke verification for the Unreleased revision is tracked in the [architecture audit](docs/maintenance/architecture-audit.md). Use IDs returned by creation in the delete example.
 
 ### Batch Create
 
 Create multiple todos at once:
 
 ```bash
-todo todos batch create --items '[
+todo todos-batch batch --items '[
   {"title": "Task 1", "priority": "low"},
   {"title": "Task 2", "priority": "medium"},
   {"title": "Task 3", "priority": "high", "labels": [{"name": "important", "color": "#EF4444"}]}
@@ -168,7 +170,7 @@ todo todos batch create --items '[
 Delete multiple todos by IDs:
 
 ```bash
-todo todos batch delete --ids '[1, 2, 3]'
+todo todos-batch delete --ids '[1, 2, 3]'
 ```
 
 ## Step 7: View Statistics
@@ -176,7 +178,7 @@ todo todos batch delete --ids '[1, 2, 3]'
 Get aggregated statistics about all your todos:
 
 ```bash
-todo todos stats
+todo todos-stats get
 ```
 
 This shows counts by status, priority, overdue items, and completion metrics.

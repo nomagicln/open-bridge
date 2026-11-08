@@ -23,6 +23,7 @@ import (
 	"github.com/leanovate/gopter/gen"
 	"github.com/leanovate/gopter/prop"
 	"github.com/nomagicln/open-bridge/internal/proptest"
+	"github.com/nomagicln/open-bridge/internal/testutil"
 	"github.com/nomagicln/open-bridge/pkg/semantic"
 )
 
@@ -54,6 +55,23 @@ const derivedIndexSpecJSON = `{
     }
   }
 }`
+
+func TestDerivedIndexIncludesEffectiveParameters(t *testing.T) {
+	doc := testutil.InheritedParameterSpec()
+	index := newDerivedIndex("inherited", "file", "fixture", semantic.NewMapper().BuildCommandTree(doc))
+	populateDerivedOperationDetails(index, doc)
+	op, ok := index.FindOperation("users", "get")
+	if !ok || !op.ExecutionIndexable {
+		t.Fatal("inherited parameters must remain executable from the index")
+	}
+	command := op.CommandSpec()
+	if len(command.Parameters) != 2 || command.Parameters[0].Value.Name != "id" || !command.Parameters[0].Value.Required {
+		t.Fatal("index lost required inherited path parameter")
+	}
+	if !reflect.DeepEqual(command.Parameters[1].Value.Schema.Value.Enum, []any{"full", "compact"}) {
+		t.Fatal("index did not preserve operation-level override")
+	}
+}
 
 // writeDerivedIndexSpec writes the shared test spec and returns its path.
 func writeDerivedIndexSpec(t *testing.T) string {

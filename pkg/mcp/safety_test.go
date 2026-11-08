@@ -26,6 +26,9 @@ type recordedRequests struct {
 	mu      sync.Mutex
 	bodies  []string
 	queries []string
+	methods []string
+	paths   []string
+	headers []http.Header
 }
 
 func (r *recordedRequests) record(req *http.Request) {
@@ -34,6 +37,9 @@ func (r *recordedRequests) record(req *http.Request) {
 	defer r.mu.Unlock()
 	r.bodies = append(r.bodies, string(body))
 	r.queries = append(r.queries, req.URL.RawQuery)
+	r.methods = append(r.methods, req.Method)
+	r.paths = append(r.paths, req.URL.Path)
+	r.headers = append(r.headers, req.Header.Clone())
 }
 
 // Count returns the number of recorded API requests.
@@ -51,6 +57,26 @@ func (r *recordedRequests) LastBody() string {
 		return ""
 	}
 	return r.bodies[len(r.bodies)-1]
+}
+
+// LastQuery returns the raw query string of the last recorded request.
+func (r *recordedRequests) LastQuery() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.queries) == 0 {
+		return ""
+	}
+	return r.queries[len(r.queries)-1]
+}
+
+// LastHeader returns the value of a header on the last recorded request.
+func (r *recordedRequests) LastHeader(name string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.headers) == 0 {
+		return ""
+	}
+	return r.headers[len(r.headers)-1].Get(name)
 }
 
 // newSafetyMockServer starts an API server that records every request.
@@ -141,6 +167,27 @@ func invokeProgressiveTool(t *testing.T, handler *ProgressiveHandler, rawArgumen
 	require.NotNil(t, result)
 
 	return result
+}
+
+func TestSafetyGuardChecksVisibilityAtInvocation(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config config.SafetyConfig
+		method string
+		tool   string
+	}{
+		{"read-only", config.SafetyConfig{ReadOnlyMode: true}, "DELETE", "users_posts"},
+		{"denied", config.SafetyConfig{DeniedOperations: []string{"deleteUser"}}, "DELETE", "deleteUser"},
+		{"not-allowed", config.SafetyConfig{AllowedOperations: []string{"getUser"}}, "GET", "listUsers"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			guard, err := newSafetyGuard(&test.config)
+			require.NoError(t, err)
+			result := guard.checkInvocation(test.tool, test.method, "/users", true)
+			require.NotNil(t, result)
+			assert.True(t, result.IsError)
+		})
+	}
 }
 
 func TestNewSafetyGuard_NilConfig(t *testing.T) {

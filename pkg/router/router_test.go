@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -136,4 +137,153 @@ func TestRouterExecuteNoArgs(t *testing.T) {
 	err := r.Execute(nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no command")
+}
+
+// TestRouterParseMCPOptions proves the MCP server options are parsed from the
+// application arguments, with the last occurrence of a repeated option winning.
+func TestRouterParseMCPOptions(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	tests := []struct {
+		name           string
+		args           []string
+		defaultProfile string
+		expected       mcpOptions
+	}{
+		{
+			name:           "default values",
+			args:           []string{},
+			defaultProfile: "default",
+			expected: mcpOptions{
+				profileName: "default",
+				transport:   "stdio",
+				port:        "8080",
+			},
+		},
+		{
+			name:           "with profile flag",
+			args:           []string{"--profile", "prod"},
+			defaultProfile: "default",
+			expected: mcpOptions{
+				profileName: "prod",
+				transport:   "stdio",
+				port:        "8080",
+			},
+		},
+		{
+			name:           "with profile short flag",
+			args:           []string{"-p", "staging"},
+			defaultProfile: "default",
+			expected: mcpOptions{
+				profileName: "staging",
+				transport:   "stdio",
+				port:        "8080",
+			},
+		},
+		{
+			name:           "with transport flag",
+			args:           []string{"--transport", "sse"},
+			defaultProfile: "default",
+			expected: mcpOptions{
+				profileName: "default",
+				transport:   "sse",
+				port:        "8080",
+			},
+		},
+		{
+			name:           "with port flag",
+			args:           []string{"--port", "9090"},
+			defaultProfile: "default",
+			expected: mcpOptions{
+				profileName: "default",
+				transport:   "stdio",
+				port:        "9090",
+			},
+		},
+		{
+			name:           "with all flags",
+			args:           []string{"--profile", "prod", "--transport", "sse", "--port", "9090"},
+			defaultProfile: "default",
+			expected: mcpOptions{
+				profileName: "prod",
+				transport:   "sse",
+				port:        "9090",
+			},
+		},
+		{
+			name:           "with equals syntax",
+			args:           []string{"--profile=prod", "--transport=sse", "--port=9090"},
+			defaultProfile: "default",
+			expected: mcpOptions{
+				profileName: "prod",
+				transport:   "sse",
+				port:        "9090",
+			},
+		},
+		{
+			name:           "mixed syntax keeps the last profile",
+			args:           []string{"--profile", "prod", "--transport=sse", "-p", "staging"},
+			defaultProfile: "default",
+			expected: mcpOptions{
+				profileName: "staging",
+				transport:   "sse",
+				port:        "8080",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, r.parseMCPOptions(tt.args, tt.defaultProfile))
+		})
+	}
+}
+
+// TestRouterDetectProfileLastWins proves a repeated profile option resolves to
+// the last occurrence, matching the CLI convention.
+func TestRouterDetectProfileLastWins(t *testing.T) {
+	assert.Equal(t, "staging", detectProfile([]string{"--profile", "prod", "-p", "staging"}))
+	assert.Equal(t, "prod", detectProfile([]string{"--profile=prod"}))
+	assert.Equal(t, "", detectProfile([]string{"--profile"}))
+	assert.Equal(t, "", detectProfile(nil))
+}
+
+// TestRouterSetServerVersion proves the injected version is used for the MCP
+// server and that an empty version falls back to the default.
+func TestRouterSetServerVersion(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	assert.Equal(t, defaultServerVersion, r.version)
+
+	r.SetServerVersion("2.1.0")
+	assert.Equal(t, "2.1.0", r.version)
+
+	r.SetServerVersion("")
+	assert.Equal(t, defaultServerVersion, r.version)
+}
+
+// TestRouterExecuteAppContextMCPModeOption proves the forwarded MCP option
+// starts the MCP server even when the arguments do not request it.
+func TestRouterExecuteAppContextMCPModeOption(t *testing.T) {
+	r, configMgr := newTestRouter(t)
+	installTestApp(t, configMgr, "demo")
+
+	// An unsupported transport makes the MCP branch fail fast, which proves the
+	// MCP server was selected.
+	err := r.ExecuteAppContext(context.Background(), "demo", []string{"--transport", "bogus"}, AppOptions{MCPMode: true})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported transport")
+}
+
+// TestRouterExecuteAppContextProfileOption proves the forwarded profile is
+// used when the arguments do not select one.
+func TestRouterExecuteAppContextProfileOption(t *testing.T) {
+	r, configMgr := newTestRouter(t)
+	installTestApp(t, configMgr, "demo")
+
+	err := r.ExecuteAppContext(context.Background(), "demo", []string{"--mcp"}, AppOptions{ProfileName: "missing"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "profile 'missing' not found")
 }

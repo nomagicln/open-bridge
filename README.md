@@ -26,8 +26,8 @@
 - **Secure Credentials**: Uses system keyring (Keychain, Credential Manager, Secret Service); on headless systems, set `OPENBRIDGE_KEYRING_PASSWORD` to use an encrypted file backend
 - **Resilient Requests**: Per-profile timeout, retry policy and TLS options (custom CA, client certificates, insecure-skip-verify, minimum version)
 - **Offline-Friendly Remote Specs**: remote OpenAPI specs are cached locally and revalidated with `ETag` / `Last-Modified`
-- **Instant Help & Completion**: app help and shell completion read a cached derived index (~10ms even for multi-MB specs)
-- **Fast Startup**: CLI startup (`ob --version` / `--help`) in single-digit milliseconds; app command latency depends on OpenAPI spec size
+- **Cached Help & Completion**: app help and shell completion reuse a versioned derived index
+- **Conservative Execution Fallbacks**: supported schemas can reuse indexed command data; other operations use the full parser, with latency depending on spec size and environment
 
 ## Installation
 
@@ -40,6 +40,50 @@ go install github.com/nomagicln/open-bridge/cmd/ob@latest
 ### From Binary
 
 Download the latest release from the [Releases page](https://github.com/nomagicln/open-bridge/releases).
+
+`@latest` currently resolves to **v0.1.3**. This README follows `main`, whose changes are **Unreleased**; installing a release does not install those changes. Pin a release or a specific commit when reproducibility matters:
+
+```bash
+go install github.com/nomagicln/open-bridge/cmd/ob@v0.1.3
+```
+
+## Upgrading with an AI Agent
+
+Start with the [upgrade guide](docs/guide/upgrading.md) and [CHANGELOG](CHANGELOG.md) before changing an existing integration. The upgrade guide covers CLI scripts, MCP clients, YAML configuration, and Go imports separately, including public Go APIs removed after v0.1.3.
+
+For work in this repository, read [AGENTS.md](AGENTS.md), [CONTRIBUTING.md](CONTRIBUTING.md), the [architecture reference](docs/reference/architecture.md), and the [CLI reference](docs/reference/cli.md). The [architecture audit](docs/maintenance/architecture-audit.md) records the current iteration's evidence and verification status. Historical proposals and diagnosis reports explain past decisions; they do not override current source and tests.
+
+Copy this prompt into your downstream project's agent session and replace the placeholders:
+
+```text
+Upgrade this project's OpenBridge integration from <OLD_TAG_OR_COMMIT> to
+<NEW_TAG_OR_COMMIT>. Resolve both refs first; do not substitute main or @latest
+without recording the resolved commit. Identify every consumption mode we use:
+CLI/subprocess, MCP, configuration files, and/or Go package imports.
+
+Read OpenBridge's README, CHANGELOG, docs/guide/upgrading.md, and
+docs/reference/architecture.md at the target ref. Inspect the actual upstream
+git diff <OLD_REF>..<NEW_REF> for the packages and commands we consume, then
+find and read our local imports, command invocations, MCP tool names, config
+readers/writers, and tests. Base each edit on those callsites and the diff.
+Do not assume that a removed symbol has a one-line replacement.
+
+Use supported public pkg APIs or the ob CLI. Never import OpenBridge internal
+packages. If a required API has no public replacement, report the blocker and
+retain/pin the older compatible version rather than inventing a replacement.
+Preserve credentials, config files, profile selection, TLS verification,
+read-only/allow/deny rules, confirmations, and rate limits. Do not print secrets,
+delete configuration/credentials, or relax safety settings to make tests pass.
+Treat derived caches as disposable only when their source can be recovered;
+allow versioned indexes to rebuild automatically.
+
+Make the smallest necessary local changes. Run this project's own build and
+tests plus representative CLI/MCP/configuration calls in an isolated test
+configuration. For profile edits, reload the saved app and verify the value.
+Report resolved old/new refs, changed callsites, compatibility decisions,
+commands and results, and every blocker or unverified path. Do not claim an
+upgrade is complete when a required consumer remains incompatible.
+```
 
 ## Quick Start
 
@@ -67,15 +111,17 @@ OpenBridge implements the Model Context Protocol (MCP) to serve as a bridge betw
 
 #### Progressive Disclosure
 
-To handle large APIs efficiently, OpenBridge uses a **Progressive Disclosure** strategy. Instead of overwhelming the AI context with hundreds of tools at once, it exposes three meta-tools:
+Enable `safety.progressive_disclosure: true` in the selected profile to use **Progressive Disclosure** for large APIs. This mode exposes three meta-tools. Their names are scoped by the PascalCase app name, so an agent must read them from the MCP `tools/list` response:
 
-1. **`SearchTools`**: Find relevant tools using a powerful query language.
-2. **`LoadTool`**: Load the full schema for a specific tool.
-3. **`InvokeTool`**: Execute the tool.
+1. **`Search<App>Tools`** (for example `SearchPetstoreTools`): Find relevant tools using a powerful query language.
+2. **`Load<App>Tool`** (for example `LoadPetstoreTool`): Load the full schema for a specific tool.
+3. **`Invoke<App>Tool`** (for example `InvokePetstoreTool`): Execute the tool.
+
+The app name is converted to PascalCase, so `my-api-v2` becomes `SearchMyApiV2Tools`, `LoadMyApiV2Tool`, and `InvokeMyApiV2Tool`.
 
 #### Search Syntax
 
-The `SearchTools` capability supports a predicate-based query language for precise filtering:
+With `safety.search_engine: predicate`, the search meta-tool supports a predicate-based query language for precise filtering:
 
 - **Methods**: `MethodIs("GET")`, `MethodIs("POST")`
 - **Paths**: `PathContains("/users")`, `PathStartsWith("/api/v1")`
@@ -103,15 +149,17 @@ The `SearchTools` capability supports a predicate-based query language for preci
 myapi --mcp
 ```
 
-Then configure your AI agent to connect to this server (stdio transport).
+Then configure your AI agent to connect to this server (stdio transport). SSE is also supported with `ob myapi --mcp --transport sse --port 8080`. See the [CLI reference](docs/reference/cli.md) for installation flags, snippet generation (`curl`, `nodejs`, `go`, `python`), and Unreleased runtime option precedence.
 
 ## Configuration
 
 Configuration files are stored in platform-specific locations:
 
 - **macOS**: `~/Library/Application Support/openbridge/`
-- **Linux**: `~/.config/openbridge/`
+- **Linux/Unix**: `$XDG_CONFIG_HOME/openbridge/`, or `~/.config/openbridge/` when unset
 - **Windows**: `%APPDATA%\openbridge\`
+
+Set `OPENBRIDGE_CONFIG_DIR` to override the complete configuration directory on any platform.
 
 ### Profiles
 
@@ -161,8 +209,10 @@ myapi users list --profile prod
 | --- | --- |
 | `ob install <name> --spec <path>` | Install an API as a CLI application |
 | `ob uninstall <name>` | Remove an installed application |
-| `ob list` | List all installed applications |
+| `ob list [--details]` | List installed applications, optionally with details |
+| `ob info <name> [-o text\|json\|yaml]` | Inspect an installed application's configuration |
 | `ob run <name> [args...]` | Run commands for an installed application |
+| `ob <name> [args...]` | Run an installed application directly |
 | `ob completion [bash\|zsh\|fish]` | Generate shell completion script |
 | `ob --version` | Show version information |
 | `ob help` | Show help |
@@ -295,23 +345,29 @@ go test -race ./...
 
 ```text
 .
-├── cmd/
-│   └── ob/              # Main entry point
-├── pkg/
-│   ├── spec/            # OpenAPI spec parsing
-│   ├── config/          # Configuration management
-│   ├── credential/      # Keyring integration
-│   ├── semantic/        # Verb-resource mapping
-│   ├── request/         # HTTP request building
-│   ├── cli/             # CLI command handling
-│   ├── mcp/             # MCP protocol
-│   ├── completion/      # Shell completion support
-│   └── router/          # Command routing
+├── cmd/ob/              # Process entry point and build metadata
 ├── internal/
-│   └── testutil/        # Testing utilities
-└── .github/
-    └── workflows/       # CI/CD configuration
+│   ├── app/             # Composition root and management commands
+│   ├── install/         # Installation, shims, and TLS asset validation
+│   ├── integration/     # Cross-package integration tests
+│   └── proptest/        # Shared property-test support
+├── pkg/
+│   ├── spec/            # OpenAPI parsing, remote cache, derived indexes
+│   ├── config/          # Public config models and persistence
+│   ├── credential/      # Credential backends
+│   ├── semantic/        # Resource and verb mapping
+│   ├── request/         # Shared HTTP construction and client policies
+│   ├── cli/             # App commands, help, response formatting
+│   ├── mcp/             # Standard and progressive MCP tools
+│   ├── completion/      # Shell completion
+│   ├── router/          # App mode and profile dispatch
+│   ├── codegen/         # Optional request snippets
+│   └── tui/             # Interactive installation UI
+├── docs/                # English and Chinese VitePress guides
+└── .github/workflows/   # CI/CD configuration
 ```
+
+`pkg` paths are importable Go packages; their compatibility still depends on the selected ref. `internal` packages are repository implementation details. See the [architecture reference](docs/reference/architecture.md) for boundaries and cache lifecycle.
 
 ## Contributing
 

@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
-	"slices"
 	"sync"
 	"time"
 
@@ -21,20 +19,15 @@ import (
 
 // Handler implements the MCP protocol for AI agent integration.
 type Handler struct {
-	mapper         *semantic.Mapper
-	requestBuilder *request.Builder
-	spec           *openapi3.T
-	appConfig      *config.AppConfig
-	profileName    string
-	safety         *safetyGuard
-	safetyErr      error
+	apiExecutor
 
-	// httpClient is either the explicitly injected client or the default fallback.
-	// clientInjected records whether the caller supplied it: an injected client is
-	// always used as-is, while a nil injection enables per-profile clients.
-	httpClient     *http.Client
-	clientInjected bool
-	clients        *profileClientCache
+	mapper       *semantic.Mapper
+	spec         *openapi3.T
+	safety       *safetyGuard
+	safetyErr    error
+	safetyConfig *config.SafetyConfig
+	registry     *ToolRegistry
+	catalogErr   error
 }
 
 // defaultHTTPTimeout bounds every MCP tool call so a slow or unreachable API
@@ -43,18 +36,11 @@ const defaultHTTPTimeout = 30 * time.Second
 
 // NewHandler creates a new MCP handler.
 func NewHandler(mapper *semantic.Mapper, requestBuilder *request.Builder, httpClient *http.Client) *Handler {
-	handler := &Handler{
-		mapper:         mapper,
-		requestBuilder: requestBuilder,
-		clients:        newProfileClientCache(),
+	return &Handler{
+		apiExecutor: newAPIExecutor(requestBuilder, httpClient),
+		mapper:      mapper,
+		registry:    NewToolRegistry(),
 	}
-	if httpClient != nil {
-		handler.httpClient = httpClient
-		handler.clientInjected = true
-	} else {
-		handler.httpClient = &http.Client{Timeout: defaultHTTPTimeout}
-	}
-	return handler
 }
 
 // profileClientCache caches HTTP clients built from profile timeout/TLS settings.
@@ -88,19 +74,20 @@ func (c *profileClientCache) get(profileName string, profile *config.Profile) (*
 	return client, nil
 }
 
-// httpClientForProfile returns the client used for a profile. An explicitly
-// injected client always wins; otherwise the per-profile client is built from
-// the profile timeout/TLS settings and cached by profile name.
-func (h *Handler) httpClientForProfile(profileName string, profile *config.Profile) (*http.Client, error) {
-	if h.clientInjected {
-		return h.httpClient, nil
-	}
-	return h.clients.get(profileName, profile)
-}
-
 // SetSpec sets the OpenAPI specification for the handler.
 func (h *Handler) SetSpec(spec *openapi3.T) {
 	h.spec = spec
+	_ = h.rebuildCatalog()
+}
+
+// rebuildCatalog configures the binding before serving; listing tools never
+// replaces this binding. As with SetSpec, configuration precedes concurrent calls.
+func (h *Handler) rebuildCatalog() error {
+	if h.registry == nil {
+		h.registry = NewToolRegistry()
+	}
+	h.catalogErr = h.registry.BuildFromSpec(h.spec, h.safetyConfig)
+	return h.catalogErr
 }
 
 // SetAppConfig sets the app configuration for the handler.
@@ -122,6 +109,10 @@ func (h *Handler) SetSafetyConfig(cfg *config.SafetyConfig) error {
 	}
 	h.safety = guard
 	h.safetyErr = nil
+	h.safetyConfig = cfg
+	if err := h.rebuildCatalog(); err != nil {
+		return fmt.Errorf("invalid MCP tool catalog: %w", err)
+	}
 	return nil
 }
 
@@ -130,21 +121,28 @@ func (h *Handler) GetRequestBuilder() *request.Builder {
 	return h.requestBuilder
 }
 
-// Register registers the tools with the MCP server.
+// Register preserves the original registration API. Failed configuration is
+// reported and all subsequent calls fail closed. Use RegisterChecked at startup
+// when the caller can propagate errors.
 func (h *Handler) Register(s *mcp.Server, safetyConfig *config.SafetyConfig) {
-	// Register cannot return an error: invalid safety configuration is surfaced as
-	// a startup warning and then every tool call fails closed with an isError
-	// result. Callers that need a hard startup failure can call SetSafetyConfig or
-	// ValidateSafetyConfig directly.
-	if err := h.SetSafetyConfig(safetyConfig); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: MCP safety configuration invalid: %v\n", err)
+	if err := h.RegisterChecked(s, safetyConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: MCP registration failed: %v\n", err)
 	}
+}
 
-	tools := h.GetTools(safetyConfig)
-	for _, t := range tools {
-		tool := t // capture loop variable
-		s.AddTool(&tool, h.HandleCallTool)
+// RegisterChecked registers the authorized catalog, or returns its validation
+// error before any tools are added to the server.
+func (h *Handler) RegisterChecked(s *mcp.Server, safetyConfig *config.SafetyConfig) error {
+	if err := h.SetSafetyConfig(safetyConfig); err != nil {
+		return fmt.Errorf("register MCP tools: %w", err)
 	}
+	for _, meta := range h.registry.GetMetadata() {
+		tool, ok := h.registry.GetTool(meta.ID)
+		if ok {
+			s.AddTool(&tool, h.HandleCallTool)
+		}
+	}
+	return nil
 }
 
 // GetTools returns the list of available tools.
@@ -154,16 +152,6 @@ func (h *Handler) GetTools(safetyConfig *config.SafetyConfig) []mcp.Tool {
 	}
 	tools := h.BuildMCPTools(h.spec, safetyConfig)
 	return tools
-}
-
-// errorResult creates an MCP error result with the given message.
-func errorResult(format string, args ...any) *mcp.CallToolResult {
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf(format, args...)},
-		},
-		IsError: true,
-	}
 }
 
 // parseToolArguments unmarshals the tool arguments from the request.
@@ -177,76 +165,8 @@ func parseToolArguments(req *mcp.CallToolRequest) (map[string]any, error) {
 	return arguments, nil
 }
 
-// getActiveProfile returns the active profile name and configuration.
-func (h *Handler) getActiveProfile() (string, *config.Profile, error) {
-	return getActiveProfile(h.appConfig, h.profileName)
-}
-
-// buildAndExecuteRequest builds and executes the HTTP request.
-func (h *Handler) buildAndExecuteRequest(operation *openapi3.Operation, method, path string, arguments map[string]any, profileName string, profile *config.Profile) (*mcp.CallToolResult, error) {
-	httpReq, err := h.buildRequest(method, path, arguments, operation, profile)
-	if err != nil {
-		return errorResult("Failed to build request: %v", err), nil
-	}
-
-	if err := h.injectAuthAndHeaders(httpReq, profileName, profile); err != nil {
-		return nil, fmt.Errorf("failed to inject authentication: %w", err)
-	}
-
-	client, err := h.httpClientForProfile(profileName, profile)
-	if err != nil {
-		return errorResult("Failed to create HTTP client for profile %q: %v", profileName, err), nil
-	}
-
-	httpResp, err := h.executeRequest(client, httpReq, profile)
-	if err != nil {
-		return errorResult("Failed to execute API call: %v", err), nil
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	bodyBytes, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return errorResult("Failed to read response body: %v", err), nil
-	}
-
-	return h.FormatMCPResult(httpResp.StatusCode, bodyBytes), nil
-}
-
-// buildRequest builds the HTTP request with parameters.
-func (h *Handler) buildRequest(method, path string, arguments map[string]any, operation *openapi3.Operation, profile *config.Profile) (*http.Request, error) {
-	var requestBody *openapi3.RequestBody
-	if operation.RequestBody != nil {
-		requestBody = operation.RequestBody.Value
-	}
-
-	return h.requestBuilder.BuildRequest(method, path, profile.BaseURL, arguments, operation.Parameters, requestBody)
-}
-
-// injectAuthAndHeaders injects authentication and custom headers into the request.
-func (h *Handler) injectAuthAndHeaders(httpReq *http.Request, profileName string, profile *config.Profile) error {
-	if err := h.requestBuilder.InjectAuth(httpReq, h.appConfig.Name, profileName, &profile.Auth); err != nil {
-		return err
-	}
-
-	for key, value := range profile.Headers {
-		httpReq.Header.Set(key, value)
-	}
-
-	return nil
-}
-
-// executeRequest performs the HTTP request with the profile's retry policy.
-func (h *Handler) executeRequest(client *http.Client, httpReq *http.Request, profile *config.Profile) (*http.Response, error) {
-	retry := config.RetryConfig{}
-	if profile != nil {
-		retry = profile.RetryConfig
-	}
-
-	return request.DoWithRetry(client, httpReq, retry)
-}
-
 // HandleCallTool handles tool execution requests.
-func (h *Handler) HandleCallTool(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *Handler) HandleCallTool(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	if h.safetyErr != nil {
 		return errorResult("%v", h.safetyErr), nil
 	}
@@ -261,12 +181,15 @@ func (h *Handler) HandleCallTool(_ context.Context, req *mcp.CallToolRequest) (*
 	confirmed := confirmRequested(arguments)
 	stripConfirmArgument(arguments)
 
-	operation, method, path, err := h.MapToolToOperation(req.Params.Name)
-	if err != nil {
+	if err := h.catalogError(); err != nil {
 		return errorResult("Error mapping tool: %v", err), nil
 	}
+	info, ok := h.registry.GetOperationInfo(req.Params.Name)
+	if !ok {
+		return errorResult("operation not found for published tool: %s", req.Params.Name), nil
+	}
 
-	if safetyResult := h.safety.checkInvocation(req.Params.Name, method, path, confirmed); safetyResult != nil {
+	if safetyResult := h.safety.checkInvocation(req.Params.Name, info.Method, info.Path, confirmed); safetyResult != nil {
 		return safetyResult, nil
 	}
 
@@ -275,58 +198,46 @@ func (h *Handler) HandleCallTool(_ context.Context, req *mcp.CallToolRequest) (*
 		return nil, err
 	}
 
-	return h.buildAndExecuteRequest(operation, method, path, arguments, profileName, profile)
+	return h.buildAndExecuteRequest(ctx, info.Operation, info.Method, info.Path, arguments, profileName, profile)
 }
 
-// mapToolToOperation maps a tool name to its corresponding OpenAPI operation.
+// MapToolToOperation resolves an authorized tool, retaining unique operationId
+// aliases for existing library callers. Protocol calls accept published IDs only.
 func (h *Handler) MapToolToOperation(toolName string) (*openapi3.Operation, string, string, error) {
-	if h.spec == nil {
-		return nil, "", "", fmt.Errorf("OpenAPI spec not loaded")
+	if err := h.catalogError(); err != nil {
+		return nil, "", "", err
 	}
-
-	// Search for operation by operationId or generated tool name
-	for path, pathItem := range h.spec.Paths.Map() {
-		if op, method, found := h.findOperationInPath(path, pathItem, toolName); found {
-			return op, method, path, nil
+	if info, ok := h.registry.GetOperationInfo(toolName); ok {
+		return info.Operation, info.Method, info.Path, nil
+	}
+	var matched *OperationInfo
+	for _, meta := range h.registry.GetMetadata() {
+		info, ok := h.registry.GetOperationInfo(meta.ID)
+		if !ok || info.Operation.OperationID != toolName {
+			continue
 		}
+		if matched != nil {
+			return nil, "", "", fmt.Errorf("ambiguous operationId alias: %s", toolName)
+		}
+		matched = &info
 	}
-
+	if matched != nil {
+		return matched.Operation, matched.Method, matched.Path, nil
+	}
 	return nil, "", "", fmt.Errorf("operation not found for tool: %s", toolName)
 }
 
-// findOperationInPath searches for a tool in a specific path item.
-func (h *Handler) findOperationInPath(path string, pathItem *openapi3.PathItem, toolName string) (*openapi3.Operation, string, bool) {
-	operations := map[string]*openapi3.Operation{
-		"GET":    pathItem.Get,
-		"POST":   pathItem.Post,
-		"PUT":    pathItem.Put,
-		"PATCH":  pathItem.Patch,
-		"DELETE": pathItem.Delete,
+func (h *Handler) catalogError() error {
+	if h.safetyErr != nil {
+		return h.safetyErr
 	}
-
-	for method, op := range operations {
-		if op == nil {
-			continue
-		}
-
-		if matchesToolName(op, method, path, toolName) {
-			return op, method, true
-		}
+	if h.catalogErr != nil {
+		return fmt.Errorf("MCP tool catalog unavailable: %w", h.catalogErr)
 	}
-
-	return nil, "", false
-}
-
-// matchesToolName checks if an operation matches the given tool name.
-func matchesToolName(op *openapi3.Operation, method, path, toolName string) bool {
-	// Match by operationId
-	if op.OperationID == toolName {
-		return true
+	if h.spec == nil || h.registry == nil {
+		return fmt.Errorf("OpenAPI spec not loaded")
 	}
-
-	// Match by generated tool name (same logic as BuildMCPTools)
-	generatedName := GenerateToolName(method, path, op)
-	return generatedName == toolName
+	return nil
 }
 
 // FormatMCPResult formats an API response into MCP result format.
@@ -336,76 +247,16 @@ func (h *Handler) FormatMCPResult(statusCode int, bodyBytes []byte) *mcp.CallToo
 
 // buildMCPTools converts OpenAPI operations to MCP tool definitions.
 func (h *Handler) BuildMCPTools(spec *openapi3.T, safetyConfig *config.SafetyConfig) []mcp.Tool {
-	var tools []mcp.Tool
-
-	for path, pathItem := range spec.Paths.Map() {
-		tools = h.processPathItem(path, pathItem, safetyConfig, tools)
+	registry := NewToolRegistry()
+	if err := registry.BuildFromSpec(spec, safetyConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: MCP tools unavailable: %v\n", err)
+		return []mcp.Tool{}
 	}
-
-	return tools
-}
-
-// processPathItem processes operations in a single path item.
-func (h *Handler) processPathItem(path string, pathItem *openapi3.PathItem, safetyConfig *config.SafetyConfig, tools []mcp.Tool) []mcp.Tool {
-	operations := map[string]*openapi3.Operation{
-		"GET":    pathItem.Get,
-		"POST":   pathItem.Post,
-		"PUT":    pathItem.Put,
-		"PATCH":  pathItem.Patch,
-		"DELETE": pathItem.Delete,
-	}
-
-	for method, op := range operations {
-		if op == nil {
-			continue
-		}
-
-		if h.shouldSkipOperation(method, safetyConfig) {
-			continue
-		}
-
-		tool := h.convertOperationToTool(method, path, op)
-		if h.isToolAllowed(tool.Name, safetyConfig) {
+	tools := make([]mcp.Tool, 0, registry.ToolCount())
+	for _, meta := range registry.GetMetadata() {
+		if tool, ok := registry.GetTool(meta.ID); ok {
 			tools = append(tools, tool)
 		}
 	}
-
 	return tools
-}
-
-// shouldSkipOperation checks if an operation should be skipped based on safety config.
-func (h *Handler) shouldSkipOperation(method string, safetyConfig *config.SafetyConfig) bool {
-	if safetyConfig == nil {
-		return false
-	}
-
-	return safetyConfig.ReadOnlyMode && method != "GET"
-}
-
-// convertOperationToTool converts an OpenAPI operation to an MCP tool.
-// Delegates to the shared convertOperationToMCPTool function.
-func (h *Handler) convertOperationToTool(method, path string, op *openapi3.Operation) mcp.Tool {
-	return convertOperationToMCPTool(method, path, op)
-}
-
-// isToolAllowed checks if a tool is allowed based on safety configuration.
-func (h *Handler) isToolAllowed(toolName string, safetyConfig *config.SafetyConfig) bool {
-	if safetyConfig == nil {
-		return true
-	}
-
-	// Check denied list first
-	if slices.Contains(safetyConfig.DeniedOperations, toolName) {
-		return false
-	}
-
-	// If allowed list is specified, only include those
-	if len(safetyConfig.AllowedOperations) > 0 {
-		allowed := slices.Contains(safetyConfig.AllowedOperations, toolName)
-		if !allowed {
-			return false
-		}
-	}
-
-	return true
 }

@@ -611,12 +611,13 @@ func (b *Builder) checkRequiredBodyFields(params map[string]any, opParams openap
 	}
 
 	schema := jsonContent.Schema.Value
+	bodyParams, err := b.effectiveBodyParams(params, opParams, schema)
+	if err != nil {
+		return fmt.Errorf("validate request body: %w", err)
+	}
 	if schema.Properties == nil || len(schema.Required) == 0 {
 		return nil
 	}
-
-	// Extract body parameters
-	bodyParams := b.extractBodyParams(params, opParams)
 
 	// Check if all required fields are present
 	for _, requiredField := range schema.Required {
@@ -626,6 +627,30 @@ func (b *Builder) checkRequiredBodyFields(params map[string]any, opParams openap
 	}
 
 	return nil
+}
+
+// effectiveBodyParams validates the representation that will actually be sent.
+// Resolving a file here also freezes its bytes for BuildRequest, avoiding a second
+// file read after validation. ValidateParams already normalizes parameter values.
+func (b *Builder) effectiveBodyParams(params map[string]any, opParams openapi3.Parameters, schema *openapi3.Schema) (map[string]any, error) {
+	raw, explicit := params["body"]
+	if !explicit {
+		return b.extractBodyParams(params, opParams), nil
+	}
+	data, err := b.handleBodyFlag(raw)
+	if err != nil {
+		return nil, fmt.Errorf("resolve explicit body: %w", err)
+	}
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return nil, fmt.Errorf("invalid JSON in request body: %w", err)
+	}
+	object, isObject := value.(map[string]any)
+	if !isObject && (schema.Type.Is("object") || len(schema.Required) > 0) {
+		return nil, &ParameterValidationError{Parameter: "body", Reason: "must be a JSON object"}
+	}
+	params["body"] = string(data)
+	return object, nil
 }
 
 // ValidateParams validates parameters against the operation schema.

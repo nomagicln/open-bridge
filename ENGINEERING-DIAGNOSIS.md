@@ -1,5 +1,7 @@
 # OpenBridge 软件工程诊断报告
 
+> 历史基线报告：以下内容保留当时的证据与结论，不代表当前缺陷或验收状态。当前边界见[架构参考](docs/zh/reference/architecture.md)，本轮状态见[架构审计](docs/maintenance/architecture-audit.md)，下游迁移见[升级指南](docs/zh/guide/upgrading.md)。
+
 > **诊断对象**：`github.com/nomagicln/open-bridge`（Go 1.25.5；OpenAPI → 语义 CLI + MCP server 运行时引擎）
 > **诊断基线**：工作树 `dd18374`（分支 `fix/install-and-args`），`git status` 干净
 > **代码规模**：非测试 Go **18,420 LOC** / 测试 **17,527 LOC**；81 个 `.go` 文件、15 个包

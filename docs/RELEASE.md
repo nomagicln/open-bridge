@@ -1,5 +1,7 @@
 # Release Configuration
 
+The latest published tag is **v0.1.3**; `@latest` currently selects it. Changes on `main` are **Unreleased** until published under a new, previously unused tag. See the [CHANGELOG](https://github.com/nomagicln/open-bridge/blob/main/CHANGELOG.md) and [upgrade guide](/guide/upgrading) for compatibility. Keep published tags immutable; this document describes release procedures and does not record a release being performed.
+
 ## ✅ Multi-Platform Support
 
 ### Supported Platforms and Architectures
@@ -37,12 +39,14 @@ GoReleaser automatically categorizes commits based on their prefixes:
 
 ### 1. Create a Tag
 
-```bash
-# Create a version tag
-git tag -a v0.1.0 -m "Release v0.1.0"
+Choose a new, unused version and replace `vX.Y.Z` before running these maintainer commands:
 
-# Push the tag (triggers release workflow)
-git push origin v0.1.0
+```bash
+# Create a new version tag
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+
+# Push the new tag (triggers release workflow)
+git push origin vX.Y.Z
 ```
 
 ### 2. GitHub Actions Workflow
@@ -104,7 +108,7 @@ goreleaser build --snapshot --clean
 ## 📝 CI/CD Pipeline
 
 ```
-Push Tag v0.1.0
+Push a new version tag
     ↓
 GitHub Actions (ci.yml)
     ↓
@@ -134,7 +138,15 @@ GitHub Actions (ci.yml)
 
 ### Q: How do I roll back a release?
 
-A: Delete the tag and release from GitHub Releases, then re-tag.
+A: Install the previously tested release binary from GitHub Releases, or pin the CLI/Go dependency to its existing immutable tag. For example, if v0.1.3 is the compatible version:
+
+```bash
+go install github.com/nomagicln/open-bridge/cmd/ob@v0.1.3
+# For a downstream Go module:
+go get github.com/nomagicln/open-bridge@v0.1.3
+```
+
+Preserve configuration and credentials, then run the downstream build/tests and representative API/MCP calls. Do not delete, move, or re-create a published tag; a corrective release uses a new version. See the [upgrade guide](/guide/upgrading) for API and config compatibility limits.
 
 ### Q: Are pre-release versions supported?
 

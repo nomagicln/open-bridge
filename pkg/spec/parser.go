@@ -114,7 +114,10 @@ func (o *SpecFetchOptions) Merge(override *SpecFetchOptions) *SpecFetchOptions {
 
 // Parser handles loading, parsing, and caching of OpenAPI specifications.
 type Parser struct {
-	cache        sync.Map // map[string]*CachedSpec
+	cache sync.Map // map[string]*CachedSpec
+	// cacheMu guards updates to cached entries, such as the access time, so
+	// concurrent readers never write the same entry at the same time.
+	cacheMu      sync.Mutex
 	cacheTTL     time.Duration
 	client       *http.Client
 	loader       *openapi3.Loader
@@ -736,7 +739,9 @@ func (p *Parser) GetCachedSpec(appName string) (*openapi3.T, bool) {
 	}
 
 	// Update access time
+	p.cacheMu.Lock()
 	cached.AccessedAt = time.Now()
+	p.cacheMu.Unlock()
 
 	return cached.Spec, true
 }

@@ -1,5 +1,7 @@
 # Requirements Document: OpenBridge
 
+> Historical requirements. Preserve the original product intent; current behavior and verification are described in the [architecture reference](../../../docs/reference/architecture.md) and [current audit](../../../docs/maintenance/architecture-audit.md). A requirement here does not prove a feature is implemented.
+
 ## Introduction
 
 OpenBridge is a universal API runtime engine that reads OpenAPI specification files and dynamically generates two interfaces: a kubectl-style semantic CLI for humans and an MCP Server for AI agents. The system eliminates the need for code generation by driving all behavior through OpenAPI specs and configuration files, providing a unified "One Spec, Dual Interface" approach to API consumption.

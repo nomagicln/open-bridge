@@ -20,7 +20,9 @@ These rules are absolute. Any deviation requires explicit human approval.
 
 **Principle:** Tests define the requirement. Implementation is merely a solution to pass the test.
 
-The Agent **MUST** follow this strict 3-step sequence for any new functionality. **Do not attempt to generate the full solution in one pass.**
+The Agent **MUST** follow this strict 3-step sequence for any new functionality. **Do not attempt to generate the full solution in one pass.** Historical audit or batch reports do not waive the confirmation checkpoint.
+
+For a defect in existing functionality, first add a failing regression test, then make the correction. Do not replace working implementations with placeholder panics.
 
 ### Step 1: Interface Design (Skeleton)
 
@@ -44,6 +46,7 @@ func CalculateMetric(data []int) (int, error) {
 1. Create the test file (`foo_test.go`).
 2. Write comprehensive test cases covering happy paths and error scenarios based **only** on the signatures from Step 1.
 3. **Constraint:** The tests must compile, but they should fail (panic) when run.
+4. **Checkpoint:** Stop after Step 2 and wait for explicit user confirmation before implementing new functionality in Step 3.
 
 ### Step 3: Implementation (The "Green" State)
 
@@ -64,12 +67,13 @@ func CalculateMetric(data []int) (int, error) {
 | **Unit** | `foo_test.go` | None | Tests logic within `foo.go` in isolation. |
 | **Integration** | `foo_integration_test.go` | `//go:build integration` | Tests involving DB, HTTP, or FS. |
 | **Property** | `foo_property_test.go` | None | Randomized input testing with `gopter`. |
-| **Helpers** | `test_helpers.go` | None | Shared test utilities within the package. |
+| **Helpers** | `test_helpers_test.go` | None | Shared test utilities within the package; excluded from production builds. |
 
 **Rules:**
 
-1. **Strict Name Matching:** `foo.go`  `foo_test.go`. Never use mismatched names like `foo_service_test.go`.
-2. **No Orphan Tests:** Every test file must correspond to an existing source file.
+1. **Strict Name Matching:** Unit and property tests must match the real source they exercise: `foo.go` → `foo_test.go` / `foo_property_test.go`. Never invent a production file to satisfy naming.
+2. **No Orphan Tests:** Tests normally correspond to an existing source file. Package-local test helpers and test-only packages for cross-package integration (for example, `internal/integration`) are exempt from paired-source naming. Integration build tags still apply.
+3. **Shared Test Packages:** Cross-package helpers such as `internal/proptest` and `internal/testutil` may use ordinary `.go` files so tests can import them. Import these packages only from tests; production packages must not depend on them. Run `make production-deps` to reject `testing`, `testify`, and `gopter` in the command's production import graph. These dependencies remain allowed in `go.mod` for tests.
 
 ### 3.2 Property Testing Strategy
 
@@ -138,13 +142,20 @@ Run the following commands. All must pass:
     go test -v -short ./...
     ```
 
-3. **Integration Tests (Optional but Recommended):**
+3. **Production Dependencies & Module Tidiness:**
+
+    ```bash
+    make production-deps
+    go mod tidy -diff
+    ```
+
+4. **Integration Tests (Optional but Recommended):**
 
     ```bash
     go test -v -tags=integration ./...
     ```
 
-4. **Documentation Sync Check:**
+5. **Documentation Sync Check:**
 
     * Review your changes and ensure all modifications are reflected in relevant documentation (e.g., README files, API docs, code comments, or guides).
 
@@ -158,7 +169,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 `type(scope): description`
 
 * **Types:** `feat`, `fix`, `refactor`, `test`, `chore`, `docs`.
-* **Scopes:** `spec`, `config`, `cli`, `tui`, `mcp`.
+* **Scopes:** Use the affected module: `app`, `cli`, `codegen`, `completion`, `config`, `credential`, `install`, `mcp`, `request`, `router`, `semantic`, `spec`, or `tui`. Use `ci`, `deps`, or `docs` for the corresponding repository infrastructure.
 * **Sign-off:** All commits **MUST** include DCO sign-off (`-s` flag).
 
 **Example:**
@@ -174,5 +185,6 @@ All commits without sign-off will be rejected by the DCO check.
 ## 6. How to Read This Document (For AI)
 
 1. **Context:** You are an expert Golang engineer working on the OpenBridge project.
-2. **Trigger:** When asked to "Implement feature X", you automatically initiate the **Step 1 (Interface Design)** of the TDD Protocol defined in Section 2.
-3. **Constraint:** You stop after Step 2 to wait for user confirmation before proceeding to Implementation (Step 3).
+2. **Reading Order:** Read the [README](README.md), [current architecture](docs/reference/architecture.md), this document, and [CONTRIBUTING.md](CONTRIBUTING.md). Consult the [upgrade guide](docs/guide/upgrading.md) before changing CLI, MCP, configuration, or public Go contracts; use historical reports as evidence rather than the current API reference.
+3. **Trigger:** When asked to "Implement feature X", you automatically initiate the **Step 1 (Interface Design)** of the TDD Protocol defined in Section 2.
+4. **Constraint:** You stop after Step 2 to wait for user confirmation before proceeding to Implementation (Step 3).

@@ -1,5 +1,7 @@
 # Implementation Plan: OpenBridge
 
+> Historical implementation checklist. Its checkboxes describe the original plan, not current acceptance results. Read the [architecture reference](../../../docs/reference/architecture.md) and [current audit](../../../docs/maintenance/architecture-audit.md) for today's boundaries and validation status.
+
 ## Overview
 
 This implementation plan breaks down the OpenBridge project into discrete, incremental tasks. The approach follows a bottom-up strategy, building core components first, then integrating them into higher-level features. Each task builds on previous work, ensuring continuous integration and testability.

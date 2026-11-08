@@ -30,13 +30,14 @@ import (
 	"unicode/utf8"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/nomagicln/open-bridge/internal/openapi"
 	"github.com/nomagicln/open-bridge/pkg/semantic"
 )
 
 const (
 	// DerivedIndexSchemaVersion is bumped whenever the DerivedIndex DTO fields or
 	// their semantics change in a way that invalidates persisted indexes.
-	DerivedIndexSchemaVersion = 4
+	DerivedIndexSchemaVersion = 5
 	// derivedIndexFormatVersion is the on-disk container format version.
 	derivedIndexFormatVersion = 1
 	// derivedIndexMagicSize is the length of the file magic.
@@ -1182,21 +1183,10 @@ func operationSpecFromDoc(doc *openapi3.T, path, method string) *openapi3.Operat
 		return nil
 	}
 
-	switch strings.ToUpper(method) {
-	case "GET":
-		return pathItem.Get
-	case "POST":
-		return pathItem.Post
-	case "PUT":
-		return pathItem.Put
-	case "PATCH":
-		return pathItem.Patch
-	case "DELETE":
-		return pathItem.Delete
-	case "HEAD":
-		return pathItem.Head
-	case "OPTIONS":
-		return pathItem.Options
+	method = strings.ToUpper(method)
+	switch method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+		return openapi.EffectiveOperation(pathItem, pathItem.Operations()[method])
 	default:
 		return nil
 	}

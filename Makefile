@@ -1,6 +1,6 @@
 .PHONY: build test lint clean install all deps update-deps run docs \
         test-short test-coverage test-integration bench vet check lint-fix fmt-fix \
-        build-all install-lint check-tools help
+        build-all install-lint check-tools lint-version production-deps help
 
 # ============================================================================
 # Build Variables
@@ -36,6 +36,7 @@ CGO_ENABLED ?= 0
 # Tool Versions (for installation)
 # ============================================================================
 GOLANGCI_LINT_VERSION ?= v2.15.0
+GOLANGCI_LINT ?= golangci-lint
 
 # ============================================================================
 # Tool Detection Functions
@@ -45,15 +46,6 @@ define check_tool
 	@if ! command -v $(1) >/dev/null 2>&1; then \
 		echo "Error: $(1) is not installed or not in PATH"; \
 		echo "$(2)"; \
-		exit 1; \
-	fi
-endef
-
-# Check if a command exists and can report its version
-define check_tool_version
-	@if ! $(1) $(2) >/dev/null 2>&1; then \
-		echo "Error: $(1) is not available or not working properly"; \
-		echo "$(3)"; \
 		exit 1; \
 	fi
 endef
@@ -130,15 +122,48 @@ vet:
 	go vet ./...
 	go vet -tags=integration ./...
 
-# Run linter (requires golangci-lint)
-lint:
-	$(call check_tool_version,golangci-lint,version,Install with: make install-lint)
-	golangci-lint run --timeout=5m ./...
+# Check the selected linter's pinned version and Go compiler compatibility.
+lint-version:
+	@lint_error() { \
+		echo "Error: $$1" >&2; \
+		echo "Rebuild $(GOLANGCI_LINT_VERSION) with the current Go toolchain in a separate directory:" >&2; \
+		echo "  make install-lint GOBIN=/absolute/path/to/lint-tools" >&2; \
+		echo "Select it with GOLANGCI_LINT=/absolute/path/to/lint-tools/golangci-lint (.exe on Windows)." >&2; \
+		exit 1; \
+	}; \
+	lint_version="$$("$(GOLANGCI_LINT)" version)" || lint_error "Cannot run $(GOLANGCI_LINT) version"; \
+	printf '%s\n' "$$lint_version"; \
+	case "$$lint_version" in \
+		*" version $(GOLANGCI_LINT_VERSION) "*|*" version $(patsubst v%,%,$(GOLANGCI_LINT_VERSION)) "*) ;; \
+		*) lint_error "Expected golangci-lint $(GOLANGCI_LINT_VERSION)" ;; \
+	esac; \
+	lint_go=; \
+	for word in $$lint_version; do \
+		case "$$word" in go[0-9]*.[0-9]*) lint_go=$$word; break ;; esac; \
+	done; \
+	go_version="$$(go env GOVERSION)" || lint_error "Cannot determine the current Go version"; \
+	lint_release=$${lint_go#go}; \
+	go_release=$${go_version#go}; \
+	lint_major=$${lint_release%%.*}; \
+	lint_minor=$${lint_release#*.}; lint_minor=$${lint_minor%%[!0-9]*}; \
+	go_major=$${go_release%%.*}; \
+	go_minor=$${go_release#*.}; go_minor=$${go_minor%%[!0-9]*}; \
+	for part in "$$lint_major" "$$lint_minor" "$$go_major" "$$go_minor"; do \
+		case "$$part" in ''|*[!0-9]*) lint_error "Cannot compare Go versions: $$lint_go / $$go_version" ;; esac; \
+	done; \
+	if [ "$$lint_major" -lt "$$go_major" ] || { \
+		[ "$$lint_major" -eq "$$go_major" ] && [ "$$lint_minor" -lt "$$go_minor" ]; \
+	}; then \
+		lint_error "golangci-lint was built with $$lint_go; the project uses $$go_version"; \
+	fi
+
+# Run linter (requires the pinned golangci-lint built with a compatible Go).
+lint: lint-version
+	"$(GOLANGCI_LINT)" run --timeout=5m ./...
 
 # Run linter with auto-fix
-lint-fix:
-	$(call check_tool_version,golangci-lint,version,Install with: make install-lint)
-	golangci-lint run --timeout=5m --fix ./...
+lint-fix: lint-version
+	"$(GOLANGCI_LINT)" run --timeout=5m --fix ./...
 
 # Advanced formatting and modernization
 fmt-fix:
@@ -158,8 +183,28 @@ fmt-fix:
 # Quality Gate
 # ============================================================================
 
-# Run all local gates: formatting checks, vet (both build tags), lint, short tests
+# Inspect the executable import graph; test dependencies may remain in go.mod.
+production-deps:
+	@echo "==> production dependency check"
+	@deps="$$(go list -deps ./cmd/ob)" || { \
+		echo "Error: go list -deps ./cmd/ob failed" >&2; \
+		exit 1; \
+	}; \
+	invalid=0; \
+	for dependency in $$deps; do \
+		case "$$dependency" in \
+			testing|testing/*|github.com/stretchr/testify|github.com/stretchr/testify/*|github.com/leanovate/gopter|github.com/leanovate/gopter/*) \
+				echo "Error: production command depends on test package $$dependency" >&2; \
+				invalid=1; \
+				;; \
+		esac; \
+	done; \
+	[ "$$invalid" -eq 0 ] || exit 1
+	@echo "✓ Production dependencies contain no test packages"
+
+# Run all local gates: production imports, formatting, vet, lint, short tests.
 check:
+	@$(MAKE) --no-print-directory production-deps
 	@echo "==> gofmt check"
 	@out="$$(gofmt -l cmd pkg internal)"; \
 	if [ -n "$$out" ]; then \
@@ -187,11 +232,11 @@ check:
 # Tool Installation Targets
 # ============================================================================
 
-# Install golangci-lint
+# Install the pinned linter; use a separate GOBIN to keep existing tools intact.
 install-lint:
-	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	@echo "✓ golangci-lint installed"
+	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION) to $(GOBIN)..."
+	GOBIN="$(GOBIN)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	@echo "✓ golangci-lint installed; select the installed executable with GOLANGCI_LINT"
 
 # Check all required tools
 check-tools:
@@ -199,7 +244,7 @@ check-tools:
 	@printf "  %-16s" "go:"; go version 2>/dev/null || echo "NOT FOUND"
 	@printf "  %-16s" "gofmt:"; gofmt -h >/dev/null 2>&1 && echo "OK" || echo "NOT FOUND"
 	@printf "  %-16s" "goimports:"; goimports -h >/dev/null 2>&1 && echo "OK" || echo "NOT FOUND (optional)"
-	@printf "  %-16s" "golangci-lint:"; golangci-lint version 2>/dev/null || echo "NOT FOUND (optional)"
+	@printf "  %-16s" "golangci-lint:"; "$(GOLANGCI_LINT)" version 2>/dev/null || echo "NOT FOUND (optional; select with GOLANGCI_LINT)"
 	@printf "  %-16s" "godoc:"; godoc -h >/dev/null 2>&1 && echo "OK" || echo "NOT FOUND (optional)"
 
 # ============================================================================
@@ -274,20 +319,24 @@ help:
 	@echo "Lint & Format:"
 	@echo "  lint            Run golangci-lint"
 	@echo "  lint-fix        Run golangci-lint with auto-fix"
+	@echo "  lint-version    Check pinned linter version and Go compatibility"
 	@echo "  vet             Run go vet (default + integration build tags)"
 	@echo "  fmt-fix         Advanced code formatting"
 	@echo ""
 	@echo "Quality Gate:"
-	@echo "  check           Run gofmt/goimports checks, vet, lint and short tests"
+	@echo "  check           Check production imports, formatting, vet, lint and short tests"
+	@echo "  production-deps Reject test packages in the production command's imports"
 	@echo ""
 	@echo "Tools:"
 	@echo "  check-tools     Check availability of required tools"
-	@echo "  install-lint    Install golangci-lint"
+	@echo "  install-lint    Install pinned golangci-lint (choose a separate GOBIN)"
 	@echo ""
 	@echo "Configuration Variables:"
 	@echo "  PLATFORMS       Target platforms for build-all (default: $(PLATFORMS))"
 	@echo "  BINARY_NAME     Output binary name (default: $(BINARY_NAME))"
 	@echo "  OUTPUT_DIR      Output directory (default: $(OUTPUT_DIR))"
+	@echo "  GOLANGCI_LINT   Linter executable (default: $(GOLANGCI_LINT))"
+	@echo "  GOLANGCI_LINT_VERSION Pinned linter version (default: $(GOLANGCI_LINT_VERSION))"
 	@echo "  GOBIN           Install destination (default: $(GOBIN))"
 	@echo "  CGO_ENABLED     Enable CGO (default: $(CGO_ENABLED))"
 	@echo "  VERSION         Version string (default: auto-detected from git)"
@@ -295,5 +344,7 @@ help:
 	@echo "Examples:"
 	@echo "  make build-all PLATFORMS=\"linux/amd64 darwin/arm64\""
 	@echo "  make build BINARY_NAME=myapp OUTPUT_DIR=dist"
-	@echo "  make install-lint GOLANGCI_LINT_VERSION=v2.15.0"
+	@echo "  make install-lint GOBIN=/absolute/path/to/lint-tools"
+	@echo "  make lint GOLANGCI_LINT=/absolute/path/to/lint-tools/golangci-lint"
+	@echo "  make production-deps"
 	@echo "  make test-integration"

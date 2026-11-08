@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/nomagicln/open-bridge/internal/openapi"
+	"github.com/nomagicln/open-bridge/internal/requestpolicy"
 	"github.com/nomagicln/open-bridge/pkg/codegen"
 	"github.com/nomagicln/open-bridge/pkg/config"
 	"github.com/nomagicln/open-bridge/pkg/request"
@@ -108,17 +110,12 @@ func (h *Handler) loadAndCacheSpec(appName string, appConfig *config.AppConfig) 
 
 // getOperationSpec retrieves the operation spec for the given method.
 func getOperationSpec(pathItem *openapi3.PathItem, method string) *openapi3.Operation {
+	if pathItem == nil {
+		return nil
+	}
 	switch method {
-	case "GET":
-		return pathItem.Get
-	case "POST":
-		return pathItem.Post
-	case "PUT":
-		return pathItem.Put
-	case "PATCH":
-		return pathItem.Patch
-	case "DELETE":
-		return pathItem.Delete
+	case "GET", "POST", "PUT", "PATCH", "DELETE":
+		return openapi.EffectiveOperation(pathItem, pathItem.Operations()[method])
 	default:
 		return nil
 	}
@@ -148,32 +145,9 @@ func (h *Handler) buildRequest(appName string, op *semantic.Operation, opSpec *o
 		return nil, fmt.Errorf("failed to inject auth: %w", err)
 	}
 
-	applyProfileToRequest(req, profile)
+	requestpolicy.ApplyProfile(req, profile)
 
 	return req, nil
-}
-
-// applyProfileToRequest layers profile-level headers and query parameters onto
-// the request. Existing headers are kept unless overridden, existing query
-// values and URL userinfo are preserved.
-func applyProfileToRequest(req *http.Request, profile *config.Profile) {
-	if req == nil || profile == nil {
-		return
-	}
-
-	for name, value := range profile.Headers {
-		req.Header.Set(name, value)
-	}
-
-	if req.URL == nil || len(profile.QueryParams) == 0 {
-		return
-	}
-
-	query := req.URL.Query()
-	for name, value := range profile.QueryParams {
-		query.Set(name, value)
-	}
-	req.URL.RawQuery = query.Encode()
 }
 
 // readResponse reads and validates the HTTP response.
@@ -410,15 +384,25 @@ func extractCLIFlags(params map[string]any) (string, string, map[string]any) {
 
 // ExecuteCommand parses and executes a CLI command.
 func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, args []string) error {
+	return h.ExecuteCommandWithOptions(appName, appConfig, args, Options{})
+}
+
+// ExecuteCommandWithOptions parses and executes a CLI command, using the given
+// options as defaults.
+//
+// An option explicitly present in the command arguments wins over the supplied
+// default, so a caller (for example the root command) can forward its own
+// options without overriding the ones the user typed for the app.
+func (h *Handler) ExecuteCommandWithOptions(appName string, appConfig *config.AppConfig, args []string, options Options) error {
 	if handled, err := h.handleHelpCommands(appName, appConfig, args); handled {
 		return err
 	}
 
 	resource, verb, flagArgs := args[0], args[1], args[2:]
 
-	options := parseCLIOptions(flagArgs)
+	parsed := applyOptionDefaults(parseCLIOptions(flagArgs), options)
 
-	profile, err := h.getProfile(appConfig, options.profileName)
+	profile, err := h.getProfile(appConfig, parsed.profileName)
 	if err != nil {
 		return err
 	}
@@ -438,8 +422,8 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 	_, _, cleanParams := extractCLIFlags(params)
 
 	// Handle code generation or API request execution
-	if options.generateFormat != "" {
-		return h.generateCode(appName, op, opSpec, cleanParams, profile, options.generateFormat, options.generateOutput)
+	if parsed.generateFormat != "" {
+		return h.generateCode(appName, op, opSpec, cleanParams, profile, parsed.generateFormat, parsed.generateOutput)
 	}
 
 	// API request path: validate parameters
@@ -453,12 +437,33 @@ func (h *Handler) ExecuteCommand(appName string, appConfig *config.AppConfig, ar
 		return err
 	}
 
-	outputFormat := options.outputFormat
+	outputFormat := parsed.outputFormat
 	if outputFormat == "" {
 		outputFormat = defaultOutputFormat
 	}
 
 	return h.formatAndPrintOutput(body, outputFormat)
+}
+
+// applyOptionDefaults fills the options that the command arguments did not
+// select with the supplied defaults.
+func applyOptionDefaults(parsed cliOptions, defaults Options) cliOptions {
+	if parsed.outputFormat == "" {
+		parsed.outputFormat = defaults.OutputFormat
+	}
+	if parsed.profileName == "" {
+		parsed.profileName = defaults.ProfileName
+	}
+	return parsed
+}
+
+// Options holds the CLI-only options a caller can supply as defaults.
+type Options struct {
+	// OutputFormat is used when the command arguments do not select a format.
+	OutputFormat string
+
+	// ProfileName is used when the command arguments do not select a profile.
+	ProfileName string
 }
 
 // cliOptions holds the CLI-only options consumed by the handler; they are never

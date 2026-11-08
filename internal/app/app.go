@@ -6,6 +6,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -83,6 +84,8 @@ func New() (*Deps, error) {
 	cliHandler := cli.NewHandler(specParser, mapper, reqBuilder, configMgr)
 	mcpHandler := mcp.NewHandler(mapper, reqBuilder, nil)
 	appRouter := router.NewRouter(cliHandler, mcpHandler, configMgr, specParser)
+	// The MCP server reports the build version of this binary.
+	appRouter.SetServerVersion(buildInfo.Version)
 	completionProvider := completion.NewProvider(configMgr, specParser, mapper)
 	installer := install.New(configMgr)
 
@@ -103,26 +106,47 @@ func New() (*Deps, error) {
 // Run constructs the dependencies and executes the CLI with the provided argv.
 // argv[0] is the binary path, matching os.Args.
 func Run(argv []string) error {
+	return RunContext(context.Background(), argv)
+}
+
+// RunContext constructs the dependencies and executes the CLI with the
+// provided argv and context.
+func RunContext(ctx context.Context, argv []string) error {
 	deps, err := New()
 	if err != nil {
 		return err
 	}
-	return deps.Run(argv)
+	return deps.RunContext(ctx, argv)
 }
 
 // Run executes the CLI with the provided argv.
 func (d *Deps) Run(argv []string) error {
+	return d.RunContext(context.Background(), argv)
+}
+
+// RunContext executes the CLI with the provided argv and context.
+//
+// The argv is the single source of truth for the command line: the root command
+// receives argv[1:], so the executed command never depends on the process
+// arguments of the caller.
+func (d *Deps) RunContext(ctx context.Context, argv []string) error {
+	if len(argv) == 0 {
+		return fmt.Errorf("no command provided")
+	}
+
 	// Check if we're running as a shim (binary name is not 'ob').
 	binaryName := filepath.Base(argv[0])
 	binaryName = strings.TrimSuffix(binaryName, filepath.Ext(binaryName))
 
 	if binaryName != "ob" {
 		// Shim mode: route directly to app handler.
-		return d.Router.Execute(argv)
+		return d.Router.ExecuteContext(ctx, argv)
 	}
 
 	// Normal 'ob' mode: use cobra CLI.
-	return d.newRootCmd().Execute()
+	rootCmd := d.newRootCmd()
+	rootCmd.SetArgs(argv[1:])
+	return rootCmd.ExecuteContext(ctx)
 }
 
 // rootCmdLong is the long description of the root command.
@@ -186,8 +210,28 @@ func (d *Deps) runRootCommand(cmd *cobra.Command, args []string) error {
 	// First arg might be an app name.
 	appName := args[0]
 	if d.Config.AppExists(appName) {
-		return d.Router.ExecuteApp(appName, args[1:])
+		return d.Router.ExecuteAppContext(cmd.Context(), appName, args[1:], rootOptions(cmd))
 	}
 
 	return fmt.Errorf("unknown command or app: %s\nRun 'ob --help' for usage", appName)
+}
+
+// rootOptions returns the root-level options that were explicitly set.
+//
+// They are forwarded to the app handler as defaults, so an option given with
+// the app arguments keeps precedence.
+func rootOptions(cmd *cobra.Command) router.AppOptions {
+	var options router.AppOptions
+
+	if flag := cmd.Flag("profile"); flag != nil && flag.Changed {
+		options.ProfileName = flag.Value.String()
+	}
+	if flag := cmd.Flag("output"); flag != nil && flag.Changed {
+		options.OutputFormat = flag.Value.String()
+	}
+	if flag := cmd.Flag("mcp"); flag != nil && flag.Changed {
+		options.MCPMode = flag.Value.String() == "true"
+	}
+
+	return options
 }

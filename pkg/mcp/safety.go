@@ -23,8 +23,8 @@ const confirmErrorMessage = "operation requires confirmation; re-invoke with " +
 // safetyGuard enforces the invocation-time parts of config.SafetyConfig.
 //
 // Semantics (see config.SafetyConfig for the YAML keys):
-//   - ReadOnlyMode / AllowedOperations / DeniedOperations are enforced when tools
-//     are built (visibility), and keep their existing behavior.
+//   - ReadOnlyMode / AllowedOperations / DeniedOperations filter published tools
+//     and are checked again against the actual binding at invocation.
 //   - RequireConfirm lists HTTP methods whose operations must be explicitly
 //     confirmed through the "_confirm=true" tool argument on every call; the
 //     confirmation is never remembered.
@@ -37,6 +37,7 @@ const confirmErrorMessage = "operation requires confirmation; re-invoke with " +
 // The guard is safe for concurrent use: the rate limiter is mutex-protected and
 // the compiled patterns are immutable after construction.
 type safetyGuard struct {
+	visibility     config.SafetyConfig
 	requireConfirm map[string]struct{}
 	dangerous      []compiledDangerousPattern
 	limiter        *requestRateLimiter
@@ -56,6 +57,11 @@ func newSafetyGuard(cfg *config.SafetyConfig) (*safetyGuard, error) {
 		return guard, nil
 	}
 
+	guard.visibility = config.SafetyConfig{
+		ReadOnlyMode:      cfg.ReadOnlyMode,
+		AllowedOperations: slices.Clone(cfg.AllowedOperations),
+		DeniedOperations:  slices.Clone(cfg.DeniedOperations),
+	}
 	for _, method := range cfg.RequireConfirm {
 		normalized := strings.ToUpper(strings.TrimSpace(method))
 		if normalized != "" {
@@ -116,12 +122,18 @@ func (g *safetyGuard) allowRequest() (time.Duration, bool) {
 
 // checkInvocation enforces invocation-time safety checks. It returns a non-nil
 // isError result when the invocation must be rejected, and nil when it may run.
-// Checks are applied in this order: dangerous patterns, confirmation, rate limit.
+// Checks are applied in this order: visibility, dangerous patterns, confirmation, rate limit.
 func (g *safetyGuard) checkInvocation(toolID, method, path string, confirmed bool) *mcp.CallToolResult {
 	if g == nil {
 		return nil
 	}
 
+	if g.visibility.ReadOnlyMode && strings.ToUpper(method) != "GET" {
+		return errorResult("operation blocked by read_only_mode: %s %s", method, path)
+	}
+	if !isToolAllowedByConfig(toolID, &g.visibility) {
+		return errorResult("operation is not allowed: %s", toolID)
+	}
 	if pattern, matched := g.dangerousMatch(method, path, toolID); matched {
 		return errorResult("operation blocked by dangerous_operation_patterns: pattern %q matches %s %s (tool %q)",
 			pattern, method, path, toolID)
